@@ -1,0 +1,129 @@
+"""
+Utility functions for Science Direct scraper
+"""
+
+import time
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+
+def handle_cookie_consent(driver):
+    """Cookie onay popup'larını kapatır"""
+    try:
+        print("\n🍪 Cookie popup kontrolü yapılıyor...")
+        
+        # Önce JavaScript ile cookie banner'ı gizlemeyi dene
+        try:
+            driver.execute_script("""
+                // Yaygın cookie banner class'larını gizle
+                const cookieSelectors = [
+                    '#onetrust-banner-sdk',
+                    '.onetrust-pc-dark-filter',
+                    '[class*="cookie-banner"]',
+                    '[class*="cookie-consent"]',
+                    '[id*="cookie"]',
+                    '.cc-window',
+                    '#CybotCookiebotDialog'
+                ];
+                
+                cookieSelectors.forEach(selector => {
+                    const elements = document.querySelectorAll(selector);
+                    elements.forEach(el => {
+                        if (el) el.style.display = 'none';
+                    });
+                });
+                
+                // Body overflow'u düzelt
+                document.body.style.overflow = 'auto';
+            """)
+            print("✓ JavaScript ile cookie banner'lar gizlendi")
+            return True
+        except:
+            pass
+        
+        # Yaygın cookie popup selektörleri
+        cookie_selectors = [
+            # Science Direct / Elsevier spesifik
+            "button#onetrust-accept-btn-handler",
+            "button.ot-sdk-show-settings",
+            "button[aria-label='Accept Cookies']",
+            
+            # OneTrust (Science Direct kullanıyor)
+            "button.accept-cookies-button",
+            "button.onetrust-close-btn-handler",
+            
+            # Genel selektörler
+            "button.cc-accept",
+            "button.cookie-accept",
+            "a.cc-btn-accept",
+            "#accept-cookies",
+            ".accept-cookies-button",
+            "button[aria-label*='Accept']",
+            "button[aria-label*='accept']",
+            "button[title*='Accept']",
+            
+            # Text içeren butonlar için XPath
+            "//button[contains(text(), 'Accept')]",
+            "//button[contains(text(), 'Accept All')]",
+            "//button[contains(text(), 'I Accept')]",
+            "//a[contains(text(), 'Accept')]",
+        ]
+        
+        # Her selektörü dene
+        for selector in cookie_selectors:
+            try:
+                # XPath mi CSS selector mı kontrol et
+                if selector.startswith('//'):
+                    button = WebDriverWait(driver, 2).until(
+                        EC.element_to_be_clickable((By.XPATH, selector))
+                    )
+                else:
+                    button = WebDriverWait(driver, 2).until(
+                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
+                    )
+                
+                button.click()
+                print(f"✓ Cookie popup kapatıldı: {selector}")
+                time.sleep(1)
+                return True
+                
+            except TimeoutException:
+                continue
+        
+        print("ℹ Cookie popup bulunamadı (zaten kapalı olabilir)")
+        return False
+        
+    except Exception as e:
+        print(f"⚠ Cookie popup kapatma hatası: {e}")
+        return False
+
+
+def print_article_summary(article: dict, index: int):
+    """Makale özetini yazdırır (debug için)"""
+    print(f"\n{'─' * 80}")
+    print(f"📋 MAKALE #{index} ÖZETİ")
+    print(f"{'─' * 80}")
+    print(f"Journal: {article.get('journal_name', 'N/A')}")
+    print(f"URL: {article.get('url', 'N/A')}")
+    print(f"PDF: {article.get('pdf_url', 'YOK')}")
+    print(f"DOI: {article.get('doi', 'YOK')}")
+    print(f"Yazarlar ({len(article.get('authors', []))}): {', '.join(article.get('authors', [])[:3])}{'...' if len(article.get('authors', [])) > 3 else ''}")
+    
+    if article.get('abstract'):
+        abstract_preview = article['abstract'][:200] + '...' if len(article['abstract']) > 200 else article['abstract']
+        print(f"Abstract: {abstract_preview}")
+    else:
+        print("Abstract: YOK")
+    
+    if article.get('content'):
+        print(f"İçerik Bölümleri ({len(article['content'])}):")
+        for sec in article['content'][:3]:
+            print(f"  - {sec['title']} ({len(sec['text'])} karakter)")
+        if len(article['content']) > 3:
+            print(f"  ... ve {len(article['content']) - 3} bölüm daha")
+    else:
+        print("İçerik: YOK")
+    
+    print(f"{'─' * 80}\n")

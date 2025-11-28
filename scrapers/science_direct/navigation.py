@@ -1,0 +1,97 @@
+"""
+Page navigation functions for Science Direct scraper
+"""
+
+import time
+import re
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+
+class PageNavigator:
+    """Sayfa navigasyon işlemlerini yöneten sınıf"""
+    
+    def __init__(self, driver):
+        """
+        Args:
+            driver: Selenium WebDriver instance
+        """
+        self.driver = driver
+    
+    def get_current_page_info(self) -> dict:
+        """Mevcut sayfa bilgilerini alır (sayfa numarası ve toplam sayfa)"""
+        try:
+            page_label = self.driver.find_element(By.CSS_SELECTOR, "span.pagination-pages-label")
+            page_text = page_label.text.strip()  # "Page 1 of 4"
+            
+            # "Page X of Y" formatını parse et
+            match = re.search(r'Page (\d+) of (\d+)', page_text)
+            if match:
+                current_page = int(match.group(1))
+                total_pages = int(match.group(2))
+                return {
+                    'current_page': current_page,
+                    'total_pages': total_pages,
+                    'has_next': current_page < total_pages,
+                    'has_previous': current_page > 1
+                }
+            
+            return {'current_page': 1, 'total_pages': 1, 'has_next': False, 'has_previous': False}
+            
+        except Exception as e:
+            print(f"⚠ Sayfa bilgisi alınamadı: {e}")
+            return {'current_page': 1, 'total_pages': 1, 'has_next': False, 'has_previous': False}
+    
+    def go_to_next_page(self) -> bool:
+        """Sonraki sayfaya gider"""
+        try:
+            print("\n→ Sonraki sayfaya gidiliyor...")
+            
+            # Next butonunu bul
+            next_button = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((
+                    By.CSS_SELECTOR, 
+                    "button[aria-label='Next page']:not([disabled])"
+                ))
+            )
+            
+            next_button.click()
+            time.sleep(2)  # Sayfanın yüklenmesini bekle
+            
+            print("✓ Sonraki sayfaya geçildi")
+            return True
+            
+        except TimeoutException:
+            print("ℹ Sonraki sayfa bulunamadı (son sayfada olabilirsiniz)")
+            return False
+        except Exception as e:
+            print(f"✗ Sonraki sayfaya geçiş hatası: {e}")
+            return False
+    
+    def go_to_previous_page(self) -> bool:
+        """Önceki sayfaya gider"""
+        try:
+            print("\n→ Önceki sayfaya gidiliyor...")
+            
+            # Previous butonunu bul
+            prev_button = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((
+                    By.CSS_SELECTOR, 
+                    "button[aria-label='Previous page']:not([disabled])"
+                ))
+            )
+            
+            prev_button.click()
+            time.sleep(2)  # Sayfanın yüklenmesini bekle
+            
+            print("✓ Önceki sayfaya geçildi")
+            return True
+            
+        except TimeoutException:
+            print("ℹ Önceki sayfa bulunamadı (ilk sayfada olabilirsiniz)")
+            return False
+        except Exception as e:
+            print(f"✗ Önceki sayfaya geçiş hatası: {e}")
+            return False
