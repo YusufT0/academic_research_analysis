@@ -2,6 +2,7 @@
 Selenium WebDriver management for Science Direct scraper
 """
 
+import sys
 from typing import Optional
 from selenium.webdriver.chrome.options import Options
 from selenium.common.exceptions import WebDriverException
@@ -17,6 +18,10 @@ try:
     UNDETECTED_AVAILABLE = True
 except ImportError:
     UNDETECTED_AVAILABLE = False
+
+sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('science_direct')
 
 from config import ProxyConfig
 
@@ -41,12 +46,12 @@ class SeleniumDriver:
         self.driver = None
         
         if use_undetected and not UNDETECTED_AVAILABLE:
-            print("⚠ Uyarı: undetected-chromedriver bulunamadı, normal Chrome kullanılacak")
-            print("  Cloudflare bypass için: pip install undetected-chromedriver")
+            logger.warning("undetected-chromedriver bulunamadı, normal Chrome kullanılacak")
+            logger.info("  Cloudflare bypass için: pip install undetected-chromedriver")
         
         if proxy_config and proxy_config.is_configured() and not SELENIUM_WIRE_AVAILABLE:
-            print("⚠ Uyarı: selenium-wire bulunamadı, proxy tam çalışmayabilir")
-            print("  Gelişmiş proxy desteği için: pip install selenium-wire")
+            logger.warning("selenium-wire bulunamadı, proxy tam çalışmayabilir")
+            logger.info("  Gelişmiş proxy desteği için: pip install selenium-wire")
     
     def _configure_chrome_options(self):
         """Chrome seçeneklerini yapılandırır"""
@@ -57,7 +62,7 @@ class SeleniumDriver:
             # Sadece temel ayarlar
             if self.headless:
                 chrome_options.add_argument('--headless=new')
-                print("⚠ Uyarı: Headless mod Cloudflare bypass'ı engelleyebilir")
+                logger.warning("Headless mod Cloudflare bypass'ı engelleyebilir")
             
             # Minimal argümanlar
             chrome_options.add_argument('--no-sandbox')
@@ -73,8 +78,8 @@ class SeleniumDriver:
                 chrome_options.add_argument('--ignore-ssl-errors')
                 chrome_options.add_argument('--allow-insecure-localhost')
                 
-                print(f"✓ Proxy yapılandırıldı: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
-                print("✓ SSL sertifika doğrulaması devre dışı (proxy için)")
+                logger.success(f"Proxy yapılandırıldı: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
+                logger.success("SSL sertifika doğrulaması devre dışı (proxy için)")
             
         else:
             # Normal selenium için tam options
@@ -112,8 +117,8 @@ class SeleniumDriver:
                 chrome_options.add_argument('--ignore-ssl-errors')
                 chrome_options.add_argument('--allow-insecure-localhost')
                 
-                print(f"✓ Proxy yapılandırıldı: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
-                print("✓ SSL sertifika doğrulaması devre dışı (proxy için)")
+                logger.success(f"Proxy yapılandırıldı: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
+                logger.success("SSL sertifika doğrulaması devre dışı (proxy için)")
             
             # Bildirimleri kapat
             prefs = {
@@ -147,14 +152,14 @@ class SeleniumDriver:
                     'verify_ssl': False,
                     'suppress_connection_errors': True
                 }
-                print(f"🔌 selenium-wire proxy yapılandırıldı:")
-                print(f"  - Host: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
-                print(f"  - User: {self.proxy_config.proxy_user}")
-                print(f"  - SSL doğrulama: Devre dışı")
+                logger.info("selenium-wire proxy yapılandırıldı:")
+                logger.info(f"  - Host: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
+                logger.info(f"  - User: {self.proxy_config.proxy_user}")
+                logger.info("  - SSL doğrulama: Devre dışı")
             
             if self.use_undetected:
                 # undetected-chromedriver kullan (Cloudflare bypass)
-                print("🔓 undetected-chromedriver kullanılıyor (Cloudflare bypass)")
+                logger.info("undetected-chromedriver kullanılıyor (Cloudflare bypass)")
                 
                 if self.use_wire:
                     # selenium-wire + undetected-chromedriver kombinasyonu
@@ -163,9 +168,9 @@ class SeleniumDriver:
                             options=chrome_options,
                             seleniumwire_options=seleniumwire_options
                         )
-                        print("✓ selenium-wire + undetected-chromedriver aktif")
+                        logger.success("selenium-wire + undetected-chromedriver aktif")
                     except Exception as e:
-                        print(f"⚠ selenium-wire hatası, normal undetected-chromedriver deneniyor: {e}")
+                        logger.warning(f"selenium-wire hatası, normal undetected-chromedriver deneniyor: {e}")
                         self.driver = uc.Chrome(options=chrome_options)
                 else:
                     # Sadece undetected-chromedriver
@@ -173,12 +178,12 @@ class SeleniumDriver:
                         self.driver = uc.Chrome(options=chrome_options)
                     except TypeError:
                         # Options ile sorun varsa, hiç options olmadan dene
-                        print("⚠ Options ile hata, options olmadan deneniyor...")
+                        logger.warning("Options ile hata, options olmadan deneniyor...")
                         self.driver = uc.Chrome()
                 
             else:
                 # Normal Selenium kullan
-                print("🌐 Normal Chrome WebDriver kullanılıyor")
+                logger.info("Normal Chrome WebDriver kullanılıyor")
                 
                 if self.use_wire:
                     # selenium-wire ile
@@ -186,18 +191,18 @@ class SeleniumDriver:
                         options=chrome_options,
                         seleniumwire_options=seleniumwire_options
                     )
-                    print("✓ selenium-wire aktif")
+                    logger.success("selenium-wire aktif")
                 else:
                     # Normal selenium
                     from selenium import webdriver as normal_webdriver
                     self.driver = normal_webdriver.Chrome(options=chrome_options)
             
             self.driver.implicitly_wait(10)
-            print("✓ Chrome WebDriver başarıyla başlatıldı")
+            logger.success("Chrome WebDriver başarıyla başlatıldı")
             return self.driver
             
         except WebDriverException as e:
-            print(f"✗ WebDriver başlatma hatası: {e}")
+            logger.failed("WebDriver başlatma hatası", e)
             raise
     
     def close(self):
@@ -205,8 +210,8 @@ class SeleniumDriver:
         if self.driver:
             try:
                 self.driver.quit()
-                print("✓ WebDriver kapatıldı")
+                logger.success("WebDriver kapatıldı")
             except Exception as e:
                 # Kapanma sırasında oluşan hataları görmezden gel
-                print(f"ℹ WebDriver kapatılırken küçük bir hata oluştu (görmezden gelindi)")
+                logger.info("WebDriver kapatılırken küçük bir hata oluştu (görmezden gelindi)")
                 pass

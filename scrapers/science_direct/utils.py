@@ -2,17 +2,22 @@
 Utility functions for Science Direct scraper
 """
 
+import sys
 import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 
+sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('science_direct')
+
 
 def handle_cookie_consent(driver):
     """Cookie onay popup'larını kapatır"""
     try:
-        print("\n🍪 Cookie popup kontrolü yapılıyor...")
+        logger.info("Cookie popup kontrolü yapılıyor...")
         
         # Önce JavaScript ile cookie banner'ı gizlemeyi dene
         try:
@@ -38,7 +43,7 @@ def handle_cookie_consent(driver):
                 // Body overflow'u düzelt
                 document.body.style.overflow = 'auto';
             """)
-            print("✓ JavaScript ile cookie banner'lar gizlendi")
+            logger.success("JavaScript ile cookie banner'lar gizlendi")
             return True
         except:
             pass
@@ -85,45 +90,43 @@ def handle_cookie_consent(driver):
                     )
                 
                 button.click()
-                print(f"✓ Cookie popup kapatıldı: {selector}")
+                logger.success(f"Cookie popup kapatıldı: {selector}")
                 time.sleep(1)
                 return True
                 
             except TimeoutException:
                 continue
         
-        print("ℹ Cookie popup bulunamadı (zaten kapalı olabilir)")
+        logger.info("Cookie popup bulunamadı (zaten kapalı olabilir)")
         return False
         
     except Exception as e:
-        print(f"⚠ Cookie popup kapatma hatası: {e}")
+        logger.warning(f"Cookie popup kapatma hatası: {e}")
         return False
 
 
 def print_article_summary(article: dict, index: int):
     """Makale özetini yazdırır (debug için)"""
-    print(f"\n{'─' * 80}")
-    print(f"📋 MAKALE #{index} ÖZETİ")
-    print(f"{'─' * 80}")
-    print(f"Journal: {article.get('journal_name', 'N/A')}")
-    print(f"URL: {article.get('url', 'N/A')}")
-    print(f"PDF: {article.get('pdf_url', 'YOK')}")
-    print(f"DOI: {article.get('doi', 'YOK')}")
-    print(f"Yazarlar ({len(article.get('authors', []))}): {', '.join(article.get('authors', [])[:3])}{'...' if len(article.get('authors', [])) > 3 else ''}")
+    logger.subsection(f"MAKALE #{index} ÖZETİ")
+    logger.info(f"Journal: {article.get('journal_name', 'N/A')}")
+    logger.url(article.get('url', 'N/A'), "URL")
+    logger.info(f"PDF: {article.get('pdf_url', 'YOK')}")
+    logger.info(f"DOI: {article.get('doi', 'YOK')}")
+    logger.info(f"Yazarlar ({len(article.get('authors', []))}): {', '.join(article.get('authors', [])[:3])}{'...' if len(article.get('authors', [])) > 3 else ''}")
     
     if article.get('abstract'):
         abstract_preview = article['abstract'][:200] + '...' if len(article['abstract']) > 200 else article['abstract']
-        print(f"Abstract: {abstract_preview}")
+        logger.info(f"Abstract: {abstract_preview}")
     else:
-        print("Abstract: YOK")
+        logger.info("Abstract: YOK")
     
     if article.get('content'):
-        print(f"İçerik Bölümleri ({len(article['content'])}):")
+        logger.info(f"İçerik Bölümleri ({len(article['content'])}):") 
         for sec in article['content'][:3]:
-            print(f"  - {sec['title']} ({len(sec['text'])} karakter)")
+            logger.info(f"  - {sec['title']} ({len(sec['text'])} karakter)")
         if len(article['content']) > 3:
-            print(f"  ... ve {len(article['content']) - 3} bölüm daha")
+            logger.info(f"  ... ve {len(article['content']) - 3} bölüm daha")
     else:
-        print("İçerik: YOK")
+        logger.info("İçerik: YOK")
     
-    print(f"{'─' * 80}\n")
+    logger.separator()

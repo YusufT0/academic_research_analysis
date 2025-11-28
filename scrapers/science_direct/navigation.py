@@ -2,12 +2,17 @@
 Page navigation functions for Science Direct scraper
 """
 
+import sys
 import time
 import re
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+
+sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('science_direct')
 
 
 class PageNavigator:
@@ -41,13 +46,13 @@ class PageNavigator:
             return {'current_page': 1, 'total_pages': 1, 'has_next': False, 'has_previous': False}
             
         except Exception as e:
-            print(f"⚠ Sayfa bilgisi alınamadı: {e}")
+            logger.warning(f"Sayfa bilgisi alınamadı: {e}")
             return {'current_page': 1, 'total_pages': 1, 'has_next': False, 'has_previous': False}
     
     def go_to_next_page(self) -> bool:
         """Sonraki sayfaya gider"""
         try:
-            print("\n→ Sonraki sayfaya gidiliyor...")
+            logger.info("Sonraki sayfaya gidiliyor...")
             
             # Next butonunu bul
             next_button = WebDriverWait(self.driver, 10).until(
@@ -60,20 +65,20 @@ class PageNavigator:
             next_button.click()
             time.sleep(2)  # Sayfanın yüklenmesini bekle
             
-            print("✓ Sonraki sayfaya geçildi")
+            logger.success("Sonraki sayfaya geçildi")
             return True
             
         except TimeoutException:
-            print("ℹ Sonraki sayfa bulunamadı (son sayfada olabilirsiniz)")
+            logger.info("Sonraki sayfa bulunamadı (son sayfada olabilirsiniz)")
             return False
         except Exception as e:
-            print(f"✗ Sonraki sayfaya geçiş hatası: {e}")
+            logger.failed("Sonraki sayfaya geçiş hatası", e)
             return False
     
     def go_to_previous_page(self) -> bool:
         """Önceki sayfaya gider"""
         try:
-            print("\n→ Önceki sayfaya gidiliyor...")
+            logger.info("Önceki sayfaya gidiliyor...")
             
             # Previous butonunu bul
             prev_button = WebDriverWait(self.driver, 10).until(
@@ -86,12 +91,12 @@ class PageNavigator:
             prev_button.click()
             time.sleep(2)  # Sayfanın yüklenmesini bekle
             
-            print("✓ Önceki sayfaya geçildi")
+            logger.success("Önceki sayfaya geçildi")
             return True
             
         except TimeoutException:
-            print("ℹ Önceki sayfa bulunamadı (ilk sayfada olabilirsiniz)")
+            logger.info("Önceki sayfa bulunamadı (ilk sayfada olabilirsiniz)")
             return False
         except Exception as e:
-            print(f"✗ Önceki sayfaya geçiş hatası: {e}")
+            logger.failed("Önceki sayfaya geçiş hatası", e)
             return False

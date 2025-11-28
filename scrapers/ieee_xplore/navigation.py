@@ -2,11 +2,16 @@
 Page navigation functions for IEEE Xplore scraper
 """
 
+import sys
 import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, NoSuchElementException
+
+sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('ieee_xplore')
 
 
 class PageNavigator:
@@ -85,15 +90,15 @@ class PageNavigator:
             }
             
             # Sayfa bilgisini yazdır
-            print(f"\n📄 Sayfa Bilgisi:")
-            print(f"  • Mevcut Sayfa: {current_page}/{total_pages}")
-            print(f"  • Önceki Sayfa: {'✓ Var' if has_previous else '✗ Yok (İlk sayfa)'}")
-            print(f"  • Sonraki Sayfa: {'✓ Var' if has_next else '✗ Yok (Son sayfa)'}")
+            logger.section("Sayfa Bilgisi")
+            logger.info(f"Mevcut Sayfa: {current_page}/{total_pages}")
+            logger.info(f"Önceki Sayfa: {'✓ Var' if has_previous else '✗ Yok (İlk sayfa)'}")
+            logger.info(f"Sonraki Sayfa: {'✓ Var' if has_next else '✗ Yok (Son sayfa)'}")
             
             return page_info
             
         except Exception as e:
-            print(f"  ⚠ Sayfa bilgisi alınamadı: {e}")
+            logger.warning(f"Sayfa bilgisi alınamadı: {e}")
             return {
                 'current_page': 1, 
                 'total_pages': 1, 
@@ -109,7 +114,7 @@ class PageNavigator:
             bool: Başarılı ise True
         """
         try:
-            print("\n→ Sonraki sayfaya gidiliyor...")
+            logger.step("Sonraki sayfaya gidiliyor")
             
             # Next butonunu bul (li.next-btn içindeki button)
             next_button = WebDriverWait(self.driver, 10).until(
@@ -125,14 +130,14 @@ class PageNavigator:
             # Sayfanın yüklenmesini bekle
             time.sleep(3)
             
-            print("  ✓ Sonraki sayfaya geçildi")
+            logger.success("Sonraki sayfaya geçildi")
             return True
             
         except TimeoutException:
-            print("  ℹ Sonraki sayfa butonu bulunamadı (son sayfadasınız)")
+            logger.info("Sonraki sayfa butonu bulunamadı (son sayfadasınız)")
             return False
         except Exception as e:
-            print(f"  ✗ Sonraki sayfaya geçiş hatası: {e}")
+            logger.error(f"Sonraki sayfaya geçiş hatası: {e}")
             return False
     
     def go_to_previous_page(self) -> bool:
@@ -143,7 +148,7 @@ class PageNavigator:
             bool: Başarılı ise True
         """
         try:
-            print("\n→ Önceki sayfaya gidiliyor...")
+            logger.step("Önceki sayfaya gidiliyor")
             
             # Previous butonunu bul (li.prev-btn içindeki button)
             prev_button = WebDriverWait(self.driver, 10).until(
@@ -159,14 +164,14 @@ class PageNavigator:
             # Sayfanın yüklenmesini bekle
             time.sleep(3)
             
-            print("  ✓ Önceki sayfaya geçildi")
+            logger.success("Önceki sayfaya geçildi")
             return True
             
         except TimeoutException:
-            print("  ℹ Önceki sayfa butonu bulunamadı (ilk sayfadasınız)")
+            logger.info("Önceki sayfa butonu bulunamadı (ilk sayfadasınız)")
             return False
         except Exception as e:
-            print(f"  ✗ Önceki sayfaya geçiş hatası: {e}")
+            logger.error(f"Önceki sayfaya geçiş hatası: {e}")
             return False
     
     def go_to_page(self, page_number: int) -> bool:
@@ -180,7 +185,7 @@ class PageNavigator:
             bool: Başarılı ise True
         """
         try:
-            print(f"\n→ Sayfa {page_number}'e gidiliyor...")
+            logger.step(f"Sayfa {page_number}'e gidiliyor")
             
             # İlgili sayfa butonunu bul
             page_button = WebDriverWait(self.driver, 10).until(
@@ -196,12 +201,12 @@ class PageNavigator:
             # Sayfanın yüklenmesini bekle
             time.sleep(3)
             
-            print(f"  ✓ Sayfa {page_number}'e geçildi")
+            logger.success(f"Sayfa {page_number}'e geçildi")
             return True
             
         except TimeoutException:
-            print(f"  ✗ Sayfa {page_number} butonu bulunamadı")
+            logger.error(f"Sayfa {page_number} butonu bulunamadı")
             return False
         except Exception as e:
-            print(f"  ✗ Sayfa {page_number}'e geçiş hatası: {e}")
+            logger.error(f"Sayfa {page_number}'e geçiş hatası: {e}")
             return False

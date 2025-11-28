@@ -12,6 +12,9 @@ from pathlib import Path
 # Parent directory'yi path'e ekle (utils klasörü için)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from utils.logger import get_logger
+logger = get_logger('ieee_xplore')
+
 from ieee_xplore.config import ProxyConfig, IEEEXploreConfig
 from ieee_xplore.driver import SeleniumDriver
 from ieee_xplore.utils import handle_cookie_consent, wait_for_page_load
@@ -23,9 +26,7 @@ from utils.academic_data_manager import AcademicDataManager
 def main():
     """Ana fonksiyon - IEEE Xplore'a bağlan ve cookie'leri handle et"""
     
-    print("=" * 80)
-    print("IEEE XPLORE SCRAPER - FULL PIPELINE")
-    print("=" * 80)
+    logger.header("IEEE XPLORE SCRAPER - FULL PIPELINE")
     
     # Academic Data Manager'ı başlat
     data_manager = AcademicDataManager(website_name='ieeexplore', output_dir='./data')
@@ -34,35 +35,35 @@ def main():
     proxy_config = ProxyConfig()
     ieee_config = IEEEXploreConfig()
     
-    print("\n📋 Konfigürasyon:")
-    print(f"  • Base URL: {ieee_config.base_url}")
-    print(f"  • Proxy kullanımı: {proxy_config.use_proxy}")
+    logger.section("Konfigürasyon")
+    logger.info(f"Base URL: {ieee_config.base_url}")
+    logger.info(f"Proxy kullanımı: {proxy_config.use_proxy}")
     if proxy_config.is_configured():
-        print(f"  • Proxy: {proxy_config.host}:{proxy_config.port}")
+        logger.info(f"Proxy: {proxy_config.host}:{proxy_config.port}")
     
     # WebDriver'ı başlat
     driver = SeleniumDriver(proxy_config, headless=False)
     
     if not driver.start():
-        print("\n❌ WebDriver başlatılamadı!")
+        logger.error("WebDriver başlatılamadı!")
         return
     
     try:
         # IEEE Xplore ana sayfasına git
-        print(f"\n🌐 IEEE Xplore'a bağlanılıyor...")
+        logger.url(ieee_config.base_url, "IEEE Xplore'a bağlanılıyor")
         if not driver.get(ieee_config.base_url, wait_after=3):
-            print("❌ Sayfa yüklenemedi!")
+            logger.error("Sayfa yüklenemedi!")
             return
         
         # Sayfanın tamamen yüklenmesini bekle
-        print("⏳ Sayfa yükleniyor...")
+        logger.loading("Sayfa yükleniyor")
         wait_for_page_load(driver.driver)
         time.sleep(2)
         
         # Cookie consent'i handle et (kısa timeout ile)
         # handle_cookie_consent(driver.driver, timeout=0.3)
         
-        print("\n✓ Sayfa hazır!")
+        logger.success("Sayfa hazır!")
         
         # Tüm journal'ları toplamak için liste
         all_journals = []
@@ -74,36 +75,32 @@ def main():
         current_page = 1
         total_pages = page_info['total_pages']
         
-        print(f"\n{'=' * 80}")
-        print(f"🔄 TOPLAM {total_pages} SAYFA TARANACAK")
-        print(f"{'=' * 80}")
+        logger.section(f"TOPLAM {total_pages} SAYFA TARANACAK")
         
         # Tüm sayfaları tara
         while True:
-            print(f"\n{'─' * 80}")
-            print(f"� Sayfa {current_page}/{total_pages} taraniyor...")
-            print(f"{'─' * 80}")
+            logger.subsection(f"Sayfa {current_page}/{total_pages} taranıyor")
             
             # Mevcut sayfadaki journal'ları parse et
             page_source = driver.driver.page_source
             journals = JournalParser.extract_journals_from_page(page_source)
             all_journals.extend(journals)
             
-            print(f"\n✓ Sayfa {current_page}: {len(journals)} journal bulundu")
-            print(f"📊 Toplam: {len(all_journals)} journal")
+            logger.found(len(journals), f"journal (Sayfa {current_page})")
+            logger.info(f"Toplam: {len(all_journals)} journal")
             
             # Sayfa bilgisini güncelle
             page_info = navigator.get_current_page_info()
             
             # Sonraki sayfa var mı?
             if not page_info['has_next']:
-                print("\n✓ Tüm sayfalar tarandı!")
+                logger.success("Tüm sayfalar tarandı!")
                 break
             
             # Sonraki sayfaya geç
-            print(f"\n→ Sayfa {current_page + 1}'e geçiliyor...")
+            logger.info(f"Sayfa {current_page + 1}'e geçiliyor...")
             if not navigator.go_to_next_page():
-                print("✗ Sonraki sayfaya geçilemedi, tarama sonlandırılıyor")
+                logger.error("Sonraki sayfaya geçilemedi, tarama sonlandırılıyor")
                 break
             
             # Sayfanın yüklenmesini bekle
@@ -116,63 +113,62 @@ def main():
         page_title = driver.driver.title
         current_url = driver.driver.current_url
         
-        print("\n" + "=" * 80)
-        print("✅ JOURNAL TARAMASI TAMAMLANDI!")
-        print("=" * 80)
-        print(f"\n📊 Özet İstatistikler:")
-        print(f"  • Toplam Sayfa: {total_pages}")
-        print(f"  • Toplam Journal: {len(all_journals)}")
-        print(f"  • Most Recent Issue linki olan: {sum(1 for j in all_journals if j['most_recent_issue_url'])}")
+        logger.done("JOURNAL TARAMASI TAMAMLANDI!")
+        logger.stats({
+            'Toplam Sayfa': total_pages,
+            'Toplam Journal': len(all_journals),
+            'Most Recent Issue linki olan': sum(1 for j in all_journals if j['most_recent_issue_url'])
+        }, "Özet İstatistikler")
         
         # Şimdi her journal'ın Most Recent Issue sayfasına girip makale linklerini topla
         journals_with_articles = [j for j in all_journals if j['most_recent_issue_url']]
         
-        print(f"\n{'=' * 80}")
-        print(f"📚 MAKALE LİNKLERİ TOPLANACAK")
-        print(f"  • {len(journals_with_articles)} journal için makale linkleri toplanacak")
-        print(f"{'=' * 80}")
+        logger.header("MAKALE LİNKLERİ TOPLANACAK")
+        logger.info(f"{len(journals_with_articles)} journal için makale linkleri toplanacak")
         
         for idx, journal in enumerate(journals_with_articles, 1):
             try:
-                print(f"\n{'─' * 80}")
-                print(f"📖 [{idx}/{len(journals_with_articles)}] {journal['name']}")
-                print(f"{'─' * 80}")
+                logger.item(idx, len(journals_with_articles), journal['name'])
                 
                 # Most Recent Issue sayfasına git
                 issue_url = journal['most_recent_issue_url']
                 full_url = f"https://ieeexplore.ieee.org{issue_url}" if not issue_url.startswith('http') else issue_url
                 
-                print(f"  → URL: {full_url}")
+                logger.url(full_url)
                 
                 if not driver.get(full_url, wait_after=3):
-                    print(f"  ✗ Sayfa yüklenemedi, atlanıyor...")
+                    logger.warning("Sayfa yüklenemedi, atlanıyor")
                     continue
                 
                 # Sayfanın yüklenmesini bekle
                 wait_for_page_load(driver.driver)
                 time.sleep(2)
                 
-                # Makale URL'lerini çıkar
+                # Sayfa kaynağını al
                 page_source = driver.driver.page_source
+                
+                # Issue bilgisini çıkar (issue_number ve date)
+                issue_info = ArticleParser.extract_issue_info(page_source)
+                issue_url_full = driver.driver.current_url  # Issue sayfasının tam URL'si
+                
+                # Makale URL'lerini çıkar
                 article_urls = ArticleParser.extract_article_urls(page_source)
                 
-                print(f"  ✓ {len(article_urls)} makale linki bulundu")
+                logger.found(len(article_urls), "makale linki")
                 
                 # Makale detaylarını topla
                 articles = []
                 
                 for art_idx, art_url in enumerate(article_urls, 1):
                     try:
-                        print(f"\n  {'┄' * 76}")
-                        print(f"  📄 Makale {art_idx}/{len(article_urls)}")
-                        print(f"  {'┄' * 76}")
+                        logger.subsection(f"Makale {art_idx}/{len(article_urls)}")
                         
                         # Makale sayfasına git
                         full_article_url = f"https://ieeexplore.ieee.org{art_url}" if not art_url.startswith('http') else art_url
-                        print(f"  → {art_url}")
+                        logger.url(art_url)
                         
                         if not driver.get(full_article_url, wait_after=3):
-                            print(f"  ✗ Makale sayfası yüklenemedi, atlanıyor...")
+                            logger.warning("Makale sayfası yüklenemedi, atlanıyor")
                             continue
                         
                         # Sayfanın yüklenmesini bekle
@@ -185,12 +181,12 @@ def main():
                         
                         if article_details and article_details.get('title'):
                             articles.append(article_details)
-                            print(f"  ✓ Makale detayları alındı")
+                            logger.success("Makale detayları alındı")
                         else:
-                            print(f"  ⚠ Makale detayları alınamadı")
+                            logger.warning("Makale detayları alınamadı")
                         
                     except Exception as e:
-                        print(f"  ✗ Makale detay hatası: {e}")
+                        logger.error(f"Makale detay hatası: {e}")
                         continue
                 
                 # Journal ve makaleleri data manager'a kaydet
@@ -204,41 +200,47 @@ def main():
                         'open_access': False  # IEEE için varsayılan
                     }
                     
-                    data_manager.add_journal_with_articles(journal_info, articles)
+                    # Issue bilgisini ekle
+                    issue_data = {
+                        'issue_number': issue_info.get('issue_number') if issue_info else None,
+                        'date': issue_info.get('date') if issue_info else None,
+                        'url': issue_url_full
+                    }
+                    
+                    data_manager.add_journal_with_articles(journal_info, articles, issue_info=issue_data)
                 else:
-                    print(f"  ⚠ Bu journal için makale detayı alınamadı")
+                    logger.warning("Bu journal için makale detayı alınamadı")
                 
             except Exception as e:
-                print(f"  ✗ Journal işleme hatası: {e}")
+                logger.error(f"Journal işleme hatası: {e}")
                 continue
         
-        print("\n" + "=" * 80)
-        print("✅ TÜM İŞLEMLER TAMAMLANDI!")
-        print("=" * 80)
+        logger.done("TÜM İŞLEMLER TAMAMLANDI!")
         
         # Data Manager istatistiklerini göster
         data_manager.print_statistics()
         
-        print(f"\n📄 Sayfa Bilgileri:")
-        print(f"  • Başlık: {page_title}")
-        print(f"  • URL: {current_url}")
+        logger.stats({
+            'Başlık': page_title,
+            'URL': current_url
+        }, "Sayfa Bilgileri")
         
         # Kullanıcıya sayfayı inceleme fırsatı ver
-        print("\n⏸  Sayfa açık - inceleyebilirsiniz...")
-        print("   (Devam etmek için Enter'a basın)")
+        logger.info("Sayfa açık - inceleyebilirsiniz...")
+        logger.info("(Devam etmek için Enter'a basın)")
         input()
         
     except Exception as e:
-        print(f"\n❌ Hata oluştu: {e}")
+        logger.failed("Hata oluştu", e)
         import traceback
         traceback.print_exc()
         
     finally:
         # WebDriver'ı kapat
         driver.close()
-        print("\n" + "=" * 80)
-        print("Program tamamlandı")
-        print("=" * 80)
+        logger.separator()
+        logger.info("Program tamamlandı")
+        logger.separator()
 
 
 if __name__ == "__main__":

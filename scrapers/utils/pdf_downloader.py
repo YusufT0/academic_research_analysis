@@ -12,6 +12,9 @@ from typing import Optional, List, Dict
 import argparse
 import json
 
+from .logger import get_logger
+logger = get_logger('pdf_downloader')
+
 # SSL uyarılarını sustur
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -71,9 +74,9 @@ class PDFDownloader:
         self.base_download_dir.mkdir(parents=True, exist_ok=True)
         self.compress = compress
         
-        print(f"✓ PDF indirme klasörü: {self.base_download_dir.absolute()}")
+        logger.success(f"PDF indirme klasörü: {self.base_download_dir.absolute()}")
         if self.compress:
-            print(f"✓ Otomatik sıkıştırma: AÇIK (orijinaller silinecek)")
+            logger.info("Otomatik sıkıştırma: AÇIK (orijinaller silinecek)")
     
     def _sanitize_filename(self, name: str) -> str:
         """
@@ -109,9 +112,7 @@ class PDFDownloader:
         Returns:
             dict: İndirme istatistikleri
         """
-        print("\n" + "=" * 80)
-        print(f"📥 PDF İNDİRME BAŞLIYOR - {self.website_name.upper()}")
-        print("=" * 80)
+        logger.header(f"PDF İNDİRME BAŞLIYOR - {self.website_name.upper()}")
         
         stats = {
             'total': len(articles),
@@ -130,7 +131,7 @@ class PDFDownloader:
                 'https': proxy_url
             }
             session.verify = False  # SSL doğrulamasını devre dışı bırak
-            print(f"✓ Proxy kullanılıyor: {proxy_config.proxy_host}:{proxy_config.proxy_port}")
+            logger.success(f"Proxy kullanılıyor: {proxy_config.proxy_host}:{proxy_config.proxy_port}")
         
         # User agent ekle
         session.headers.update({
@@ -139,13 +140,12 @@ class PDFDownloader:
         
         for idx, article in enumerate(articles, 1):
             try:
-                print(f"\n{'─' * 80}")
-                print(f"📄 [{idx}/{stats['total']}] {article.get('url', 'Unknown URL')}")
+                logger.item(idx, stats['total'], article.get('url', 'Unknown URL'))
                 
                 # PDF URL kontrolü
                 pdf_url = article.get('pdf_url')
                 if not pdf_url:
-                    print(f"  ⚠ PDF URL yok, atlanıyor")
+                    logger.warning("PDF URL yok, atlanıyor")
                     stats['skipped'] += 1
                     continue
                 
@@ -168,12 +168,12 @@ class PDFDownloader:
                 
                 # Dosya zaten var mı kontrol et
                 if filepath.exists():
-                    print(f"  ℹ Dosya zaten mevcut, atlanıyor")
+                    logger.info("Dosya zaten mevcut, atlanıyor")
                     stats['skipped'] += 1
                     continue
                 
                 # PDF'i indir
-                print(f"  → İndiriliyor: {filename}")
+                logger.step(f"İndiriliyor: {filename}")
                 
                 # Full URL oluştur
                 if pdf_url.startswith('/'):
@@ -185,7 +185,7 @@ class PDFDownloader:
                     elif 'arxiv' in self.website_name.lower():
                         pdf_url = f"https://arxiv.org{pdf_url}"
                     else:
-                        print(f"  ⚠ Bilinmeyen website, relative URL işlenemiyor")
+                        logger.warning("Bilinmeyen website, relative URL işlenemiyor")
                         stats['failed'] += 1
                         continue
                 
@@ -199,14 +199,14 @@ class PDFDownloader:
                             f.write(chunk)
                 
                 file_size = filepath.stat().st_size / (1024 * 1024)  # MB
-                print(f"  ✓ İndirildi: {file_size:.2f} MB")
+                logger.success(f"İndirildi: {file_size:.2f} MB")
                 stats['successful'] += 1
                 
                 # Rate limiting
                 time.sleep(1)
                 
             except requests.exceptions.RequestException as e:
-                print(f"  ✗ İndirme hatası: {e}")
+                logger.error(f"İndirme hatası: {e}")
                 stats['failed'] += 1
                 stats['failed_articles'].append({
                     'url': article.get('url'),
@@ -214,7 +214,7 @@ class PDFDownloader:
                     'error': str(e)
                 })
             except Exception as e:
-                print(f"  ✗ Beklenmeyen hata: {e}")
+                logger.error(f"Beklenmeyen hata: {e}")
                 stats['failed'] += 1
                 stats['failed_articles'].append({
                     'url': article.get('url'),
@@ -223,28 +223,24 @@ class PDFDownloader:
                 })
         
         # Özet rapor
-        print("\n" + "=" * 80)
-        print("📊 PDF İNDİRME ÖZETİ")
-        print("=" * 80)
-        print(f"Website: {self.website_name}")
-        print(f"Toplam Makale: {stats['total']}")
-        print(f"✅ Başarılı: {stats['successful']}")
-        print(f"⏭ Atlanan: {stats['skipped']}")
-        print(f"❌ Başarısız: {stats['failed']}")
+        logger.done("PDF İNDİRME ÖZETİ")
+        logger.stats({
+            'Website': self.website_name,
+            'Toplam Makale': stats['total'],
+            'Başarılı': stats['successful'],
+            'Atlanan': stats['skipped'],
+            'Başarısız': stats['failed']
+        })
         
         if stats['failed_articles']:
-            print(f"\n❌ Başarısız İndirmeler:")
+            logger.section("Başarısız İndirmeler")
             for failed in stats['failed_articles']:
-                print(f"  - {failed['url']}")
-                print(f"    Hata: {failed['error']}")
+                logger.error(f"  - {failed['url']}")
+                logger.info(f"    Hata: {failed['error']}")
         
-        print("=" * 80)
-        
-        # Otomatik sıkıştırma
+# Otomatik sıkıştırma
         if self.compress and stats['successful'] > 0:
-            print("\n" + "=" * 80)
-            print("🗜️  OTOMATIK SIKIŞTIRMA BAŞLIYOR")
-            print("=" * 80)
+            logger.header("OTOMATIK SIKIŞTIRMA BAŞLIYOR")
             
             compressor = PDFCompressor(output_suffix="")  # Suffix yok, orijinali değiştireceğiz
             
@@ -276,16 +272,16 @@ class PDFDownloader:
                 articles = json.load(f)
             
             if not isinstance(articles, list):
-                print(f"❌ JSON dosyası liste formatında olmalı")
+                logger.error("JSON dosyası liste formatında olmalı")
                 return {'success': False}
             
             return self.download_pdfs(articles, proxy_config)
             
         except FileNotFoundError:
-            print(f"❌ JSON dosyası bulunamadı: {json_file}")
+            logger.error(f"JSON dosyası bulunamadı: {json_file}")
             return {'success': False}
         except json.JSONDecodeError as e:
-            print(f"❌ JSON parse hatası: {e}")
+            logger.error(f"JSON parse hatası: {e}")
             return {'success': False}
 
 
@@ -339,7 +335,7 @@ def main():
             proxy_host=args.proxy_host,
             proxy_port=args.proxy_port
         )
-        print(f"✓ Proxy yapılandırıldı: {args.proxy_host}:{args.proxy_port}")
+        logger.success(f"Proxy yapılandırıldı: {args.proxy_host}:{args.proxy_port}")
     
     # Downloader oluştur
     downloader = PDFDownloader(
@@ -352,9 +348,9 @@ def main():
     result = downloader.download_from_json(args.json, proxy_config)
     
     if result.get('success', True):
-        print("\n✅ İşlem tamamlandı!")
+        logger.done("İşlem tamamlandı!")
     else:
-        print("\n❌ İşlem başarısız!")
+        logger.error("İşlem başarısız!")
         exit(1)
 
 

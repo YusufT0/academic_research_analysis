@@ -9,6 +9,10 @@ from pathlib import Path
 utils_path = Path(__file__).parent.parent / 'utils'
 sys.path.insert(0, str(utils_path))
 
+sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('science_direct')
+
 from scraper import ScienceDirectScraper
 from academic_data_manager import AcademicDataManager
 
@@ -37,69 +41,65 @@ def main():
             # ============================================================
             # SEÇENEK 1: Tüm journal'ları tara
             # ============================================================
-            print("\n✓ Sayfa hazır, journal taraması başlatılıyor...\n")
+            logger.success("Sayfa hazır, journal taraması başlatılıyor...")
             
             # Tüm journal'ları tara
             all_journals = scraper.scrape_all_journals()
             
             # Özet bilgi göster
-            print("\n" + "=" * 60)
-            print("📊 TARAMA ÖZETİ")
-            print("=" * 60)
-            print(f"Toplam Journal Sayısı: {len(all_journals)}")
+            logger.header("TARAMA ÖZETİ")
+            logger.info(f"Toplam Journal Sayısı: {len(all_journals)}")
             
             # Harf gruplarına göre sayı
             from collections import Counter
             letter_counts = Counter(j['letter_group'] for j in all_journals if j['letter_group'])
-            print(f"\nHarf Gruplarına Göre Dağılım:")
+            logger.info("Harf Gruplarına Göre Dağılım:")
             for letter in sorted(letter_counts.keys()):
-                print(f"  {letter}: {letter_counts[letter]} journal")
+                logger.info(f"  {letter}: {letter_counts[letter]} journal")
             
             # Open access sayısı
             open_access_count = sum(1 for j in all_journals if j['open_access'])
-            print(f"\nOpen Access: {open_access_count}/{len(all_journals)}")
+            logger.info(f"Open Access: {open_access_count}/{len(all_journals)}")
             
-            print("\n" + "=" * 60)
+            logger.separator()
             
             # Tüm journal'ların makalelerini tara
-            print("\n" + "=" * 80)
-            print("📚 TÜM JOURNAL'LARIN MAKALELERİ TOPLANACAK")
-            print("=" * 80)
+            logger.header("TÜM JOURNAL'LARIN MAKALELERİ TOPLANACAK")
             
             all_articles = []
             
             for idx, journal in enumerate(all_journals, 1):
-                print(f"\n{'=' * 80}")
-                print(f"📖 Journal {idx}/{len(all_journals)}: {journal['name']}")
-                print(f"{'=' * 80}")
+                logger.section(f"Journal {idx}/{len(all_journals)}: {journal['name']}")
                 
                 # Her journal için makaleleri tara (max 5 makale - çok uzun sürmemesi için)
                 articles = scraper.scrape_journal_articles(journal, max_articles=5)
                 all_articles.extend(articles)
                 
-                # Veri yöneticisine kaydet
-                data_manager.add_journal_with_articles(
-                    journal_info=journal,
-                    articles=articles
-                )
-                
-                print(f"\n✅ {journal['name']}: {len(articles)} makale toplandı")
-                print(f"📊 Şu ana kadar toplam: {len(all_articles)} makale")
+                # Veri yöneticisine kaydet (sadece makale varsa)
+                if articles:
+                    data_manager.add_journal_with_articles(
+                        journal_info=journal,
+                        articles=articles
+                    )
+                    logger.success(f"{journal['name']}: {len(articles)} makale toplandı ve kaydedildi")
+                else:
+                    logger.warning(f"{journal['name']}: Makale bulunamadı, kayıt atlandı")
+                logger.info(f"Şu ana kadar toplam: {len(all_articles)} makale")
             
-            print("\n" + "=" * 80)
-            print("✅ TÜM JOURNAL'LAR TAMAMLANDI")
-            print(f"📚 Toplam Journal: {len(all_journals)}")
-            print(f"📊 Toplam Makale: {len(all_articles)}")
-            print("=" * 80)
+            logger.header("TÜM JOURNAL'LAR TAMAMLANDI")
+            logger.stats({
+                'Toplam Journal': len(all_journals),
+                'Toplam Makale': len(all_articles)
+            })
             
             # İstatistikleri göster
-            print("\n")
+            logger.newline()
             data_manager.print_statistics()
             
             # Sadece makaleleri dışa aktar (PDF downloader için)
             articles_file = data_manager.export_articles_only()
-            print(f"\n✓ PDF indirmek için şu dosyayı kullanabilirsiniz:")
-            print(f"  python utils/pdf_downloader.py -j {articles_file} -w sciencedirect --compress")
+            logger.success("PDF indirmek için şu dosyayı kullanabilirsiniz:")
+            logger.info(f"  python utils/pdf_downloader.py -j {articles_file} -w sciencedirect --compress")
             
             # ============================================================
             # SEÇENEK 2: Belirli bir kelime ile arama yap
@@ -115,26 +115,22 @@ def main():
             #     all_articles = []
             #     
             #     for idx, journal in enumerate(search_results, 1):
-            #         print(f"\n{'=' * 80}")
-            #         print(f"📖 Journal {idx}/{len(search_results)}: {journal['name']}")
-            #         print(f"{'=' * 80}")
+            #         logger.section(f"Journal {idx}/{len(search_results)}: {journal['name']}")
             #         
             #         articles = scraper.scrape_journal_articles(journal, max_articles=5)
             #         all_articles.extend(articles)
             #         
-            #         print(f"\n✅ {journal['name']}: {len(articles)} makale toplandı")
+            #         logger.success(f"{journal['name']}: {len(articles)} makale toplandı")
             #     
-            #     print("\n" + "=" * 80)
-            #     print(f"📊 Toplam Makale: {len(all_articles)}")
-            #     print("=" * 80)
+            #     logger.stats({'Toplam Makale': len(all_articles)})
             
         else:
-            print("\n✗ İşlem başarısız!")
+            logger.error("İşlem başarısız!")
         
     except KeyboardInterrupt:
-        print("\n\n⚠ İşlem kullanıcı tarafından durduruldu")
+        logger.warning("İşlem kullanıcı tarafından durduruldu")
     except Exception as e:
-        print(f"\n✗ Beklenmeyen hata: {e}")
+        logger.failed("Beklenmeyen hata", e)
         import traceback
         traceback.print_exc()
     finally:

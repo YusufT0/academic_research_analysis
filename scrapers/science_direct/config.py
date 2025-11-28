@@ -3,7 +3,12 @@ Configuration classes for Science Direct scraper
 """
 
 import os
+import sys
 from dotenv import load_dotenv
+
+sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('science_direct')
 
 
 class ProxyConfig:
@@ -20,7 +25,7 @@ class ProxyConfig:
     def get_proxy_string(self) -> str:
         """Proxy bağlantı string'ini döndürür"""
         if self.proxy_user and self.proxy_pass:
-            print(f"http://{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}")
+            logger.info(f"http://{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}")
             return f"http://{self.proxy_user}:{self.proxy_pass}@{self.proxy_host}:{self.proxy_port}"
         return None
     

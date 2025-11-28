@@ -2,7 +2,13 @@
 HTML parsing functions for IEEE Xplore scraper
 """
 
+import re
+import sys
 from bs4 import BeautifulSoup
+
+sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('ieee_xplore')
 
 
 class JournalParser:
@@ -20,7 +26,7 @@ class JournalParser:
             list: Journal bilgilerinin listesi
         """
         try:
-            print("\n📄 Sayfa taranıyor...")
+            logger.info("Sayfa taranıyor...")
             
             # BeautifulSoup ile parse et
             soup = BeautifulSoup(page_source, 'html.parser')
@@ -28,18 +34,18 @@ class JournalParser:
             # Ana results container'ı bul
             results_div = soup.find('div', class_='ng-SearchResults')
             if not results_div:
-                print("  ✗ ng-SearchResults div'i bulunamadı")
+                logger.error("ng-SearchResults div'i bulunamadı")
                 return []
             
             # xpl-browse-results-list içindeki tüm journal item'larını bul
             browse_results = results_div.find('xpl-browse-results-list')
             if not browse_results:
-                print("  ✗ xpl-browse-results-list bulunamadı")
+                logger.error("xpl-browse-results-list bulunamadı")
                 return []
             
             # Tüm journal item'larını bul (xpl-browse-results-item)
             journal_items = browse_results.find_all('xpl-browse-results-item')
-            print(f"  ✓ {len(journal_items)} adet journal bulundu")
+            logger.found(len(journal_items), "journal")
             
             journals = []
             
@@ -96,21 +102,21 @@ class JournalParser:
                     
                     # İlerleme göster
                     if most_recent_issue_url:
-                        print(f"  {idx}. {journal_name}")
-                        print(f"     → Publisher: {publisher}, Years: {years}")
-                        print(f"     → Most Recent Issue: {most_recent_issue_url}")
+                        logger.item(idx, len(journal_items), journal_name)
+                        logger.info(f"  Publisher: {publisher}, Years: {years}")
+                        logger.info(f"  Most Recent Issue: {most_recent_issue_url}")
                     else:
-                        print(f"  {idx}. {journal_name} (Most Recent Issue linki yok)")
+                        logger.item(idx, len(journal_items), f"{journal_name} (Most Recent Issue linki yok)")
                     
                 except Exception as e:
-                    print(f"  ⚠ Journal {idx} parse hatası: {e}")
+                    logger.warning(f"Journal {idx} parse hatası: {e}")
                     continue
             
-            print(f"\n✓ Toplam {len(journals)} journal bulundu")
+            logger.found(len(journals), "journal (toplam)")
             return journals
             
         except Exception as e:
-            print(f"✗ Journal çıkarma hatası: {e}")
+            logger.failed("Journal çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return []
@@ -118,6 +124,172 @@ class JournalParser:
 
 class ArticleParser:
     """Makale bilgilerini parse eden sınıf"""
+    
+    # Ay adı -> numara eşleştirmesi
+    MONTH_MAP = {
+        'january': '01', 'jan': '01', 'jan.': '01',
+        'february': '02', 'feb': '02', 'feb.': '02',
+        'march': '03', 'mar': '03', 'mar.': '03',
+        'april': '04', 'apr': '04', 'apr.': '04',
+        'may': '05',
+        'june': '06', 'jun': '06', 'jun.': '06',
+        'july': '07', 'jul': '07', 'jul.': '07',
+        'august': '08', 'aug': '08', 'aug.': '08',
+        'september': '09', 'sept': '09', 'sept.': '09', 'sep': '09', 'sep.': '09',
+        'october': '10', 'oct': '10', 'oct.': '10', 'oct-': '10',
+        'november': '11', 'nov': '11', 'nov.': '11',
+        'december': '12', 'dec': '12', 'dec.': '12'
+    }
+    
+    @staticmethod
+    def _parse_ieee_date(date_text: str) -> str:
+        """
+        IEEE tarih formatını ISO formatına çevirir.
+        
+        Desteklenen formatlar:
+        - "21 November 2025" -> "2025-11-21"
+        - "08 April 2025" -> "2025-04-08"
+        - "Oct.-2025" -> "2025-10"
+        - "December-2025" -> "2025-12"
+        - "2025" -> "2025"
+        
+        Args:
+            date_text: Ham tarih metni
+            
+        Returns:
+            str: ISO formatında tarih veya orijinal metin
+        """
+        if not date_text:
+            return None
+        
+        date_text = date_text.strip()
+        
+        # Pattern 1: "21 November 2025" veya "08 April 2025"
+        match = re.match(r'^(\d{1,2})\s+(\w+)\s+(\d{4})$', date_text)
+        if match:
+            day = match.group(1).zfill(2)
+            month_name = match.group(2).lower()
+            year = match.group(3)
+            
+            month = ArticleParser.MONTH_MAP.get(month_name)
+            if month:
+                return f"{year}-{month}-{day}"
+        
+        # Pattern 2: "Oct.-2025" veya "October-2025" veya "December-2025"
+        match = re.match(r'^(\w+\.?)-(\d{4})$', date_text)
+        if match:
+            month_name = match.group(1).lower().rstrip('.')
+            year = match.group(2)
+            
+            month = ArticleParser.MONTH_MAP.get(month_name)
+            if month:
+                return f"{year}-{month}"
+        
+        # Pattern 3: Sadece yıl "2025"
+        match = re.match(r'^(\d{4})$', date_text)
+        if match:
+            return match.group(1)
+        
+        # Hiçbir pattern uymadıysa orijinal metni döndür
+        return date_text
+    
+    @staticmethod
+    def extract_issue_info(page_source: str) -> dict:
+        """
+        Issue sayfasından issue_number ve date bilgisini çıkarır.
+        
+        Desteklenen HTML formatları:
+        <div class="u-m-1 u-mt-1 u-mr-1 text-base-md"><p><b>Issue 5 • Oct.-2025</b></p></div>
+        <div class="u-m-1 u-mt-1 u-mr-1 text-base-md"><p><b>Volume 13: 2025</b></p></div>
+        <div class="u-m-1 u-mt-1 u-mr-1 text-base-md"><p><b>Issue 6 • December-2025</b></p></div>
+        
+        Args:
+            page_source: Sayfa HTML içeriği
+            
+        Returns:
+            dict: {'issue_number': str, 'date': str} veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            
+            # u-m-1 u-mt-1 u-mr-1 text-base-md sınıflı div'i bul
+            issue_div = soup.find('div', class_='text-base-md')
+            
+            if not issue_div:
+                # Alternatif selector
+                issue_div = soup.find('div', class_=lambda c: c and 'u-m-1' in c and 'text-base-md' in c)
+            
+            if not issue_div:
+                logger.warning("Issue info div'i bulunamadı")
+                return None
+            
+            # b tag içindeki metni al
+            b_tag = issue_div.find('b')
+            if not b_tag:
+                # p tag içinde doğrudan metin olabilir
+                p_tag = issue_div.find('p')
+                if p_tag:
+                    text = p_tag.get_text(strip=True)
+                else:
+                    text = issue_div.get_text(strip=True)
+            else:
+                text = b_tag.get_text(strip=True)
+            
+            if not text:
+                logger.warning("Issue info metni boş")
+                return None
+            
+            logger.info(f"Issue info raw: {text}")
+            
+            issue_number = None
+            date = None
+            
+            # Pattern 1: "Issue 5 • Oct.-2025" veya "Issue 6 • December-2025"
+            # • karakteri farklı unicode olabilir (bullet, middle dot)
+            match = re.match(r'^(Issue\s+\d+)\s*[•·]\s*(.+)$', text)
+            if match:
+                issue_number = match.group(1).strip()  # "Issue 5"
+                date_part = match.group(2).strip()     # "Oct.-2025"
+                date = ArticleParser._parse_ieee_date(date_part)
+            
+            # Pattern 2: "Volume 13: 2025"
+            if not issue_number:
+                match = re.match(r'^(Volume\s+\d+)\s*:\s*(\d{4})$', text)
+                if match:
+                    issue_number = match.group(1).strip()  # "Volume 13"
+                    date = match.group(2)                   # "2025"
+            
+            # Pattern 3: Sadece "Volume X" (tarihsiz)
+            if not issue_number:
+                match = re.match(r'^(Volume\s+\d+)$', text)
+                if match:
+                    issue_number = match.group(1).strip()
+                    date = None
+            
+            # Pattern 4: Sadece "Issue X" (tarihsiz)
+            if not issue_number:
+                match = re.match(r'^(Issue\s+\d+)$', text)
+                if match:
+                    issue_number = match.group(1).strip()
+                    date = None
+            
+            # Hiçbir pattern uymadıysa tüm metni issue_number olarak al
+            if not issue_number:
+                issue_number = text
+            
+            result = {
+                'issue_number': issue_number,
+                'date': date
+            }
+            
+            logger.success(f"Issue Info: issue_number='{issue_number}', date='{date}'")
+            return result
+            
+        except Exception as e:
+            logger.failed("Issue info çıkarma hatası", e)
+            import traceback
+            traceback.print_exc()
+            return None
     
     @staticmethod
     def extract_article_urls(page_source: str) -> list:
@@ -138,10 +310,10 @@ class ArticleParser:
             result_items = soup.find_all('xpl-issue-results-items')
             
             if not result_items:
-                print(f"  ⚠ Makale item'ları bulunamadı")
+                logger.warning("Makale item'ları bulunamadı")
                 return []
             
-            print(f"  ✓ {len(result_items)} adet item bulundu")
+            logger.found(len(result_items), "item")
             
             article_urls = []
             
@@ -166,16 +338,16 @@ class ArticleParser:
                         # /document/ ile başlayan linkler makale linkleridir
                         if '/document/' in article_url:
                             article_urls.append(article_url)
-                            print(f"  {len(article_urls)}. {article_url}")
+                            logger.info(f"  {len(article_urls)}. {article_url}")
                     
                 except Exception as e:
                     continue
             
-            print(f"  ✓ Toplam {len(article_urls)} makale URL'i bulundu")
+            logger.found(len(article_urls), "makale URL'i")
             return article_urls
             
         except Exception as e:
-            print(f"  ✗ Makale URL çıkarma hatası: {e}")
+            logger.failed("Makale URL çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return []
@@ -209,25 +381,25 @@ class ArticleParser:
             }
             
             # 1. Başlık al
-            print(f"  → Başlık alınıyor...")
+            logger.info("Başlık alınıyor...")
             title_h1 = soup.find('h1', class_='document-title')
             if title_h1:
                 title_span = title_h1.find('span')
                 if title_span:
                     article_details['title'] = title_span.get_text(strip=True)
-                    print(f"  ✓ Başlık: {article_details['title'][:50]}...")
+                    logger.success(f"Başlık: {article_details['title'][:50]}...")
             
             # 2. PDF URL'ini al
-            print(f"  → PDF linki aranıyor...")
+            logger.info("PDF linki aranıyor...")
             pdf_link = soup.find('a', class_='xpl-btn-pdf')
             if pdf_link and pdf_link.get('href'):
                 article_details['pdf_url'] = pdf_link['href']
-                print(f"  ✓ PDF URL bulundu")
+                logger.success("PDF URL bulundu")
             else:
-                print(f"  ⚠ PDF linki bulunamadı")
+                logger.warning("PDF linki bulunamadı")
             
             # 3. Yazarları al
-            print(f"  → Yazarlar alınıyor...")
+            logger.info("Yazarlar alınıyor...")
             authors_container = soup.find('div', class_='authors-container')
             if authors_container:
                 author_spans = authors_container.find_all('span', class_='authors-info')
@@ -239,12 +411,12 @@ class ArticleParser:
                             author_name = author_name_span.get_text(strip=True)
                             article_details['authors'].append(author_name)
                 
-                print(f"  ✓ {len(article_details['authors'])} yazar bulundu")
+                logger.found(len(article_details['authors']), "yazar")
             else:
-                print(f"  ⚠ Yazar bilgisi bulunamadı")
+                logger.warning("Yazar bilgisi bulunamadı")
             
             # 4. DOI, Publication Date, Pages, Publisher al
-            print(f"  → Makale meta bilgileri alınıyor...")
+            logger.info("Makale meta bilgileri alınıyor...")
             
             # DOI
             doi_div = soup.find('div', {'data-analytics_identifier': 'document_abstract_doi'})
@@ -268,7 +440,9 @@ class ArticleParser:
                 # "08 April 2025" gibi metin içinde tarih varsa al
                 if pubdate:
                     # Sadece tarihi al (Help linkini çıkar)
-                    article_details['publication_date'] = pubdate.split('Help')[0].strip() if 'Help' in pubdate else pubdate
+                    raw_date = pubdate.split('Help')[0].strip() if 'Help' in pubdate else pubdate
+                    # ISO formatına çevir
+                    article_details['publication_date'] = ArticleParser._parse_ieee_date(raw_date)
             
             # Publisher
             publisher_span = soup.find('xpl-publisher')
@@ -277,10 +451,10 @@ class ArticleParser:
                 publisher = publisher_text.replace('Publisher:', '').strip()
                 article_details['publisher'] = publisher
             
-            print(f"  ✓ Meta bilgiler: DOI={bool(article_details['doi'])}, Date={bool(article_details['publication_date'])}, Pages={bool(article_details['pages'])}")
+            logger.success(f"Meta bilgiler: DOI={bool(article_details['doi'])}, Date={bool(article_details['publication_date'])}, Pages={bool(article_details['pages'])}")
             
             # 5. Abstract al
-            print(f"  → Abstract alınıyor...")
+            logger.info("Abstract alınıyor...")
             abstract_div = soup.find('div', class_='abstract-text')
             if abstract_div:
                 # h2 başlığını kaldır
@@ -290,14 +464,14 @@ class ArticleParser:
                 abstract_content_div = abstract_div.find('div', {'xplmathjax': ''})
                 if abstract_content_div:
                     article_details['abstract'] = abstract_content_div.get_text(strip=True)
-                    print(f"  ✓ Abstract alındı ({len(article_details['abstract'])} karakter)")
+                    logger.success(f"Abstract alındı ({len(article_details['abstract'])} karakter)")
                 else:
-                    print(f"  ⚠ Abstract içeriği bulunamadı")
+                    logger.warning("Abstract içeriği bulunamadı")
             else:
-                print(f"  ⚠ Abstract div'i bulunamadı")
+                logger.warning("Abstract div'i bulunamadı")
             
             # 6. Introduction (Section I) al
-            print(f"  → Introduction alınıyor...")
+            logger.info("Introduction alınıyor...")
             section_divs = soup.find_all('div', class_='section')
             for section in section_divs:
                 section_id = section.get('id', '')
@@ -307,16 +481,16 @@ class ArticleParser:
                     # Section başlığını ve içeriğini al
                     section_text = section.get_text(separator='\n', strip=True)
                     article_details['introduction'] = section_text
-                    print(f"  ✓ Introduction alındı ({len(article_details['introduction'])} karakter)")
+                    logger.success(f"Introduction alındı ({len(article_details['introduction'])} karakter)")
                     break
             
             if not article_details['introduction']:
-                print(f"  ⚠ Introduction bulunamadı")
+                logger.warning("Introduction bulunamadı")
             
             return article_details
             
         except Exception as e:
-            print(f"  ✗ Makale detay çıkarma hatası: {e}")
+            logger.failed("Makale detay çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return None

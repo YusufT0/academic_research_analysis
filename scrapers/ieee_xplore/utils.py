@@ -2,10 +2,15 @@
 Utility functions for IEEE Xplore scraper
 """
 
+import sys
 import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
+sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('ieee_xplore')
 
 
 def handle_cookie_consent(driver, timeout: int = 5) -> bool:
@@ -20,7 +25,7 @@ def handle_cookie_consent(driver, timeout: int = 5) -> bool:
         bool: Cookie popup bulundu ve kapatıldıysa True
     """
     try:
-        print("🍪 Cookie consent kontrol ediliyor...")
+        logger.info("Cookie consent kontrol ediliyor...")
         
         # IEEE Xplore'da farklı cookie popup selektörleri deneyeceğiz
         cookie_selectors = [
@@ -35,7 +40,7 @@ def handle_cookie_consent(driver, timeout: int = 5) -> bool:
         
         # Kısa timeout ile dene - yoksa hızlıca devam et
         for by, selector in cookie_selectors:
-            print(f"  → Cookie popup aranıyor: {selector}")
+            logger.info(f"Cookie popup aranıyor: {selector}")
             try:
                 # Kısa süre bekle, bulamazsan bir sonraki selektöre geç
                 element = WebDriverWait(driver, timeout).until(
@@ -45,11 +50,11 @@ def handle_cookie_consent(driver, timeout: int = 5) -> bool:
                 if not element:
                     continue
 
-                print(f"  → Cookie popup bulundu: {selector}")
+                logger.info(f"Cookie popup bulundu: {selector}")
                 
                 # Elementi tıkla
                 element.click()
-                print(f"  ✓ Cookie popup kapatıldı")
+                logger.success("Cookie popup kapatıldı")
                 time.sleep(1)
                 return True
                     
@@ -57,11 +62,11 @@ def handle_cookie_consent(driver, timeout: int = 5) -> bool:
                 # Bu selektör bulunamadı, bir sonrakine geç
                 continue
         
-        print("  ℹ Cookie popup bulunamadı (zaten kabul edilmiş veya yok)")
+        logger.info("Cookie popup bulunamadı (zaten kabul edilmiş veya yok)")
         return False
         
     except Exception as e:
-        print(f"  ⚠ Cookie consent hatası: {e}")
+        logger.warning(f"Cookie consent hatası: {e}")
         return False
 
 
@@ -82,7 +87,7 @@ def wait_for_page_load(driver, timeout: int = 30) -> bool:
         )
         return True
     except Exception as e:
-        print(f"  ⚠ Sayfa yükleme timeout: {e}")
+        logger.warning(f"Sayfa yükleme timeout: {e}")
         return False
 
 

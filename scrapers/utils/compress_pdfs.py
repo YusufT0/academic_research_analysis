@@ -9,11 +9,14 @@ from pathlib import Path
 from typing import Optional, List
 import argparse
 
+from .logger import get_logger
+logger = get_logger('pdf_compressor')
+
 try:
     import fitz  # PyMuPDF
 except ImportError:
-    print("❌ PyMuPDF kütüphanesi bulunamadı!")
-    print("   Yüklemek için: pip install PyMuPDF")
+    logger.error("PyMuPDF kütüphanesi bulunamadı!")
+    logger.info("Yüklemek için: pip install PyMuPDF")
     sys.exit(1)
 
 
@@ -59,7 +62,7 @@ class PDFCompressor:
             output_path = Path(output_path)
         
         try:
-            print(f"\n📄 Sıkıştırılıyor: {input_path.name}")
+            logger.info(f"Sıkıştırılıyor: {input_path.name}")
             
             # Orijinal dosya boyutu
             original_size = input_path.stat().st_size
@@ -121,9 +124,9 @@ class PDFCompressor:
             compressed_size = output_path.stat().st_size
             reduction = ((original_size - compressed_size) / original_size) * 100
             
-            print(f"  ✓ Orijinal: {original_size / (1024**2):.2f} MB")
-            print(f"  ✓ Sıkıştırılmış: {compressed_size / (1024**2):.2f} MB")
-            print(f"  ✓ Azalma: {reduction:.1f}%")
+            logger.success(f"Orijinal: {original_size / (1024**2):.2f} MB")
+            logger.success(f"Sıkıştırılmış: {compressed_size / (1024**2):.2f} MB")
+            logger.success(f"Azalma: {reduction:.1f}%")
             
             return {
                 'success': True,
@@ -131,11 +134,11 @@ class PDFCompressor:
                 'output_path': str(output_path),
                 'original_size': original_size,
                 'compressed_size': compressed_size,
-                'reduction_percent': reduction
+                'compression_percent': reduction
             }
             
         except Exception as e:
-            print(f"  ✗ Hata: {e}")
+            logger.error(f"Hata: {e}")
             return {
                 'success': False,
                 'error': str(e),
@@ -159,12 +162,10 @@ class PDFCompressor:
         directory = Path(directory)
         
         if not directory.exists():
-            print(f"❌ Klasör bulunamadı: {directory}")
+            logger.error(f"Klasör bulunamadı: {directory}")
             return {'success': False, 'error': 'Klasör bulunamadı'}
         
-        print("\n" + "=" * 80)
-        print(f"📁 KLASÖR SİKİŞTIRMA: {directory}")
-        print("=" * 80)
+        logger.header(f"KLASÖR SIKIŞTIRMA: {directory}")
         
         # PDF dosyalarını bul
         if recursive:
@@ -175,7 +176,7 @@ class PDFCompressor:
         # Zaten sıkıştırılmış dosyaları çıkar
         pdf_files = [f for f in pdf_files if self.output_suffix not in f.stem]
         
-        print(f"📊 Toplam {len(pdf_files)} PDF dosyası bulundu\n")
+        logger.found(len(pdf_files), "PDF dosyası")
         
         stats = {
             'total': len(pdf_files),
@@ -187,7 +188,7 @@ class PDFCompressor:
         }
         
         for idx, pdf_file in enumerate(pdf_files, 1):
-            print(f"[{idx}/{stats['total']}]", end=" ")
+            logger.item(idx, stats['total'], pdf_file.name)
             
             # Çıkış yolu
             if replace_original:
@@ -211,7 +212,7 @@ class PDFCompressor:
                 if replace_original:
                     pdf_file.unlink()  # Orijinali sil
                     output_path.rename(pdf_file)  # Sıkıştırılmışı yeniden adlandır
-                    print(f"  ✓ Orijinal dosya değiştirildi")
+                    logger.success("Orijinal dosya değiştirildi")
             else:
                 stats['failed'] += 1
                 stats['failed_files'].append({
@@ -220,27 +221,29 @@ class PDFCompressor:
                 })
         
         # Özet rapor
-        print("\n" + "=" * 80)
-        print("📊 SİKİŞTIRMA ÖZETİ")
-        print("=" * 80)
-        print(f"Toplam Dosya: {stats['total']}")
-        print(f"✅ Başarılı: {stats['successful']}")
-        print(f"❌ Başarısız: {stats['failed']}")
+        logger.done("SIKIŞTIRMA ÖZETİ")
+        logger.stats({
+            'Toplam Dosya': stats['total'],
+            'Başarılı': stats['successful'],
+            'Başarısız': stats['failed']
+        })
         
         if stats['successful'] > 0:
             total_reduction = ((stats['total_original_size'] - stats['total_compressed_size']) 
                              / stats['total_original_size']) * 100
-            print(f"\n💾 Toplam Orijinal Boyut: {stats['total_original_size'] / (1024**2):.2f} MB")
-            print(f"💾 Toplam Sıkıştırılmış Boyut: {stats['total_compressed_size'] / (1024**2):.2f} MB")
-            print(f"📉 Toplam Tasarruf: {total_reduction:.1f}% ({(stats['total_original_size'] - stats['total_compressed_size']) / (1024**2):.2f} MB)")
+            logger.stats({
+                'Toplam Orijinal Boyut': f"{stats['total_original_size'] / (1024**2):.2f} MB",
+                'Toplam Sıkıştırılmış Boyut': f"{stats['total_compressed_size'] / (1024**2):.2f} MB",
+                'Toplam Tasarruf': f"{total_reduction:.1f}% ({(stats['total_original_size'] - stats['total_compressed_size']) / (1024**2):.2f} MB)"
+            })
         
         if stats['failed_files']:
-            print(f"\n❌ Başarısız Dosyalar:")
+            logger.section("Başarısız Dosyalar")
             for failed in stats['failed_files']:
-                print(f"  - {failed['file']}")
-                print(f"    Hata: {failed['error']}")
+                logger.error(f"  - {failed['file']}")
+                logger.info(f"    Hata: {failed['error']}")
         
-        print("=" * 80)
+        logger.separator()
         
         return stats
 
@@ -297,7 +300,7 @@ def main():
         )
         
         if not result['success']:
-            print(f"❌ Hata: {result.get('error', 'Bilinmeyen hata')}")
+            logger.error(f"Hata: {result.get('error', 'Bilinmeyen hata')}")
             sys.exit(1)
     
     elif args.directory:

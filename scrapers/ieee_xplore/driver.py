@@ -3,8 +3,13 @@ Selenium WebDriver management for IEEE Xplore scraper
 """
 
 import time
+import sys
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 import undetected_chromedriver as uc
+
+sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
+from utils.logger import get_logger
+logger = get_logger('ieee_xplore')
 
 from config import ProxyConfig
 
@@ -67,14 +72,14 @@ class SeleniumDriver:
             bool: Başarılı ise True
         """
         try:
-            print("\n🚀 WebDriver başlatılıyor...")
+            logger.info("WebDriver başlatılıyor...")
             
             # Her zaman undetected-chromedriver kullan
             options = self._configure_chrome_options(use_uc=True)
             
             # Proxy varsa seleniumwire_options ekle
             if self.proxy_config.is_configured():
-                print(f"  → Proxy kullanılıyor: {self.proxy_config.host}:{self.proxy_config.port}")
+                logger.info(f"Proxy kullanılıyor: {self.proxy_config.host}:{self.proxy_config.port}")
                 
                 seleniumwire_options = {
                     'proxy': {
@@ -93,7 +98,7 @@ class SeleniumDriver:
                     seleniumwire_options=seleniumwire_options
                 )
             else:
-                print("  → Proxy kullanılmıyor")
+                logger.info("Proxy kullanılmıyor")
                 
                 # Sadece undetected-chromedriver
                 self.driver = uc.Chrome(
@@ -109,11 +114,11 @@ class SeleniumDriver:
             # Pencere boyutu
             self.driver.set_window_size(1920, 1080)
             
-            print("  ✓ WebDriver başarıyla başlatıldı")
+            logger.success("WebDriver başarıyla başlatıldı")
             return True
             
         except Exception as e:
-            print(f"  ✗ WebDriver başlatma hatası: {e}")
+            logger.failed("WebDriver başlatma hatası", e)
             import traceback
             traceback.print_exc()
             return False
@@ -122,11 +127,11 @@ class SeleniumDriver:
         """WebDriver'ı kapat"""
         if self.driver:
             try:
-                print("\n🔒 WebDriver kapatılıyor...")
+                logger.info("WebDriver kapatılıyor...")
                 self.driver.quit()
-                print("  ✓ WebDriver kapatıldı")
+                logger.success("WebDriver kapatıldı")
             except Exception as e:
-                print(f"  ⚠ WebDriver kapatma hatası: {e}")
+                logger.warning(f"WebDriver kapatma hatası: {e}")
     
     def get(self, url: str, wait_after: int = 3) -> bool:
         """
@@ -140,11 +145,11 @@ class SeleniumDriver:
             bool: Başarılı ise True
         """
         try:
-            print(f"\n🌐 URL açılıyor: {url}")
+            logger.url(url, "Açılıyor")
             self.driver.get(url)
             time.sleep(wait_after)
-            print(f"  ✓ Sayfa yüklendi")
+            logger.success("Sayfa yüklendi")
             return True
         except Exception as e:
-            print(f"  ✗ Sayfa yükleme hatası: {e}")
+            logger.failed("Sayfa yükleme hatası", e)
             return False
