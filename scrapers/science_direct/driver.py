@@ -23,7 +23,7 @@ sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('science_direct')
 
-from config import ProxyConfig
+from .config import ProxyConfig
 
 
 class SeleniumDriver:
@@ -166,20 +166,21 @@ class SeleniumDriver:
                     try:
                         self.driver = WireChrome(
                             options=chrome_options,
-                            seleniumwire_options=seleniumwire_options
+                            seleniumwire_options=seleniumwire_options,
+                            version_main=142
                         )
                         logger.success("selenium-wire + undetected-chromedriver aktif")
                     except Exception as e:
                         logger.warning(f"selenium-wire hatası, normal undetected-chromedriver deneniyor: {e}")
-                        self.driver = uc.Chrome(options=chrome_options)
+                        self.driver = uc.Chrome(options=chrome_options, version_main=142)
                 else:
                     # Sadece undetected-chromedriver
                     try:
-                        self.driver = uc.Chrome(options=chrome_options)
+                        self.driver = uc.Chrome(options=chrome_options, version_main=142)
                     except TypeError:
                         # Options ile sorun varsa, hiç options olmadan dene
                         logger.warning("Options ile hata, options olmadan deneniyor...")
-                        self.driver = uc.Chrome()
+                        self.driver = uc.Chrome(version_main=142)
                 
             else:
                 # Normal Selenium kullan

@@ -4,7 +4,7 @@ Dergi sayısı/cildi modeli
 """
 
 from datetime import datetime
-from typing import Optional, List, TYPE_CHECKING
+from typing import Optional, List, TYPE_CHECKING, Annotated
 from beanie import Document, Indexed, Link, PydanticObjectId
 from pydantic import Field
 
@@ -22,9 +22,9 @@ class Issue(Document, TimestampMixin):
     """
     
     # İlişki
-    journal_id: Indexed(PydanticObjectId) = Field(..., description="Bağlı olduğu dergi ID'si")
+    journal_id: Annotated[PydanticObjectId, Indexed()] = Field(..., description="Bağlı olduğu dergi ID'si")
     journal_name: str = Field(..., description="Dergi adı (denormalize)")
-    source_website: Indexed(str) = Field(..., description="Kaynak site")
+    source_website: Annotated[str, Indexed()] = Field(..., description="Kaynak site")
     
     # Sayı bilgileri
     issue_number: Optional[str] = Field(None, description="Sayı numarası: Volume 13, Issue 5")

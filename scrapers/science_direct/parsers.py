@@ -2,6 +2,10 @@
 HTML parsing functions for Science Direct scraper
 """
 
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from bs4 import BeautifulSoup
 
 from utils.logger import get_logger

@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   mongodb:
     image: mongo:7.0
@@ -15,7 +13,7 @@ services:
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
-      # İlk başlatmada çalışacak init scriptleri (opsiyonel)
+      # İlk başlatmada çalışacak init scriptleri
       - ./docker/mongo-init:/docker-entrypoint-initdb.d:ro
     networks:
       - academic_network

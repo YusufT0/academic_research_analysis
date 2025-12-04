@@ -11,7 +11,7 @@ sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('ieee_xplore')
 
-from config import ProxyConfig
+from .config import ProxyConfig
 
 
 class SeleniumDriver:
@@ -93,7 +93,7 @@ class SeleniumDriver:
                 # Undetected-chromedriver + selenium-wire
                 self.driver = uc.Chrome(
                     options=options,
-                    version_main=None,
+                    version_main=142,
                     use_subprocess=True,
                     seleniumwire_options=seleniumwire_options
                 )
@@ -103,7 +103,7 @@ class SeleniumDriver:
                 # Sadece undetected-chromedriver
                 self.driver = uc.Chrome(
                     options=options, 
-                    version_main=None,
+                    version_main=142,
                     use_subprocess=True
                 )
             

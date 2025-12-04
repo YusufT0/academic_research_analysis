@@ -10,6 +10,7 @@ from .driver import SeleniumDriver
 from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
 from .utils import handle_cookie_consent, wait_for_page_load
+from .scraper import IEEEXploreScraper
 
 __all__ = [
     'ProxyConfig',
@@ -19,7 +20,8 @@ __all__ = [
     'JournalParser',
     'ArticleParser',
     'handle_cookie_consent',
-    'wait_for_page_load'
+    'wait_for_page_load',
+    'IEEEXploreScraper',
 ]
 
 __version__ = '1.0.0'

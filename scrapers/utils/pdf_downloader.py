@@ -173,7 +173,7 @@ class PDFDownloader:
                     continue
                 
                 # PDF'i indir
-                logger.step(f"İndiriliyor: {filename}")
+                logger.info(f"İndiriliyor: {filename}")
                 
                 # Full URL oluştur
                 if pdf_url.startswith('/'):

@@ -15,12 +15,12 @@ sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('science_direct')
 
-from config import ProxyConfig, ScienceDirectConfig
-from driver import SeleniumDriver
-from navigation import PageNavigator
-from parsers import JournalParser, ArticleParser
-from rate_limiter import RateLimiter
-from utils import handle_cookie_consent, print_article_summary
+from .config import ProxyConfig, ScienceDirectConfig
+from .driver import SeleniumDriver
+from .navigation import PageNavigator
+from .parsers import JournalParser, ArticleParser
+from .rate_limiter import RateLimiter
+from .utils import handle_cookie_consent, print_article_summary
 
 
 class ScienceDirectScraper:

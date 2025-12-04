@@ -4,7 +4,7 @@ Akademik dergi modeli
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Annotated
 from beanie import Document, Indexed
 from pydantic import Field
 
@@ -19,7 +19,7 @@ class Journal(Document, TimestampMixin, ScrapingMetaMixin):
     """
     
     # Temel bilgiler
-    name: Indexed(str) = Field(..., description="Dergi adı")
+    name: Annotated[str, Indexed()] = Field(..., description="Dergi adı")
     url: Optional[str] = Field(None, description="Dergi URL'si")
     
     # Sınıflandırma

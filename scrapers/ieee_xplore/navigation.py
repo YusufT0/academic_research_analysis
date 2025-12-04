@@ -114,7 +114,7 @@ class PageNavigator:
             bool: Başarılı ise True
         """
         try:
-            logger.step("Sonraki sayfaya gidiliyor")
+            logger.info("Sonraki sayfaya gidiliyor...")
             
             # Next butonunu bul (li.next-btn içindeki button)
             next_button = WebDriverWait(self.driver, 10).until(
@@ -148,7 +148,7 @@ class PageNavigator:
             bool: Başarılı ise True
         """
         try:
-            logger.step("Önceki sayfaya gidiliyor")
+            logger.info("Önceki sayfaya gidiliyor...")
             
             # Previous butonunu bul (li.prev-btn içindeki button)
             prev_button = WebDriverWait(self.driver, 10).until(
@@ -185,7 +185,7 @@ class PageNavigator:
             bool: Başarılı ise True
         """
         try:
-            logger.step(f"Sayfa {page_number}'e gidiliyor")
+            logger.info(f"Sayfa {page_number}'e gidiliyor...")
             
             # İlgili sayfa butonunu bul
             page_button = WebDriverWait(self.driver, 10).until(
