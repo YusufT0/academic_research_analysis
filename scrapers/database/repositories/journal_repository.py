@@ -3,7 +3,8 @@ Journal Repository
 Dergi CRUD operasyonları
 """
 
-from typing import Optional, List
+from datetime import datetime
+from typing import Optional, List, Dict, Any
 from beanie import PydanticObjectId
 
 from .base import BaseRepository
@@ -167,3 +168,137 @@ class JournalRepository(BaseRepository[Journal]):
         )
         await journal.insert()
         return journal, True
+    
+    async def check_exists(self, name: str, source_website: str) -> bool:
+        """
+        Derginin veritabanında olup olmadığını kontrol et
+        
+        Args:
+            name: Dergi adı
+            source_website: Kaynak site
+            
+        Returns:
+            bool: Varsa True, yoksa False
+        """
+        existing = await self.find_by_name(name, source_website)
+        return existing is not None
+    
+    async def get_journal_priority_info(
+        self,
+        name: str,
+        source_website: str
+    ) -> dict:
+        """
+        Dergi için öncelik bilgisi al
+        
+        Args:
+            name: Dergi adı
+            source_website: Kaynak site
+            
+        Returns:
+            dict: {'exists': bool, 'last_scraped_at': datetime or None}
+        """
+        existing = await self.find_by_name(name, source_website)
+        if existing:
+            return {
+                'exists': True,
+                'last_scraped_at': existing.last_scraped_at,
+                'scrape_count': existing.scrape_count
+            }
+        return {
+            'exists': False,
+            'last_scraped_at': None,
+            'scrape_count': 0
+        }
+    
+    async def get_bulk_priority_info(
+        self,
+        journal_names: List[str],
+        source_website: str
+    ) -> dict:
+        """
+        Birden fazla dergi için öncelik bilgilerini toplu al
+        
+        Args:
+            journal_names: Dergi adları listesi
+            source_website: Kaynak site
+            
+        Returns:
+            dict: {journal_name: {'exists': bool, 'last_scraped_at': datetime}}
+        """
+        # Veritabanındaki eşleşen dergileri bul
+        journals = await Journal.find({
+            "name": {"$in": journal_names},
+            "source_website": source_website
+        }).to_list()
+        
+        # Dict'e çevir
+        db_journals = {j.name: j for j in journals}
+        
+        # Sonuç dict'i oluştur
+        result = {}
+        for name in journal_names:
+            if name in db_journals:
+                j = db_journals[name]
+                result[name] = {
+                    'exists': True,
+                    'last_scraped_at': j.last_scraped_at,
+                    'scrape_count': j.scrape_count
+                }
+            else:
+                result[name] = {
+                    'exists': False,
+                    'last_scraped_at': None,
+                    'scrape_count': 0
+                }
+        
+        return result
+    
+    @staticmethod
+    def prioritize_journals(
+        journals: List[Dict[str, Any]],
+        priority_info: Dict[str, Dict]
+    ) -> List[Dict[str, Any]]:
+        """
+        Dergileri öncelik sistemine göre sırala
+        
+        Öncelik Sırası:
+        1. Veritabanında bulunmayan dergiler (yeni dergiler)
+        2. Veritabanında olan dergiler - last_scraped_at tarihine göre (en eski önce)
+        
+        Args:
+            journals: Dergi listesi
+            priority_info: Her dergi için öncelik bilgisi dict'i
+            
+        Returns:
+            Sıralanmış dergi listesi
+        """
+        # Dergileri iki gruba ayır: yeni ve mevcut
+        new_journals = []  # Veritabanında olmayanlar
+        existing_journals = []  # Veritabanında olanlar
+        
+        for journal in journals:
+            name = journal.get('name', '')
+            info = priority_info.get(name, {'exists': False, 'last_scraped_at': None})
+            
+            if not info['exists']:
+                new_journals.append(journal)
+            else:
+                # last_scraped_at bilgisini journal dict'ine ekle (sıralama için)
+                journal['_last_scraped_at'] = info['last_scraped_at']
+                journal['_scrape_count'] = info.get('scrape_count', 0)
+                existing_journals.append(journal)
+        
+        # Mevcut dergileri last_scraped_at'e göre sırala (en eski önce)
+        # None değerler en başta olsun (hiç scrape edilmemiş)
+        existing_journals.sort(
+            key=lambda x: (
+                x.get('_last_scraped_at') is not None,  # None olanlar önce
+                x.get('_last_scraped_at') or datetime.min  # Sonra tarihe göre (en eski önce)
+            )
+        )
+        
+        # Önce yeni dergiler, sonra eskiye göre sıralanmış mevcut dergiler
+        prioritized = new_journals + existing_journals
+        
+        return prioritized

@@ -18,12 +18,14 @@ logger = get_logger('science_direct')
 class PageNavigator:
     """Sayfa navigasyon işlemlerini yöneten sınıf"""
     
-    def __init__(self, driver):
+    def __init__(self, driver, selenium_driver=None):
         """
         Args:
             driver: Selenium WebDriver instance
+            selenium_driver: SeleniumDriver instance (screenshot için)
         """
         self.driver = driver
+        self.selenium_driver = selenium_driver
     
     def get_current_page_info(self) -> dict:
         """Mevcut sayfa bilgilerini alır (sayfa numarası ve toplam sayfa)"""
@@ -47,6 +49,11 @@ class PageNavigator:
             
         except Exception as e:
             logger.warning(f"Sayfa bilgisi alınamadı: {e}")
+            
+            # Element bulunamadığında screenshot al
+            if self.selenium_driver:
+                self.selenium_driver.take_screenshot("pagination_not_found")
+            
             return {'current_page': 1, 'total_pages': 1, 'has_next': False, 'has_previous': False}
     
     def go_to_next_page(self) -> bool:

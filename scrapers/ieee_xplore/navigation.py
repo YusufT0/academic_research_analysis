@@ -17,12 +17,14 @@ logger = get_logger('ieee_xplore')
 class PageNavigator:
     """Sayfa navigasyon işlemlerini yöneten sınıf"""
     
-    def __init__(self, driver):
+    def __init__(self, driver, selenium_driver=None):
         """
         Args:
             driver: Selenium WebDriver instance
+            selenium_driver: SeleniumDriver instance (screenshot için)
         """
         self.driver = driver
+        self.selenium_driver = selenium_driver
     
     def get_current_page_info(self) -> dict:
         """
@@ -99,6 +101,11 @@ class PageNavigator:
             
         except Exception as e:
             logger.warning(f"Sayfa bilgisi alınamadı: {e}")
+            
+            # Element bulunamadığında screenshot al
+            if self.selenium_driver:
+                self.selenium_driver.take_screenshot("pagination_not_found")
+            
             return {
                 'current_page': 1, 
                 'total_pages': 1, 

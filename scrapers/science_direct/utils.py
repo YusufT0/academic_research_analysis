@@ -120,13 +120,10 @@ def print_article_summary(article: dict, index: int):
     else:
         logger.info("Abstract: YOK")
     
-    if article.get('content'):
-        logger.info(f"İçerik Bölümleri ({len(article['content'])}):") 
-        for sec in article['content'][:3]:
-            logger.info(f"  - {sec['title']} ({len(sec['text'])} karakter)")
-        if len(article['content']) > 3:
-            logger.info(f"  ... ve {len(article['content']) - 3} bölüm daha")
+    if article.get('introduction'):
+        intro_preview = article['introduction'][:200] + '...' if len(article['introduction']) > 200 else article['introduction']
+        logger.info(f"Introduction: {intro_preview}")
     else:
-        logger.info("İçerik: YOK")
+        logger.info("Introduction: YOK")
     
     logger.separator()

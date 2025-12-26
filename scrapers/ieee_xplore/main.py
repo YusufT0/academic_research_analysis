@@ -3,6 +3,12 @@ IEEE Xplore Scraper - Main Entry Point (Async + MongoDB)
 
 Bu script IEEE Xplore sitesine bağlanır, dergileri tarar
 ve verileri MongoDB'ye kaydeder.
+
+Rate limit tespit edildiğinde otomatik olarak Science Direct scraper'a geçiş yapar.
+
+Öncelik Sistemi:
+- Veritabanında bulunmayan dergiler öncelikli olarak işlenir
+- Tüm dergiler veritabanındaysa, last_scraped_at tarihine göre en eski öncelikli
 """
 
 import sys
@@ -21,7 +27,9 @@ from ieee_xplore.driver import SeleniumDriver
 from ieee_xplore.utils import handle_cookie_consent, wait_for_page_load
 from ieee_xplore.navigation import PageNavigator
 from ieee_xplore.parsers import JournalParser, ArticleParser
+from ieee_xplore.rate_limiter import IEEERateLimiter, RateLimitException
 from database import init_database_service, close_database
+from database.repositories import JournalRepository
 
 
 async def main():
@@ -53,6 +61,12 @@ async def main():
         logger.error("WebDriver başlatılamadı!")
         await close_database()
         return
+    
+    # Rate limiter oluştur
+    rate_limiter = IEEERateLimiter(driver.driver, pause_duration=300)  # 5 dakika
+    
+    # Science Direct'e geçiş flag'i
+    switch_to_sciencedirect = False
     
     try:
         # IEEE Xplore ana sayfasına git
@@ -122,8 +136,41 @@ async def main():
         # Şimdi her journal'ın Most Recent Issue sayfasına girip makale linklerini topla
         journals_with_articles = [j for j in all_journals if j['most_recent_issue_url']]
         
+        logger.header("ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA")
+        logger.info(f"{len(journals_with_articles)} journal için veritabanı kontrolü yapılıyor...")
+        
+        # Journal repository'yi başlat
+        journal_repo = JournalRepository()
+        
+        # Tüm journal'ların öncelik bilgilerini toplu olarak al
+        journal_names = [j['name'] for j in journals_with_articles]
+        priority_info = await journal_repo.get_bulk_priority_info(journal_names, 'ieeexplore')
+        
+        # İstatistikleri göster
+        new_count = sum(1 for info in priority_info.values() if not info['exists'])
+        existing_count = len(priority_info) - new_count
+        
+        logger.stats({
+            'Toplam Journal': len(journals_with_articles),
+            'Yeni (DB\'de yok)': new_count,
+            'Mevcut (DB\'de var)': existing_count
+        }, "Veritabanı Durumu")
+        
+        # Journal'ları öncelik sistemine göre sırala
+        journals_with_articles = JournalRepository.prioritize_journals(journals_with_articles, priority_info)
+        
+        logger.success("Journal'lar öncelik sırasına göre sıralandı!")
+        logger.info("Öncelik: 1) Yeni dergiler  2) En eski scrape edilenler")
+        
+        # İlk 5 journal'ı göster
+        logger.subsection("İşlenecek İlk 5 Journal (Öncelik Sırasına Göre)")
+        for i, j in enumerate(journals_with_articles[:5], 1):
+            info = priority_info.get(j['name'], {})
+            status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+            logger.info(f"  {i}. {j['name']} - {status}")
+        
         logger.header("MAKALE LİNKLERİ TOPLANACAK")
-        logger.info(f"{len(journals_with_articles)} journal için makale linkleri toplanacak")
+        logger.info(f"{len(journals_with_articles)} journal için makale linkleri toplanacak (öncelik sırasına göre)")
         
         for idx, journal_data in enumerate(journals_with_articles, 1):
             try:
@@ -150,6 +197,14 @@ async def main():
                 issue_info = ArticleParser.extract_issue_info(page_source)
                 issue_url_full = driver.driver.current_url
                 
+                # Rate limit kontrolü (issue sayfasında)
+                try:
+                    rate_limiter.check_and_handle_rate_limit()
+                except RateLimitException:
+                    logger.error("Rate limit aşıldı! Science Direct'e geçiş yapılacak...")
+                    switch_to_sciencedirect = True
+                    break
+                
                 # Makale URL'lerini çıkar
                 article_urls = ArticleParser.extract_article_urls(page_source)
                 
@@ -174,6 +229,14 @@ async def main():
                         wait_for_page_load(driver.driver)
                         time.sleep(2)
                         
+                        # Rate limit kontrolü (her makale sayfasında)
+                        try:
+                            rate_limiter.check_and_handle_rate_limit()
+                        except RateLimitException:
+                            logger.error("Rate limit aşıldı! Science Direct'e geçiş yapılacak...")
+                            switch_to_sciencedirect = True
+                            break
+                        
                         # Makale detaylarını çıkar
                         article_page_source = driver.driver.page_source
                         article_details = ArticleParser.extract_article_details(article_page_source, art_url)
@@ -184,52 +247,93 @@ async def main():
                         else:
                             logger.warning("Makale detayları alınamadı")
                         
+                    except RateLimitException:
+                        # Rate limit exception'ı yukarı fırlat
+                        raise
                     except Exception as e:
                         logger.error(f"Makale detay hatası: {e}")
                         continue
                 
-                # Verileri MongoDB'ye kaydet
+                # Science Direct'e geçiş gerekiyorsa döngüyü kır
+                if switch_to_sciencedirect:
+                    break
+                
+                # Verileri MongoDB'ye kaydet (makale olsun olmasın journal'ı kaydet)
+                # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
+                # Journal verisi
+                journal_info = {
+                    'name': journal_data['name'],
+                    'url': journal_data.get('url'),
+                    'publisher': journal_data.get('publisher', 'IEEE'),
+                    'open_access': False
+                }
+                
+                # Issue verisi
+                issue_data = {
+                    'issue_number': issue_info.get('issue_number') if issue_info else None,
+                    'date': issue_info.get('date') if issue_info else None,
+                    'url': issue_url_full
+                }
+                
+                # Database'e kaydet
+                result = await db_service.add_journal_with_issue_and_articles(
+                    journal_data=journal_info,
+                    issue_data=issue_data,
+                    articles_data=articles or [],  # Boş liste olabilir
+                    source_website='ieeexplore'
+                )
+                
                 if articles:
-                    # Journal verisi
-                    journal_info = {
-                        'name': journal_data['name'],
-                        'url': journal_data.get('url'),
-                        'publisher': journal_data.get('publisher', 'IEEE'),
-                        'open_access': False
-                    }
-                    
-                    # Issue verisi
-                    issue_data = {
-                        'issue_number': issue_info.get('issue_number') if issue_info else None,
-                        'date': issue_info.get('date') if issue_info else None,
-                        'url': issue_url_full
-                    }
-                    
-                    # Database'e kaydet
-                    result = await db_service.add_journal_with_issue_and_articles(
-                        journal_data=journal_info,
-                        issue_data=issue_data,
-                        articles_data=articles,
-                        source_website='ieeexplore'
-                    )
-                    
                     logger.success(f"Kaydedildi: {result['articles_created']} yeni, {result['articles_updated']} güncelleme")
                 else:
-                    logger.warning("Bu journal için makale detayı alınamadı")
+                    logger.info(f"Journal kaydedildi (makale yok): {journal_data['name']}")
                 
+            except RateLimitException:
+                logger.error("Rate limit exception yakalandı!")
+                switch_to_sciencedirect = True
+                break
             except Exception as e:
                 logger.error(f"Journal işleme hatası: {e}")
                 continue
         
-        logger.done("TÜM İŞLEMLER TAMAMLANDI!")
+        # Science Direct'e geçiş kontrolü
+        if switch_to_sciencedirect:
+            logger.header("SCIENCE DIRECT'E GEÇİŞ YAPILIYOR")
+            logger.warning("IEEE Xplore rate limit nedeniyle Science Direct scraper başlatılacak...")
+            
+            # IEEE tarayıcısını kapat
+            driver.close()
+            
+            # Database bağlantısını kapat (Science Direct kendi bağlantısını açacak)
+            await close_database()
+            
+            # Science Direct scraper'ı başlat
+            from science_direct.main import main as run_science_direct
+            await run_science_direct()
+        else:
+            logger.done("TÜM İŞLEMLER TAMAMLANDI!")
+            
+            # Database istatistiklerini göster
+            await db_service.print_statistics()
+            
+            # Kullanıcıya sayfayı inceleme fırsatı ver
+            logger.info("Sayfa açık - inceleyebilirsiniz...")
+            logger.info("(Devam etmek için Enter'a basın)")
+            input()
         
-        # Database istatistiklerini göster
-        await db_service.print_statistics()
+    except RateLimitException:
+        logger.error("Rate limit exception ana döngüde yakalandı!")
+        switch_to_sciencedirect = True
         
-        # Kullanıcıya sayfayı inceleme fırsatı ver
-        logger.info("Sayfa açık - inceleyebilirsiniz...")
-        logger.info("(Devam etmek için Enter'a basın)")
-        input()
+        # IEEE tarayıcısını kapat
+        driver.close()
+        
+        # Database bağlantısını kapat (Science Direct kendi bağlantısını açacak)
+        await close_database()
+        
+        # Science Direct scraper'ı başlat
+        from science_direct.main import main as run_science_direct
+        await run_science_direct()
         
     except Exception as e:
         logger.failed("Hata oluştu", e)
@@ -238,7 +342,10 @@ async def main():
         
     finally:
         # WebDriver'ı kapat
-        driver.close()
+        try:
+            driver.close()
+        except:
+            pass
         # Database bağlantısını kapat
         await close_database()
         logger.separator()

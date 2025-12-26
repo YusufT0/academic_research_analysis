@@ -47,15 +47,44 @@ async def delayed_scraper_start(manager: ScraperManager, delay: float = 2.0):
     logger.info("Otomatik scraper başlatma aktif, scraper'lar başlatılıyor...")
     logger.info(f"Headless mode: {settings.scraper_headless}")
     logger.info(f"Run mode: {settings.scraper_run_mode}")
+    logger.info(f"Enabled scrapers: {settings.enabled_scrapers}")
+    logger.info(f"IEEE enabled: {settings.ieee_enabled}")
+    logger.info(f"ScienceDirect enabled: {settings.sciencedirect_enabled}")
     logger.info(f"IEEE max articles: {settings.ieee_max_articles}")
     logger.info(f"ScienceDirect max articles: {settings.sciencedirect_max_articles}")
     
+    # Enabled scrapers kontrolü
+    ieee_enabled = settings.ieee_enabled
+    sd_enabled = settings.sciencedirect_enabled
+    
+    if not ieee_enabled and not sd_enabled:
+        logger.warning("Hiçbir scraper etkin değil! ENABLED_SCRAPERS ayarını kontrol edin.")
+        return
+    
     if settings.scraper_run_mode == "sequential":
         # Sıralı mod: Önce IEEE bitsin, sonra ScienceDirect başlasın
-        await manager.start_all_sequential(headless=settings.scraper_headless)
+        await manager.start_all_sequential(
+            headless=settings.scraper_headless,
+            ieee_enabled=ieee_enabled,
+            sd_enabled=sd_enabled
+        )
+    elif settings.scraper_run_mode == "round_robin":
+        # Round Robin mod: Her X journal'da bir site değiştirilir
+        journals_per_switch = settings.round_robin_journals_per_switch
+        logger.info(f"Round Robin journals per switch: {journals_per_switch}")
+        await manager.start_all_round_robin(
+            headless=settings.scraper_headless, 
+            journals_per_switch=journals_per_switch,
+            ieee_enabled=ieee_enabled,
+            sd_enabled=sd_enabled
+        )
     else:
         # Paralel mod: Scraper'lar aynı anda çalışır (5 sn arayla başlar)
-        await manager.start_all(headless=settings.scraper_headless)
+        await manager.start_all(
+            headless=settings.scraper_headless,
+            ieee_enabled=ieee_enabled,
+            sd_enabled=sd_enabled
+        )
     
     logger.success("Scraper'lar arka planda başlatıldı")
 

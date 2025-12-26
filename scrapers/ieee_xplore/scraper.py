@@ -19,6 +19,7 @@ from .driver import SeleniumDriver
 from .utils import handle_cookie_consent, wait_for_page_load
 from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
+from .rate_limiter import IEEERateLimiter, RateLimitException
 
 
 class IEEEXploreScraper:
@@ -34,20 +35,25 @@ class IEEEXploreScraper:
         """
         self.config = IEEEXploreConfig()
         
-        # Proxy kullanımı .env'den veya parametre ile belirlenir
-        if use_proxy is None:
-            use_proxy_env = os.getenv('USE_PROXY', 'false')
-            use_proxy = use_proxy_env.lower() in ('true', '1', 'yes', 'on')
-            logger.info(f".env'den USE_PROXY okundu: '{use_proxy_env}' -> {use_proxy}")
+        # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
+        self.proxy_config = ProxyConfig()
         
-        # Proxy yapılandırması
-        self.proxy_config = ProxyConfig() if use_proxy else ProxyConfig()
-        self.proxy_config.use_proxy = use_proxy
+        # use_proxy parametresi ile override edilebilir
+        if use_proxy is not None:
+            self.proxy_config.use_proxy = use_proxy
+            logger.info(f"Proxy kullanımı parametre ile belirlendi: {use_proxy}")
+        else:
+            logger.info(f".env'den USE_PROXY okundu: {self.proxy_config.use_proxy}")
         
-        if use_proxy and self.proxy_config.is_configured():
-            logger.success("Proxy yapılandırması yüklendi:")
-            logger.info(f"  - Host: {self.proxy_config.host}")
-            logger.info(f"  - Port: {self.proxy_config.port}")
+        # Proxy durumunu logla
+        if self.proxy_config.use_proxy:
+            if self.proxy_config.is_configured():
+                logger.success("Proxy yapılandırması yüklendi:")
+                logger.info(f"  - Host: {self.proxy_config.host}")
+                logger.info(f"  - Port: {self.proxy_config.port}")
+                logger.info(f"  - User: {self.proxy_config.user}")
+            else:
+                logger.warning("Uyarı: USE_PROXY=true ama proxy bilgileri eksik!")
         else:
             logger.info("Proxy kullanımı devre dışı")
         
@@ -58,6 +64,7 @@ class IEEEXploreScraper:
         
         # Yardımcı sınıflar
         self.navigator = None
+        self.rate_limiter = None
         
         # Veri tutucular
         self.all_journals: List[Dict[str, Any]] = []
@@ -70,13 +77,17 @@ class IEEEXploreScraper:
             raise Exception("WebDriver başlatılamadı!")
         
         self.driver = self.selenium_driver.driver
-        self.navigator = PageNavigator(self.driver)
+        self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+        self.rate_limiter = IEEERateLimiter(self.driver, pause_duration=300)  # 5 dakika
         
         logger.success(f"Hedef URL: {self.config.base_url}")
     
-    def navigate_to_journals(self) -> bool:
+    def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
         IEEE Xplore journals sayfasına gider
+        
+        Args:
+            max_retries: Maksimum deneme sayısı
         
         Returns:
             bool: Başarılı mı
@@ -84,7 +95,7 @@ class IEEEXploreScraper:
         try:
             logger.url(self.config.base_url, "IEEE Xplore'a bağlanılıyor")
             
-            if not self.selenium_driver.get(self.config.base_url, wait_after=3):
+            if not self.selenium_driver.get(self.config.base_url, wait_after=3, max_retries=max_retries):
                 logger.error("Sayfa yüklenemedi!")
                 return False
             
@@ -152,7 +163,7 @@ class IEEEXploreScraper:
     def scrape_journal_articles(
         self, 
         journal: Dict[str, Any], 
-        max_articles: int = 10
+        max_articles: int = 100
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın makalelerini toplar
@@ -163,6 +174,9 @@ class IEEEXploreScraper:
             
         Returns:
             List[Dict]: Makale bilgileri listesi
+            
+        Raises:
+            RateLimitException: Rate limit aşıldığında ve Science Direct'e geçiş gerektiğinde
         """
         articles = []
         
@@ -189,6 +203,9 @@ class IEEEXploreScraper:
             
             wait_for_page_load(self.driver)
             time.sleep(2)
+            
+            # Rate limit kontrolü (issue sayfasında)
+            self.rate_limiter.check_and_handle_rate_limit()
             
             page_source = self.driver.page_source
             
@@ -226,6 +243,10 @@ class IEEEXploreScraper:
                     wait_for_page_load(self.driver)
                     time.sleep(1)
                     
+                    # Rate limit kontrolü (her makale sayfasında)
+                    # Bu exception fırlatabilir - RateLimitException
+                    self.rate_limiter.check_and_handle_rate_limit()
+                    
                     # Makale detaylarını parse et
                     article_page = self.driver.page_source
                     article_data = ArticleParser.extract_article_details(article_page, full_url)
@@ -237,16 +258,21 @@ class IEEEXploreScraper:
                     # Rate limiting
                     time.sleep(1)
                     
+                except RateLimitException:
+                    # Rate limit exception'ı yukarı fırlat
+                    raise
                 except Exception as e:
                     logger.warning(f"Makale {idx} hatası: {e}")
                     continue
             
             logger.found(len(articles), f"makale ({journal_name})")
             
+        except RateLimitException:
+            # Rate limit exception'ı yukarı fırlat
+            logger.warning(f"{journal_name}: Rate limit nedeniyle durduruldu")
+            raise
         except Exception as e:
             logger.error(f"{journal_name}: Makale toplama hatası: {e}")
-        
-        return articles
         
         return articles
     

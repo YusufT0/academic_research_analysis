@@ -59,7 +59,7 @@ async def start_ieee(request: ScraperControlRequest = None):
     manager = get_scraper_manager()
     
     headless = request.headless if request else True
-    max_articles = request.max_articles if request and request.max_articles else 10
+    max_articles = request.max_articles if request and request.max_articles else 100
     
     success = await manager.start_ieee(headless=headless, max_articles=max_articles)
     
@@ -134,7 +134,7 @@ async def start_sciencedirect(request: ScraperControlRequest = None):
     manager = get_scraper_manager()
     
     headless = request.headless if request else True
-    max_articles = request.max_articles if request and request.max_articles else 5
+    max_articles = request.max_articles if request and request.max_articles else 100
     
     success = await manager.start_sciencedirect(headless=headless, max_articles=max_articles)
     
@@ -198,9 +198,15 @@ async def resume_sciencedirect():
 
 # ==================== All Scrapers ====================
 
-@router.post("/start-all", summary="Tüm scraper'ları başlat")
+class RoundRobinRequest(BaseModel):
+    """Round Robin kontrol request"""
+    headless: bool = Field(default=True, description="Headless mod")
+    journals_per_switch: int = Field(default=3, ge=1, le=10, description="Kaç journal'da bir site değiştirilecek")
+
+
+@router.post("/start-all", summary="Tüm scraper'ları başlat (paralel mod)")
 async def start_all(request: ScraperControlRequest = None):
-    """Tüm scraper'ları başlat"""
+    """Tüm scraper'ları paralel modda başlat"""
     manager = get_scraper_manager()
     
     headless = request.headless if request else True
@@ -209,7 +215,57 @@ async def start_all(request: ScraperControlRequest = None):
     
     return {
         "success": True,
-        "message": "All scrapers started",
+        "message": "All scrapers started (parallel mode)",
+        "mode": "parallel",
+        "results": results,
+        "status": manager.get_all_status()
+    }
+
+
+@router.post("/start-all-sequential", summary="Tüm scraper'ları sıralı başlat")
+async def start_all_sequential(request: ScraperControlRequest = None):
+    """Tüm scraper'ları sıralı modda başlat (IEEE bitince ScienceDirect başlar)"""
+    manager = get_scraper_manager()
+    
+    headless = request.headless if request else True
+    
+    results = await manager.start_all_sequential(headless=headless)
+    
+    return {
+        "success": True,
+        "message": "All scrapers started (sequential mode)",
+        "mode": "sequential",
+        "results": results,
+        "status": manager.get_all_status()
+    }
+
+
+@router.post("/start-all-round-robin", summary="Tüm scraper'ları round robin modda başlat")
+async def start_all_round_robin(request: RoundRobinRequest = None):
+    """
+    Tüm scraper'ları round robin modda başlat.
+    
+    Her X journal'da bir site değiştirilir:
+    IEEE → ScienceDirect → IEEE → ...
+    
+    - **headless**: Browser'ı görünmez modda çalıştır (default: True)
+    - **journals_per_switch**: Kaç journal'da bir site değiştirilecek (default: 3)
+    """
+    manager = get_scraper_manager()
+    
+    headless = request.headless if request else True
+    journals_per_switch = request.journals_per_switch if request else 3
+    
+    results = await manager.start_all_round_robin(
+        headless=headless, 
+        journals_per_switch=journals_per_switch
+    )
+    
+    return {
+        "success": True,
+        "message": f"All scrapers started (round robin mode, switch every {journals_per_switch} journals)",
+        "mode": "round_robin",
+        "journals_per_switch": journals_per_switch,
         "results": results,
         "status": manager.get_all_status()
     }

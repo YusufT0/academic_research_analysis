@@ -11,6 +11,7 @@ from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
 from .utils import handle_cookie_consent, wait_for_page_load
 from .scraper import IEEEXploreScraper
+from .rate_limiter import IEEERateLimiter, RateLimitException
 
 __all__ = [
     'ProxyConfig',
@@ -22,6 +23,8 @@ __all__ = [
     'handle_cookie_consent',
     'wait_for_page_load',
     'IEEEXploreScraper',
+    'IEEERateLimiter',
+    'RateLimitException',
 ]
 
 __version__ = '1.0.0'

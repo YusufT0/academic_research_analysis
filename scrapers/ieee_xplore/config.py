@@ -3,7 +3,12 @@ Configuration management for IEEE Xplore scraper
 """
 
 import os
+from pathlib import Path
 from dotenv import load_dotenv
+
+# .env dosyasının yolunu belirle (scrapers klasöründe)
+_env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(_env_path)
 
 
 class ProxyConfig:
@@ -11,9 +16,9 @@ class ProxyConfig:
     
     def __init__(self):
         """Environment variables'dan proxy ayarlarını yükle"""
-        load_dotenv()
+        # .env zaten modül yüklenirken okundu
         
-        self.use_proxy = os.getenv('USE_PROXY', 'false').lower() == 'true'
+        self.use_proxy = os.getenv('USE_PROXY', 'false').lower() in ('true', '1', 'yes', 'on')
         self.user = os.getenv('proxy_user', '')
         self.password = os.getenv('proxy_pass', '')
         self.host = os.getenv('proxy_host', '')
@@ -37,7 +42,7 @@ class IEEEXploreConfig:
     
     def __init__(self):
         """Environment variables'dan IEEE Xplore ayarlarını yükle"""
-        load_dotenv()
+        # .env zaten modül yüklenirken okundu
         
         self.base_url = os.getenv(
             'IEEEXPLORE_BASE_URL',
@@ -45,6 +50,6 @@ class IEEEXploreConfig:
         )
         
         # Rate limiting ayarları
-        self.min_wait = 2  # minimum bekleme süresi (saniye)
-        self.max_wait = 5  # maksimum bekleme süresi (saniye)
-        self.page_load_timeout = 30  # sayfa yükleme timeout (saniye)
+        self.min_wait = 4  # minimum bekleme süresi (saniye)
+        self.max_wait = 10  # maksimum bekleme süresi (saniye)
+        self.page_load_timeout = 90  # sayfa yükleme timeout (saniye)

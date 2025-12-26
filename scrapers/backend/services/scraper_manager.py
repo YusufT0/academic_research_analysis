@@ -6,6 +6,10 @@ Background task olarak çalıştırır, durum takibi yapar.
 
 Scraper'lar ayrı thread'lerde çalışır - Selenium senkron kod içerdiğinden
 asyncio event loop'unu bloklamaz.
+
+Öncelik Sistemi:
+- Veritabanında bulunmayan dergiler öncelikli olarak işlenir
+- Tüm dergiler veritabanındaysa, last_scraped_at tarihine göre en eski öncelikli
 """
 
 import asyncio
@@ -22,6 +26,7 @@ scrapers_path = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(scrapers_path))
 
 from database import init_database_service, close_database, DatabaseService
+from database.repositories import JournalRepository
 from utils.logger import get_logger
 
 logger = get_logger('scraper_manager')
@@ -180,9 +185,16 @@ class ScraperManager:
         
         # Settings
         self.ieee_headless = True
-        self.ieee_max_articles = 10
+        self.ieee_max_articles = 100
         self.sciencedirect_headless = True
-        self.sciencedirect_max_articles = 5
+        self.sciencedirect_max_articles = 100
+        
+        # Round Robin Settings
+        self.round_robin_journals_per_switch = 3
+        
+        # Round Robin State
+        self._round_robin_future: Optional[concurrent.futures.Future] = None
+        self._round_robin_stop_flag = threading.Event()
     
     async def initialize(self):
         """Manager'ı initialize et"""
@@ -255,7 +267,7 @@ class ScraperManager:
     
     # ==================== IEEE Scraper ====================
     
-    async def start_ieee(self, headless: bool = True, max_articles: int = 10) -> bool:
+    async def start_ieee(self, headless: bool = True, max_articles: int = 100) -> bool:
         """IEEE scraper'ı başlat (ayrı thread'de)"""
         if self.ieee_progress.status == ScraperStatus.RUNNING:
             logger.warning("IEEE scraper already running")
@@ -323,6 +335,42 @@ class ScraperManager:
             progress.add_log("info", f"{len(all_journals)} journal bulundu")
             logger.info(f"[IEEE Thread] {len(all_journals)} journal bulundu")
             
+            # ============================================================
+            # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+            # ============================================================
+            logger.info("[IEEE Thread] Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
+            progress.add_log("info", "Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
+            
+            # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
+            journal_names = [j.get('name', '') for j in all_journals]
+            
+            # Async call from thread
+            journal_repo = JournalRepository()
+            future = asyncio.run_coroutine_threadsafe(
+                journal_repo.get_bulk_priority_info(journal_names, 'ieeexplore'),
+                self._loop
+            )
+            priority_info = future.result(timeout=30)
+            
+            # İstatistikleri hesapla
+            new_count = sum(1 for info in priority_info.values() if not info['exists'])
+            existing_count = len(priority_info) - new_count
+            
+            logger.info(f"[IEEE Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+            progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+            
+            # Journal'ları öncelik sistemine göre sırala
+            all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+            
+            logger.success("[IEEE Thread] Journal'lar öncelik sırasına göre sıralandı!")
+            progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+            
+            # İlk 5 journal'ı logla
+            for i, j in enumerate(all_journals[:5], 1):
+                info = priority_info.get(j.get('name', ''), {})
+                status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                logger.info(f"[IEEE Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            
             # Scrape each journal
             for idx, journal in enumerate(all_journals):
                 # Stop check
@@ -352,7 +400,9 @@ class ScraperManager:
                     # Scrape articles
                     articles = scraper.scrape_journal_articles(journal, max_articles=self.ieee_max_articles)
                     
-                    if articles and self._db_service and self._loop:
+                    # Makale olsun olmasın journal'ı veritabanına kaydet
+                    # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
+                    if self._db_service and self._loop:
                         # Save to database (async call from thread)
                         journal_info = {
                             'name': journal.get('name'),
@@ -372,7 +422,7 @@ class ScraperManager:
                             self._db_service.add_journal_with_issue_and_articles(
                                 journal_data=journal_info,
                                 issue_data=issue_data,
-                                articles_data=articles,
+                                articles_data=articles or [],  # Boş liste olabilir
                                 source_website='ieeexplore'
                             ),
                             self._loop
@@ -385,8 +435,12 @@ class ScraperManager:
                         progress.articles_scraped += result.get('articles_created', 0)
                         progress.articles_updated += result.get('articles_updated', 0)
                         
-                        progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
-                        logger.success(f"[IEEE Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                        if articles:
+                            progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
+                            logger.success(f"[IEEE Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                        else:
+                            progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
+                            logger.info(f"[IEEE Thread] {journal_name}: Makale yok, journal kaydedildi")
                     
                 except Exception as e:
                     progress.errors_count += 1
@@ -457,7 +511,7 @@ class ScraperManager:
     
     # ==================== ScienceDirect Scraper ====================
     
-    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 5) -> bool:
+    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100) -> bool:
         """ScienceDirect scraper'ı başlat (ayrı thread'de)"""
         if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
             logger.warning("ScienceDirect scraper already running")
@@ -525,6 +579,42 @@ class ScraperManager:
             progress.add_log("info", f"{len(all_journals)} journal bulundu")
             logger.info(f"[SD Thread] {len(all_journals)} journal bulundu")
             
+            # ============================================================
+            # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+            # ============================================================
+            logger.info("[SD Thread] Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
+            progress.add_log("info", "Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
+            
+            # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
+            journal_names = [j.get('name', '') for j in all_journals]
+            
+            # Async call from thread
+            journal_repo = JournalRepository()
+            future = asyncio.run_coroutine_threadsafe(
+                journal_repo.get_bulk_priority_info(journal_names, 'sciencedirect'),
+                self._loop
+            )
+            priority_info = future.result(timeout=30)
+            
+            # İstatistikleri hesapla
+            new_count = sum(1 for info in priority_info.values() if not info['exists'])
+            existing_count = len(priority_info) - new_count
+            
+            logger.info(f"[SD Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+            progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+            
+            # Journal'ları öncelik sistemine göre sırala
+            all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+            
+            logger.success("[SD Thread] Journal'lar öncelik sırasına göre sıralandı!")
+            progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+            
+            # İlk 5 journal'ı logla
+            for i, j in enumerate(all_journals[:5], 1):
+                info = priority_info.get(j.get('name', ''), {})
+                status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                logger.info(f"[SD Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            
             # Scrape each journal
             for idx, journal in enumerate(all_journals):
                 # Stop check
@@ -554,7 +644,9 @@ class ScraperManager:
                     # Scrape articles
                     articles = scraper.scrape_journal_articles(journal, max_articles=self.sciencedirect_max_articles)
                     
-                    if articles and self._db_service and self._loop:
+                    # Makale olsun olmasın journal'ı veritabanına kaydet
+                    # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
+                    if self._db_service and self._loop:
                         # Save to database (async call from thread)
                         journal_info = {
                             'name': journal.get('name'),
@@ -575,7 +667,7 @@ class ScraperManager:
                             self._db_service.add_journal_with_issue_and_articles(
                                 journal_data=journal_info,
                                 issue_data=issue_data,
-                                articles_data=articles,
+                                articles_data=articles or [],  # Boş liste olabilir
                                 source_website='sciencedirect'
                             ),
                             self._loop
@@ -588,8 +680,12 @@ class ScraperManager:
                         progress.articles_scraped += result.get('articles_created', 0)
                         progress.articles_updated += result.get('articles_updated', 0)
                         
-                        progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
-                        logger.success(f"[SD Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                        if articles:
+                            progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
+                            logger.success(f"[SD Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                        else:
+                            progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
+                            logger.info(f"[SD Thread] {journal_name}: Makale yok, journal kaydedildi")
                     
                 except Exception as e:
                     progress.errors_count += 1
@@ -660,64 +756,504 @@ class ScraperManager:
     
     # ==================== All Scrapers ====================
     
-    async def start_all(self, headless: bool = True) -> Dict[str, bool]:
+    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları PARALEL modda başlat.
         Scraper'lar 5 saniye arayla başlar ve aynı anda çalışır.
+        
+        Args:
+            headless: Browser headless mod
+            ieee_enabled: IEEE scraper etkin mi
+            sd_enabled: ScienceDirect scraper etkin mi
         """
         import asyncio
         
         results = {}
         
-        logger.info("PARALEL mod: Scraper'lar aynı anda çalışacak")
+        logger.info("PARALEL mod: Etkin scraper'lar aynı anda çalışacak")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}")
         
-        # Önce IEEE'yi başlat
-        results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles)
+        # IEEE'yi başlat (etkinse)
+        if ieee_enabled:
+            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles)
+        else:
+            results['ieee'] = False
+            logger.info("IEEE scraper devre dışı, atlanıyor...")
         
         # 5 saniye bekle - chromedriver dosya çakışmasını önlemek için
-        logger.info("ScienceDirect için 5 saniye bekleniyor (chromedriver çakışmasını önlemek için)...")
-        await asyncio.sleep(5)
+        if ieee_enabled and sd_enabled:
+            logger.info("ScienceDirect için 5 saniye bekleniyor (chromedriver çakışmasını önlemek için)...")
+            await asyncio.sleep(5)
         
-        # Sonra ScienceDirect'i başlat
-        results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles)
+        # ScienceDirect'i başlat (etkinse)
+        if sd_enabled:
+            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles)
+        else:
+            results['sciencedirect'] = False
+            logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
         
         return results
     
-    async def start_all_sequential(self, headless: bool = True) -> Dict[str, bool]:
+    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları SIRALI modda başlat.
         Önce IEEE tamamlanır, sonra ScienceDirect başlar.
+        
+        Args:
+            headless: Browser headless mod
+            ieee_enabled: IEEE scraper etkin mi
+            sd_enabled: ScienceDirect scraper etkin mi
         """
         import asyncio
         
         results = {}
         
-        logger.info("SIRALI mod: IEEE bitince ScienceDirect başlayacak")
+        logger.info("SIRALI mod: Etkin scraper'lar sırayla çalışacak")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}")
         
-        # Önce IEEE'yi başlat
-        results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles)
+        # IEEE'yi başlat (etkinse)
+        if ieee_enabled:
+            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles)
+            
+            # IEEE'nin bitmesini bekle
+            logger.info("IEEE scraper'ın bitmesi bekleniyor...")
+            while self.ieee_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+                await asyncio.sleep(2)
+            
+            logger.info(f"IEEE scraper tamamlandı (status: {self.ieee_progress.status.value})")
+            
+            # 3 saniye bekle
+            await asyncio.sleep(3)
+        else:
+            results['ieee'] = False
+            logger.info("IEEE scraper devre dışı, atlanıyor...")
         
-        # IEEE'nin bitmesini bekle
-        logger.info("IEEE scraper'ın bitmesi bekleniyor...")
-        while self.ieee_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
-            await asyncio.sleep(2)
-        
-        logger.info(f"IEEE scraper tamamlandı (status: {self.ieee_progress.status.value})")
-        
-        # 3 saniye bekle
-        await asyncio.sleep(3)
-        
-        # Şimdi ScienceDirect'i başlat
-        logger.info("ScienceDirect scraper başlatılıyor...")
-        results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles)
+        # ScienceDirect'i başlat (etkinse)
+        if sd_enabled:
+            logger.info("ScienceDirect scraper başlatılıyor...")
+            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles)
+        else:
+            results['sciencedirect'] = False
+            logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
         
         return results
+    
+    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True) -> Dict[str, bool]:
+        """
+        Tüm scraper'ları ROUND ROBIN modda başlat.
+        Her X journal'da bir driver kapatılıp diğer siteye geçilir.
+        Döngü: IEEE -> ScienceDirect -> IEEE -> ...
+        
+        Args:
+            headless: Browser headless mod
+            journals_per_switch: Kaç journal'da bir site değiştirilecek
+            ieee_enabled: IEEE scraper etkin mi
+            sd_enabled: ScienceDirect scraper etkin mi
+        """
+        # Sadece bir scraper etkinse, sequential modda çalıştır
+        if ieee_enabled and not sd_enabled:
+            logger.info("Sadece IEEE etkin, sequential modda çalışacak")
+            return await self.start_all_sequential(headless=headless, ieee_enabled=True, sd_enabled=False)
+        
+        if sd_enabled and not ieee_enabled:
+            logger.info("Sadece ScienceDirect etkin, sequential modda çalışacak")
+            return await self.start_all_sequential(headless=headless, ieee_enabled=False, sd_enabled=True)
+        
+        if not ieee_enabled and not sd_enabled:
+            logger.warning("Hiçbir scraper etkin değil!")
+            return {'ieee': False, 'sciencedirect': False}
+        
+        self.round_robin_journals_per_switch = journals_per_switch
+        self._round_robin_stop_flag.clear()
+        
+        logger.info(f"ROUND ROBIN mod: Her {journals_per_switch} journal'da bir site değiştirilecek")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}")
+        
+        # Thread'de başlat
+        self._round_robin_future = self._executor.submit(
+            self._run_round_robin_sync, 
+            headless,
+            ieee_enabled,
+            sd_enabled
+        )
+        
+        return {'ieee': ieee_enabled, 'sciencedirect': sd_enabled}
+    
+    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True):
+        """
+        Round Robin modda scraper'ları çalıştır (ayrı thread'de).
+        Her X journal'da bir site değiştirir.
+        """
+        import time
+        
+        logger.info("[RoundRobin Thread] Başlatılıyor...")
+        print("[RoundRobin Thread] Başlatılıyor...", flush=True)
+        
+        # Scraper sırası ve state'leri (sadece etkin olanlar)
+        sites = []
+        if ieee_enabled:
+            sites.append('ieee')
+        if sd_enabled:
+            sites.append('sciencedirect')
+        
+        if not sites:
+            logger.error("[RoundRobin] Hiçbir scraper etkin değil!")
+            return
+        
+        logger.info(f"[RoundRobin] Etkin siteler: {sites}")
+        current_site_idx = 0
+        
+        # Her site için journal listesi ve index (lazy loading)
+        site_journals = {
+            'ieee': None,  # Henüz yüklenmedi
+            'sciencedirect': None  # Henüz yüklenmedi
+        }
+        site_indices = {
+            'ieee': 0,
+            'sciencedirect': 0
+        }
+        site_priority_info = {
+            'ieee': None,
+            'sciencedirect': None
+        }
+        
+        # Aktif scraper instance'ları
+        scrapers = {
+            'ieee': None,
+            'sciencedirect': None
+        }
+        
+        # Source website mapping
+        source_websites = {
+            'ieee': 'ieeexplore',
+            'sciencedirect': 'sciencedirect'
+        }
+        
+        # Tüm siteler bitene kadar döngü
+        all_completed = False
+        
+        try:
+            while not all_completed and not self._round_robin_stop_flag.is_set():
+                current_site = sites[current_site_idx]
+                progress = self.ieee_progress if current_site == 'ieee' else self.sciencedirect_progress
+                other_progress = self.sciencedirect_progress if current_site == 'ieee' else self.ieee_progress
+                
+                # İlk kez bu siteye geçiyorsak başlat
+                if scrapers[current_site] is None:
+                    logger.info(f"[RoundRobin] {current_site.upper()} scraper başlatılıyor...")
+                    progress.reset()
+                    progress.status = ScraperStatus.STARTING
+                    progress.started_at = datetime.utcnow()
+                    progress.add_log("info", f"{current_site.upper()} scraper başlatılıyor (Round Robin)...")
+                    
+                    temp_scraper = None
+                    try:
+                        # Scraper'ı oluştur ve başlat
+                        if current_site == 'ieee':
+                            if IEEEXploreScraper is None:
+                                raise Exception("IEEE scraper modülü yüklenemedi")
+                            temp_scraper = IEEEXploreScraper(headless=headless)
+                            temp_scraper.initialize()
+                            
+                            # Journals sayfasına git
+                            if not temp_scraper.navigate_to_journals():
+                                raise Exception("IEEE journals sayfasına gidilemedi")
+                            
+                            # Başarılı - scraper'ı kaydet
+                            scrapers['ieee'] = temp_scraper
+                        else:
+                            if ScienceDirectScraper is None:
+                                raise Exception("ScienceDirect scraper modülü yüklenemedi")
+                            temp_scraper = ScienceDirectScraper(headless=headless)
+                            temp_scraper.initialize()
+                            
+                            # Journals sayfasına git
+                            if not temp_scraper.navigate_to_journals():
+                                raise Exception("ScienceDirect journals sayfasına gidilemedi")
+                            
+                            # Başarılı - scraper'ı kaydet
+                            scrapers['sciencedirect'] = temp_scraper
+                        
+                        progress.status = ScraperStatus.RUNNING
+                        progress.add_log("success", f"{current_site.upper()} browser başlatıldı")
+                        logger.success(f"[RoundRobin] {current_site.upper()} browser başlatıldı")
+                        
+                    except Exception as e:
+                        # Hata durumunda tarayıcıyı kapat
+                        if temp_scraper:
+                            try:
+                                logger.info(f"[RoundRobin] {current_site.upper()} hata nedeniyle kapatılıyor...")
+                                temp_scraper.close()
+                            except:
+                                pass
+                        
+                        progress.status = ScraperStatus.ERROR
+                        progress.last_error = str(e)
+                        progress.add_log("error", f"Browser başlatma hatası: {e}")
+                        logger.error(f"[RoundRobin] {current_site.upper()} başlatma hatası: {e}")
+                        
+                        # ERR_TUNNEL_CONNECTION_FAILED gibi bağlantı hatalarında
+                        # tüm scraperları durdur çünkü proxy çalışmıyor demektir
+                        error_str = str(e).lower()
+                        if 'err_tunnel' in error_str or 'connection_failed' in error_str or 'proxy' in error_str:
+                            logger.error(f"[RoundRobin] Proxy/Tunnel bağlantı hatası tespit edildi!")
+                            logger.error(f"[RoundRobin] Tüm scraperlar durduruluyor (proxy sorunlu)...")
+                            progress.add_log("error", "Proxy bağlantı hatası - tüm scraperlar durduruluyor")
+                            other_progress.status = ScraperStatus.ERROR
+                            other_progress.last_error = "Proxy bağlantı hatası"
+                            break
+                        
+                        # Sonraki siteye geç
+                        current_site_idx = (current_site_idx + 1) % len(sites)
+                        continue
+                
+                # Journal listesi henüz alınmadıysa al
+                if site_journals[current_site] is None:
+                    # Scraper başarıyla başlatılmış mı kontrol et
+                    scraper = scrapers[current_site]
+                    if scraper is None:
+                        logger.warning(f"[RoundRobin] {current_site.upper()} scraper başlatılamamış, atlanıyor...")
+                        progress.add_log("warning", "Scraper başlatılamamış, site atlanıyor")
+                        site_journals[current_site] = []  # Boş liste ata ki tekrar denenmesin
+                        current_site_idx = (current_site_idx + 1) % len(sites)
+                        continue
+                    
+                    logger.info(f"[RoundRobin] {current_site.upper()} journal listesi alınıyor...")
+                    progress.add_log("info", "Journal listesi alınıyor...")
+                    
+                    all_journals = scraper.scrape_all_journals()
+                    
+                    if not all_journals:
+                        logger.warning(f"[RoundRobin] {current_site.upper()} journal bulunamadı")
+                        progress.add_log("warning", "Journal bulunamadı")
+                        site_journals[current_site] = []
+                    else:
+                        progress.total_journals = len(all_journals)
+                        progress.add_log("info", f"{len(all_journals)} journal bulundu")
+                        logger.info(f"[RoundRobin] {current_site.upper()}: {len(all_journals)} journal bulundu")
+                        
+                        # Öncelik sistemini uygula
+                        logger.info(f"[RoundRobin] {current_site.upper()} öncelik sistemi uygulanıyor...")
+                        journal_names = [j.get('name', '') for j in all_journals]
+                        
+                        journal_repo = JournalRepository()
+                        future = asyncio.run_coroutine_threadsafe(
+                            journal_repo.get_bulk_priority_info(journal_names, source_websites[current_site]),
+                            self._loop
+                        )
+                        priority_info = future.result(timeout=30)
+                        site_priority_info[current_site] = priority_info
+                        
+                        # İstatistikleri hesapla
+                        new_count = sum(1 for info in priority_info.values() if not info['exists'])
+                        existing_count = len(priority_info) - new_count
+                        logger.info(f"[RoundRobin] {current_site.upper()}: {new_count} yeni, {existing_count} mevcut dergi")
+                        progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+                        
+                        # Journal'ları önceliğe göre sırala
+                        all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+                        site_journals[current_site] = all_journals
+                        
+                        logger.success(f"[RoundRobin] {current_site.upper()} journal'lar öncelik sırasına göre sıralandı!")
+                        progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı")
+                
+                # Bu sitede işlenecek journal var mı kontrol et
+                journals = site_journals[current_site]
+                start_idx = site_indices[current_site]
+                
+                # Tüm siteler başarısız olduysa (hepsi boş liste) döngüyü sonlandır
+                all_sites_failed = all(
+                    site_journals.get(s) is not None and len(site_journals.get(s, [])) == 0
+                    for s in sites
+                )
+                if all_sites_failed:
+                    logger.error("[RoundRobin] Tüm siteler başarısız - hiçbir journal bulunamadı!")
+                    self.ieee_progress.status = ScraperStatus.ERROR
+                    self.ieee_progress.last_error = "Hiçbir journal bulunamadı (proxy/bağlantı hatası olabilir)"
+                    self.sciencedirect_progress.status = ScraperStatus.ERROR
+                    self.sciencedirect_progress.last_error = "Hiçbir journal bulunamadı (proxy/bağlantı hatası olabilir)"
+                    break
+                
+                if start_idx >= len(journals):
+                    # Bu site tamamlandı (veya hiç journal yoktu)
+                    if len(journals) > 0:
+                        progress.status = ScraperStatus.COMPLETED
+                        progress.add_log("success", f"{current_site.upper()} scraper tamamlandı")
+                        logger.success(f"[RoundRobin] {current_site.upper()} scraper tamamlandı!")
+                    else:
+                        logger.warning(f"[RoundRobin] {current_site.upper()} için journal bulunamadı, atlanıyor...")
+                    
+                    # Driver'ı kapat
+                    if scrapers[current_site]:
+                        try:
+                            scrapers[current_site].close()
+                        except:
+                            pass
+                        scrapers[current_site] = None
+                    
+                    # Tüm siteler tamamlandı mı kontrol et
+                    all_completed = all(
+                        site_journals.get(s) is not None and site_indices.get(s, 0) >= len(site_journals.get(s, []))
+                        for s in sites
+                    )
+                    
+                    if not all_completed:
+                        # Sonraki siteye geç
+                        current_site_idx = (current_site_idx + 1) % len(sites)
+                    continue
+                
+                # Bu turda işlenecek journal sayısı
+                end_idx = min(start_idx + self.round_robin_journals_per_switch, len(journals))
+                journals_to_process = journals[start_idx:end_idx]
+                
+                logger.info(f"[RoundRobin] {current_site.upper()}: {len(journals_to_process)} journal işlenecek ({start_idx+1}-{end_idx}/{len(journals)})")
+                progress.add_log("info", f"{len(journals_to_process)} journal işlenecek ({start_idx+1}-{end_idx})")
+                
+                scraper = scrapers[current_site]
+                max_articles = self.ieee_max_articles if current_site == 'ieee' else self.sciencedirect_max_articles
+                
+                # Bu turdaki journal'ları işle
+                for i, journal in enumerate(journals_to_process):
+                    # Stop kontrolü
+                    if self._round_robin_stop_flag.is_set():
+                        logger.warning("[RoundRobin] Durduruldu")
+                        progress.status = ScraperStatus.STOPPED
+                        other_progress.status = ScraperStatus.STOPPED
+                        break
+                    
+                    global_idx = start_idx + i
+                    journal_name = journal.get('name', 'Unknown')
+                    progress.current_journal = journal_name
+                    progress.current_journal_index = global_idx + 1
+                    progress.last_activity = datetime.utcnow()
+                    
+                    logger.info(f"[RoundRobin] [{current_site.upper()}] [{global_idx+1}/{len(journals)}] {journal_name} işleniyor...")
+                    
+                    try:
+                        # Makale topla
+                        articles = scraper.scrape_journal_articles(journal, max_articles=max_articles)
+                        
+                        # Makale olsun olmasın journal'ı veritabanına kaydet
+                        # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
+                        if self._db_service and self._loop:
+                            # Veritabanına kaydet
+                            journal_info = {
+                                'name': journal.get('name'),
+                                'url': journal.get('url'),
+                                'publisher': 'IEEE' if current_site == 'ieee' else 'Elsevier',
+                                'open_access': journal.get('open_access', False),
+                            }
+                            if current_site == 'sciencedirect':
+                                journal_info['letter_group'] = journal.get('letter_group')
+                            
+                            issue_data = {
+                                'issue_number': journal.get('issue_number'),
+                                'date': journal.get('issue_date'),
+                                'url': journal.get('issue_url'),
+                            }
+                            
+                            future = asyncio.run_coroutine_threadsafe(
+                                self._db_service.add_journal_with_issue_and_articles(
+                                    journal_data=journal_info,
+                                    issue_data=issue_data,
+                                    articles_data=articles or [],  # Boş liste olabilir
+                                    source_website=source_websites[current_site]
+                                ),
+                                self._loop
+                            )
+                            result = future.result(timeout=30)
+                            
+                            progress.journals_scraped += 1
+                            if result.get('issue_created'):
+                                progress.issues_scraped += 1
+                            progress.articles_scraped += result.get('articles_created', 0)
+                            progress.articles_updated += result.get('articles_updated', 0)
+                            
+                            if articles:
+                                progress.add_log("success", f"{journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                                logger.success(f"[RoundRobin] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                            else:
+                                progress.add_log("info", f"{journal_name}: Makale yok, journal kaydedildi")
+                                logger.info(f"[RoundRobin] {journal_name}: Makale yok, journal kaydedildi")
+                        
+                    except Exception as e:
+                        progress.errors_count += 1
+                        progress.last_error = str(e)
+                        progress.add_log("error", f"{journal_name}: {str(e)}")
+                        logger.error(f"[RoundRobin] {journal_name} hatası: {e}")
+                    
+                    # Rate limiting
+                    time.sleep(2)
+                
+                # Index'i güncelle
+                site_indices[current_site] = end_idx
+                
+                # Stop kontrolü
+                if self._round_robin_stop_flag.is_set():
+                    break
+                
+                # Driver'ı kapat ve sonraki siteye geç
+                logger.info(f"[RoundRobin] {current_site.upper()} driver kapatılıyor, sonraki siteye geçiliyor...")
+                progress.add_log("info", "Driver kapatılıyor, site değiştiriliyor...")
+                
+                if scrapers[current_site]:
+                    try:
+                        scrapers[current_site].close()
+                    except:
+                        pass
+                    scrapers[current_site] = None
+                
+                # Kısa bekleme
+                time.sleep(2)
+                
+                # Sonraki siteye geç
+                current_site_idx = (current_site_idx + 1) % len(sites)
+            
+            logger.success("[RoundRobin] Tüm siteler tamamlandı!")
+            
+        except Exception as e:
+            logger.error(f"[RoundRobin] Fatal error: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Her iki progress'i de error olarak işaretle
+            self.ieee_progress.status = ScraperStatus.ERROR
+            self.ieee_progress.last_error = str(e)
+            self.sciencedirect_progress.status = ScraperStatus.ERROR
+            self.sciencedirect_progress.last_error = str(e)
+        
+        finally:
+            # Tüm açık scraper'ları kapat
+            for site, scraper in scrapers.items():
+                if scraper:
+                    try:
+                        scraper.close()
+                    except:
+                        pass
+            
+            self.ieee_progress.last_activity = datetime.utcnow()
+            self.sciencedirect_progress.last_activity = datetime.utcnow()
+    
+    async def stop_round_robin(self) -> bool:
+        """Round Robin scraper'ı durdur"""
+        self._round_robin_stop_flag.set()
+        
+        if self._round_robin_future:
+            try:
+                self._round_robin_future.result(timeout=15)
+            except concurrent.futures.TimeoutError:
+                logger.warning("Round Robin scraper stop timeout")
+            except Exception:
+                pass
+        
+        return True
     
     async def stop_all(self) -> Dict[str, bool]:
         """Tüm scraper'ları durdur"""
         results = {}
         results['ieee'] = await self.stop_ieee()
         results['sciencedirect'] = await self.stop_sciencedirect()
+        results['round_robin'] = await self.stop_round_robin()
         return results
     
     async def get_database_stats(self) -> Dict[str, Any]:

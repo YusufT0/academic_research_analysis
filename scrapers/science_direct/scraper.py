@@ -38,22 +38,25 @@ class ScienceDirectScraper:
         """
         self.config = ScienceDirectConfig()
         
-        # Proxy kullanımı .env'den veya parametre ile belirlenir
-        if use_proxy is None:
-            use_proxy_env = os.getenv('USE_PROXY', 'false')
-            use_proxy = use_proxy_env.lower() in ('true', '1', 'yes', 'on')
-            logger.info(f".env'den USE_PROXY okundu: '{use_proxy_env}' -> {use_proxy}")
+        # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
+        self.proxy_config = ProxyConfig()
         
-        # Proxy yapılandırması
-        self.proxy_config = ProxyConfig() if use_proxy else None
-        if use_proxy:
-            if self.proxy_config and self.proxy_config.is_configured():
+        # use_proxy parametresi ile override edilebilir
+        if use_proxy is not None:
+            self.proxy_config.use_proxy = use_proxy
+            logger.info(f"Proxy kullanımı parametre ile belirlendi: {use_proxy}")
+        else:
+            logger.info(f".env'den USE_PROXY okundu: {self.proxy_config.use_proxy}")
+        
+        # Proxy durumunu logla
+        if self.proxy_config.use_proxy:
+            if self.proxy_config.is_configured():
                 logger.success("Proxy yapılandırması yüklendi:")
                 logger.info(f"  - Host: {self.proxy_config.proxy_host}")
                 logger.info(f"  - Port: {self.proxy_config.proxy_port}")
                 logger.info(f"  - User: {self.proxy_config.proxy_user}")
             else:
-                logger.warning("Uyarı: Proxy bilgileri .env dosyasında bulunamadı!")
+                logger.warning("Uyarı: USE_PROXY=true ama proxy bilgileri eksik!")
         else:
             logger.info("Proxy kullanımı devre dışı")
         
@@ -70,54 +73,114 @@ class ScienceDirectScraper:
         logger.header("Science Direct Scraper Başlatılıyor...")
         
         self.driver = self.selenium_driver.start()
-        self.navigator = PageNavigator(self.driver)
-        self.rate_limiter = RateLimiter(self.driver)
+        self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+        self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
         
         logger.success(f"Hedef URL: {self.config.base_url}")
     
-    def navigate_to_journals(self) -> bool:
+    def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
-        Science Direct journals sayfasına gider
+        Science Direct journals sayfasına gider. Bağlantı hatası alınırsa driver'ı yeniden başlatarak tekrar dener.
+        
+        Args:
+            max_retries: Maksimum deneme sayısı (her denemede driver yeniden başlatılır)
         
         Returns:
             bool: Başarılı ise True
         """
-        try:
-            logger.step(1, 3, f"Sayfa açılıyor: {self.config.base_url}")
-            self.driver.get(self.config.base_url)
-            
-            # Cloudflare kontrolünü bekle
-            logger.loading("Cloudflare kontrolü bekleniyor")
-            time.sleep(5)  # Cloudflare challenge için ek süre
-            
-            # Sayfanın yüklenmesini bekle
-            WebDriverWait(self.driver, self.config.timeout).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            
-            logger.success("Sayfa başarıyla yüklendi")
-            logger.info(f"  - Sayfa başlığı: {self.driver.title}")
-            logger.info(f"  - URL: {self.driver.current_url}")
-            
-            # Cloudflare challenge kontrolü
-            if "challenge" in self.driver.current_url.lower() or "captcha" in self.driver.page_source.lower():
-                logger.warning("Cloudflare challenge algılandı, bekleniyor...")
-                time.sleep(10)  # Challenge'ın geçmesi için bekle
-            
-            # Kısa bekleme (sayfa tamamen render olsun)
-            time.sleep(2)
-            
-            # Cookie popup'ını kapat
-            handle_cookie_consent(self.driver)
-            
-            return True
-            
-        except TimeoutException:
-            logger.error(f"Sayfa yükleme zaman aşımı ({self.config.timeout}s)")
-            return False
-        except Exception as e:
-            logger.failed("Sayfa yükleme hatası", e)
-            return False
+        for attempt in range(max_retries + 1):
+            try:
+                # Driver yoksa başlat
+                if self.driver is None:
+                    logger.warning("Driver aktif değil, başlatılıyor...")
+                    self.driver = self.selenium_driver.start()
+                    if self.driver is None:
+                        logger.error("Driver başlatılamadı!")
+                        return False
+                    # Navigator ve rate_limiter'ı yeniden oluştur
+                    self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                    self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
+                
+                if attempt > 0:
+                    logger.info(f"Yeniden deneniyor ({attempt}/{max_retries})...")
+                
+                logger.step(1, 3, f"Sayfa açılıyor: {self.config.base_url}")
+                self.driver.get(self.config.base_url)
+                
+                # Cloudflare kontrolünü bekle
+                logger.loading("Cloudflare kontrolü bekleniyor")
+                time.sleep(5)  # Cloudflare challenge için ek süre
+                
+                # Sayfanın yüklenmesini bekle
+                WebDriverWait(self.driver, self.config.timeout).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                )
+                
+                logger.success("Sayfa başarıyla yüklendi")
+                logger.info(f"  - Sayfa başlığı: {self.driver.title}")
+                logger.info(f"  - URL: {self.driver.current_url}")
+                
+                # Cloudflare challenge kontrolü
+                if "challenge" in self.driver.current_url.lower() or "captcha" in self.driver.page_source.lower():
+                    logger.warning("Cloudflare challenge algılandı, bekleniyor...")
+                    time.sleep(10)  # Challenge'ın geçmesi için bekle
+                
+                # Kısa bekleme (sayfa tamamen render olsun)
+                time.sleep(2)
+                
+                # Cookie popup'ını kapat
+                handle_cookie_consent(self.driver)
+                
+                return True
+                
+            except TimeoutException:
+                logger.error(f"Sayfa yükleme zaman aşımı ({self.config.timeout}s)")
+                if attempt < max_retries:
+                    logger.warning("Timeout hatası - driver yeniden başlatılarak tekrar denenecek...")
+                    self.driver = self.selenium_driver.restart()
+                    if self.driver:
+                        self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                        self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
+                    time.sleep(2)
+                    continue
+                return False
+            except Exception as e:
+                error_str = str(e)
+                
+                # Bağlantı hatalarını kontrol et
+                is_connection_error = any(err in error_str for err in [
+                    'ERR_TUNNEL_CONNECTION_FAILED',
+                    'ERR_PROXY_CONNECTION_FAILED', 
+                    'ERR_CONNECTION_REFUSED',
+                    'ERR_CONNECTION_TIMED_OUT',
+                    'ERR_NAME_NOT_RESOLVED',
+                    'net::ERR_'
+                ])
+                
+                if is_connection_error:
+                    logger.failed("Sayfa yükleme hatası (bağlantı sorunu)", e)
+                    
+                    if attempt < max_retries:
+                        logger.warning(f"Bağlantı hatası - driver yeniden başlatılarak tekrar denenecek...")
+                        # Driver'ı kapat ve yeniden başlat
+                        self.driver = self.selenium_driver.restart()
+                        if self.driver:
+                            # Navigator ve rate_limiter'ı yeniden oluştur
+                            self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                            self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
+                        else:
+                            logger.error("Driver yeniden başlatılamadı!")
+                            return False
+                        time.sleep(2)  # Yeniden başlatma sonrası kısa bekleme
+                        continue
+                    else:
+                        logger.error("Maksimum deneme sayısına ulaşıldı - bağlantı sorunu devam ediyor")
+                        return False
+                else:
+                    logger.failed("Sayfa yükleme hatası", e)
+                    return False
+        
+        return False
     
     def extract_journals_from_current_page(self) -> list:
         """Mevcut sayfadaki journal bilgilerini çıkarır"""
@@ -322,6 +385,37 @@ class ScienceDirectScraper:
             self.driver.get(full_url)
             time.sleep(3)
             
+            # Content Error kontrolü ("There was a problem providing the content")
+            if self.rate_limiter.check_content_error():
+                logger.warning("Content error tespit edildi!")
+                if retry_attempt == 0:
+                    # İlk deneme - 3 dakika bekle (başarısız olursa yeni user agent ile tarayıcı açılır)
+                    if self.rate_limiter.handle_content_error(full_url, wait_time=180):
+                        # Başarılı - driver değişmiş olabilir, güncelle
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        # Başarısız, retry listesine ekle
+                        self._update_driver_references()
+                        logger.warning(f"  Makale retry listesine eklendi: {article_url}")
+                        self.rate_limiter.add_to_retry_queue(article_url)
+                        return None
+                elif retry_attempt == 1:
+                    # İkinci deneme - 3 dakika daha bekle
+                    if self.rate_limiter.handle_content_error(full_url, wait_time=180):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        logger.error(f"  Makale failed listesine eklendi: {article_url}")
+                        self.rate_limiter.add_to_failed(article_url)
+                        return None
+                else:
+                    # Son deneme başarısız
+                    logger.error(f"  Kalıcı content error: {article_url}")
+                    self.rate_limiter.add_to_failed(article_url)
+                    return None
+            
             # Rate limiting kontrolü
             if self.rate_limiter.check_rate_limiting():
                 # İlk deneme ise 5 dakika bekle
@@ -365,6 +459,17 @@ class ScienceDirectScraper:
             import traceback
             traceback.print_exc()
             return None
+    
+    def _update_driver_references(self):
+        """
+        Tarayıcı yeniden başlatıldığında driver referanslarını günceller
+        """
+        updated_driver = self.rate_limiter.get_updated_driver()
+        if updated_driver != self.driver:
+            logger.info("Driver referansları güncelleniyor...")
+            self.driver = updated_driver
+            self.navigator.driver = updated_driver
+            logger.success("Driver referansları güncellendi")
     
     def scrape_journal_articles(self, journal_info: dict, max_articles: int = None) -> list:
         """
@@ -438,8 +543,8 @@ class ScienceDirectScraper:
                     retry_results = self._process_retry_queue()
                     all_articles.extend(retry_results)
                 
-                # Rate limiting
-                time.sleep(2)
+                # Random bekleme (rate limiting önleme)
+                self.rate_limiter.random_wait()
             
             # Son olarak kalan retry queue'yu işle
             if self.rate_limiter.retry_queue:
@@ -498,7 +603,8 @@ class ScienceDirectScraper:
             else:
                 logger.error("  Yine başarısız, failed listesine eklendi")
             
-            time.sleep(2)
+            # Random bekleme
+            self.rate_limiter.random_wait()
         
         return results
     
@@ -529,7 +635,8 @@ class ScienceDirectScraper:
                 self.rate_limiter.failed_articles.append(article_url)
                 logger.error("  Kalıcı başarısızlık")
             
-            time.sleep(3)  # Biraz daha uzun bekle son deneme için
+            # Son deneme için biraz daha uzun random bekleme
+            self.rate_limiter.random_wait(min_wait=3.0, max_wait=6.0)
         
         if results:
             logger.success(f"{len(results)} makale son denemede başarıyla kurtarıldı!")
