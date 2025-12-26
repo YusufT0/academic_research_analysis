@@ -16,3 +16,11 @@ pydantic-settings>=2.1.0
 # FastAPI Backend
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
+
+# NLP Related
+sentence-transformers
+umap-learn
+hdbscan
+numpy
+scikit-learn
+nltk
