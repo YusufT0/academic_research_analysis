@@ -26,6 +26,7 @@ from .routers import (
     articles_router,
     scrapers_router,
     stats_router,
+    nlp_router
 )
 
 from database import init_database, close_database
@@ -197,6 +198,7 @@ app.include_router(issues_router, prefix="/api/v1")
 app.include_router(articles_router, prefix="/api/v1")
 app.include_router(scrapers_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
+app.include_router(nlp_router, prefix="/api/v1")
 
 
 # Root endpoint
@@ -246,5 +248,6 @@ async def api_info():
             "articles": "/api/v1/articles",
             "scrapers": "/api/v1/scrapers",
             "stats": "/api/v1/stats",
+            "nlp" : "/api/v1/nlp"
         }
     }

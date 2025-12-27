@@ -5,6 +5,7 @@ import hdbscan
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
+import pickle
 
 class Clusterer():
     """
@@ -101,7 +102,32 @@ class Clusterer():
         
         n_clusters = len(set(self.data_clusters)) - (1 if -1 in self.data_clusters else 0)
         print(f"Done! Found {n_clusters} clusters.")
+    
+
+
+    def save_state(self, filename="search_engine.pkl"):
+        """Saves the trained models and indexed data to a file."""
+        state = {
+            "reducer": self.reducer_model,
+            "clusters": self.data_clusters,
+            "clustered_data": self.clustered_data,
+            "embedded_384": self.embedded, # Keep for the similarity fix
+        }
+        with open(filename, "wb") as f:
+            pickle.dump(state, f)
+        print(f"Engine state saved to {filename}")
+
+    def load_state(self, filename="search_engine.pkl"):
+        """Loads everything back so you can search immediately."""
+        with open(filename, "rb") as f:
+            state = pickle.load(f)
         
+        self.reducer_model = state["reducer"]
+        self.data_clusters = state["clusters"]
+        self.clustered_data = state["clustered_data"]
+        self.embedded = state["embedded_384"]
+        print("Engine state loaded. Ready for rapid search.")
+
     def test_model(self, query_text):
         
         
@@ -134,3 +160,4 @@ class Clusterer():
         
         return self.clustered_data.get(best_cluster, []), max_sim
     
+
