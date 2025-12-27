@@ -14,9 +14,9 @@ from analyzer.clustering_script import Clusterer
 
 router = APIRouter(prefix="/nlp", tags=["AI Things"])
 
-MODEL_PATH = "/home/yusuf/Desktop/academic_research_analysis/scrapers/analyzer/clustering_model.pkl"
+MODEL_PATH = "/home/yusuf/Desktop/academic_research_analysis/scrapers/analyzer/.clustering_model_.pkl"
 
-clster = Clusterer() # Path=None because we aren't training, just loading
+clster = Clusterer(umap_n_components=10) 
 try:
     clster.load_state(MODEL_PATH)
     print("Successfully loaded NLP Clusterer into memory.")
