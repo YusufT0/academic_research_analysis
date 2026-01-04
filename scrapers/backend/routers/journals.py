@@ -12,6 +12,11 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from database.models import Journal
 from database.repositories import JournalRepository
+from backend.services.cache_service import cache_service
+from backend.core.config import settings
+from utils.logger import get_logger
+
+logger = get_logger('journals_router')
 
 router = APIRouter(prefix="/journals", tags=["Journals"])
 
@@ -104,17 +109,23 @@ async def list_journals(
 
 @router.get("/{journal_id}", summary="Dergi detayı")
 async def get_journal(journal_id: str):
-    """Belirli bir derginin detaylarını getir"""
+    """Belirli bir derginin detaylarını getir (cached)"""
     try:
         obj_id = PydanticObjectId(journal_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid journal ID")
     
+    # Cache'den dene
+    cached = await cache_service.get_journal(journal_id)
+    if cached:
+        logger.info(f"Cache HIT: journal {journal_id}")
+        return cached
+    
     journal = await Journal.get(obj_id)
     if not journal:
         raise HTTPException(status_code=404, detail="Journal not found")
     
-    return {
+    result = {
         "id": str(journal.id),
         "name": journal.name,
         "url": journal.url,
@@ -132,6 +143,50 @@ async def get_journal(journal_id: str):
         "created_at": journal.created_at,
         "updated_at": journal.updated_at,
     }
+    
+    # Cache'e yaz
+    await cache_service.set_journal(journal_id, result)
+    logger.info(f"Cache MISS: journal {journal_id} - cached")
+    
+    # Prefetch: Derginin issue'larını background'da cache'le (eğer yoksa)
+    if settings.prefetch_enabled:
+        async def prefetch_issues():
+            try:
+                # Önce cache'de var mı kontrol et
+                if await cache_service.get_journal_issues(journal_id):
+                    logger.info(f"Prefetch skipped: journal {journal_id} issues already cached")
+                    return
+                
+                from database.models import Issue
+                logger.info(f"Prefetch starting: journal {journal_id} issues")
+                issues = await Issue.find({"journal_id": obj_id}).sort([("year", -1), ("month", -1)]).limit(settings.prefetch_issues_per_journal).to_list()
+                if issues:
+                    # Endpoint ile aynı formatta cache'le
+                    issues_data = [
+                        {
+                            "id": str(i.id),
+                            "journal_id": str(i.journal_id),
+                            "issue_number": i.issue_number,
+                            "volume": i.volume,
+                            "number": i.number,
+                            "date": i.date,
+                            "year": i.year,
+                            "month": i.month,
+                            "url": i.url,
+                            "status": i.status,
+                            "article_count": i.article_count,
+                        }
+                        for i in issues
+                    ]
+                    await cache_service.set_journal_issues(journal_id, issues_data)
+                    logger.info(f"Prefetch completed: {len(issues)} issues for journal {journal_id}")
+                else:
+                    logger.info(f"Prefetch: no issues found for journal {journal_id}")
+            except Exception as e:
+                logger.error(f"Prefetch error (journal issues): {e}")
+        cache_service._schedule_prefetch(prefetch_issues())
+    
+    return result
 
 
 @router.get("/{journal_id}/issues", summary="Derginin sayıları")
@@ -140,13 +195,31 @@ async def get_journal_issues(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
 ):
-    """Belirli bir derginin tüm sayılarını getir"""
+    """Belirli bir derginin tüm sayılarını getir (cached for first page)"""
     from database.models import Issue
     
     try:
         obj_id = PydanticObjectId(journal_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid journal ID")
+    
+    # İlk sayfa için cache'den dene (prefetch ile aynı format)
+    if page == 1 and page_size <= 20:
+        cached_issues = await cache_service.get_journal_issues(journal_id)
+        if cached_issues:
+            logger.info(f"Cache HIT: journal {journal_id} issues")
+            journal = await Journal.get(obj_id)
+            if journal:
+                return {
+                    "journal": {"id": str(journal.id), "name": journal.name},
+                    "items": cached_issues[:page_size],
+                    "total": len(cached_issues),
+                    "page": 1,
+                    "page_size": page_size,
+                    "total_pages": 1,
+                    "has_next": len(cached_issues) > page_size,
+                    "has_prev": False,
+                }
     
     # Check journal exists
     journal = await Journal.get(obj_id)
@@ -161,24 +234,31 @@ async def get_journal_issues(
     
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
     
+    issues_data = [
+        {
+            "id": str(i.id),
+            "journal_id": str(i.journal_id),
+            "issue_number": i.issue_number,
+            "volume": i.volume,
+            "number": i.number,
+            "date": i.date,
+            "year": i.year,
+            "month": i.month,
+            "url": i.url,
+            "status": i.status,
+            "article_count": i.article_count,
+        }
+        for i in items
+    ]
+    
+    # İlk sayfa ise cache'le
+    if page == 1:
+        await cache_service.set_journal_issues(journal_id, issues_data)
+        logger.info(f"Cache MISS: journal {journal_id} issues - cached")
+    
     return {
         "journal": {"id": str(journal.id), "name": journal.name},
-        "items": [
-            {
-                "id": str(i.id),
-                "journal_id": str(i.journal_id),
-                "issue_number": i.issue_number,
-                "volume": i.volume,
-                "number": i.number,
-                "date": i.date,
-                "year": i.year,
-                "month": i.month,
-                "url": i.url,
-                "status": i.status,
-                "article_count": i.article_count,
-            }
-            for i in items
-        ],
+        "items": issues_data,
         "total": total,
         "page": page,
         "page_size": page_size,

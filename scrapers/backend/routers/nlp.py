@@ -13,6 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.services.nlp_service import nlp_service
+from backend.services.cache_service import cache_service
+from backend.core.config import settings
 from utils.logger import get_logger
 
 logger = get_logger('nlp_router')
@@ -159,14 +161,85 @@ async def search_similar_articles(
     - O cluster'daki makaleleri döndürür
     
     **auto_train=true** ile analiz yoksa otomatik olarak eğitim başlatılır.
+    
+    Cache desteği: Aynı sorgu için sonuçlar cache'lenir.
     """
     try:
+        # Önce cache'e bak
+        cache_params = {"model_version": model_version, "top_k": top_k}
+        cached_result = await cache_service.get_search_results(query, cache_params)
+        if cached_result:
+            logger.debug(f"Search cache HIT: {query}")
+            return SearchResponse(**cached_result)
+        
+        # Cache'de yoksa hesapla
         result = await nlp_service.search_similar(
             query=query,
             model_version=model_version,
             top_k=top_k,
             auto_train=auto_train
         )
+        
+        # Sonucu cache'le
+        await cache_service.set_search_results(query, cache_params, result)
+        logger.info(f"Cache MISS: search '{query[:30]}...' - cached")
+        
+        # Cluster'daki diğer makaleleri ve komşu cluster'ları prefetch et (background)
+        if settings.prefetch_enabled and result.get("cluster_id") is not None:
+            cluster_id = result["cluster_id"]
+            mv = result.get("model_version", "pkl_legacy")
+            
+            async def prefetch_cluster_and_neighbors():
+                try:
+                    logger.info(f"Prefetch starting: cluster {cluster_id} and neighbors")
+                    
+                    # 1. Ana cluster'ın tüm makalelerini prefetch et
+                    if mv != "pkl_legacy":
+                        full_result = await nlp_service.get_cluster_detail(
+                            cluster_id=cluster_id,
+                            model_version=mv,
+                            include_articles=True,
+                            article_limit=settings.prefetch_articles_per_cluster
+                        )
+                        if full_result:
+                            # Cluster meta bilgisini cache'le
+                            cluster_data = {k: v for k, v in full_result.items() if k != "articles"}
+                            await cache_service.set_cluster(cluster_id, mv, cluster_data)
+                            # Makaleleri cache'le
+                            await cache_service.set_cluster_articles(
+                                cluster_id, mv, full_result.get("articles", [])
+                            )
+                            logger.info(f"Prefetch: cluster {cluster_id} cached with {len(full_result.get('articles', []))} articles")
+                    
+                    # 2. Komşu cluster'ları prefetch et
+                    n = settings.prefetch_neighbor_clusters
+                    neighbor_ids = [cluster_id + i for i in range(-n, n+1) if i != 0]
+                    neighbor_ids = [nid for nid in neighbor_ids if nid >= 0]
+                    
+                    for neighbor_id in neighbor_ids:
+                        try:
+                            neighbor_result = await nlp_service.get_cluster_detail(
+                                cluster_id=neighbor_id,
+                                model_version=mv,
+                                include_articles=True,
+                                article_limit=settings.prefetch_neighbor_articles_limit
+                            )
+                            if neighbor_result:
+                                neighbor_data = {k: v for k, v in neighbor_result.items() if k != "articles"}
+                                await cache_service.set_cluster(neighbor_id, mv, neighbor_data)
+                                await cache_service.set_cluster_articles(
+                                    neighbor_id, mv, neighbor_result.get("articles", [])
+                                )
+                        except Exception:
+                            pass  # Komşu cluster yoksa sessizce geç
+                    
+                    logger.info(f"Prefetch completed: cluster {cluster_id} + {len(neighbor_ids)} neighbors")
+                    
+                except Exception as e:
+                    logger.error(f"Cluster prefetch error: {e}")
+            
+            cache_service._schedule_prefetch(prefetch_cluster_and_neighbors())
+        
         return SearchResponse(**result)
         
     except ValueError as e:
@@ -213,8 +286,34 @@ async def get_cluster_detail(
     
     - Cluster metadata
     - Opsiyonel: Cluster'daki makaleler
+    
+    Cache desteği: Cluster bilgileri cache'lenir.
     """
     try:
+        # Önce gerçek model version'ı belirle
+        actual_mv = model_version
+        if not actual_mv:
+            # En son model versiyonunu al
+            status = await nlp_service.get_status()
+            actual_mv = status.get("latest_model_version") or status.get("cached_version") or "latest"
+        
+        # Önce cluster cache'ine bak
+        cached_cluster = await cache_service.get_cluster(cluster_id, actual_mv)
+        cached_articles = None
+        
+        if include_articles:
+            cached_articles = await cache_service.get_cluster_articles(cluster_id, actual_mv)
+        
+        # Tam cache hit
+        if cached_cluster and (not include_articles or cached_articles):
+            logger.info(f"Cache HIT: cluster {cluster_id} (v: {actual_mv})")
+            result = cached_cluster.copy()
+            if include_articles and cached_articles:
+                result["articles"] = cached_articles[:article_limit]
+            return result
+        
+        # Cache'de yoksa hesapla
+        logger.info(f"Cache MISS: cluster {cluster_id} - DB'den alınıyor")
         result = await nlp_service.get_cluster_detail(
             cluster_id=cluster_id,
             model_version=model_version,
@@ -224,6 +323,60 @@ async def get_cluster_detail(
         
         if not result:
             raise HTTPException(status_code=404, detail="Cluster bulunamadı")
+        
+        # Gerçek model version'ı sonuçtan al
+        actual_mv = result.get("model_version", actual_mv)
+        
+        # Cluster bilgisini cache'le (articles hariç)
+        cluster_data = {k: v for k, v in result.items() if k != "articles"}
+        await cache_service.set_cluster(cluster_id, actual_mv, cluster_data)
+        
+        # Articles varsa onları da cache'le
+        if include_articles and result.get("articles"):
+            await cache_service.set_cluster_articles(
+                cluster_id, actual_mv, result["articles"]
+            )
+        
+        logger.info(f"Cluster {cluster_id} cached (version: {actual_mv})")
+        
+        # Prefetch: Komşu cluster'ları background'da cache'le
+        if settings.prefetch_enabled:
+            async def prefetch_neighbor_clusters():
+                try:
+                    n = settings.prefetch_neighbor_clusters
+                    neighbor_ids = [cluster_id + i for i in range(-n, n+1) if i != 0]
+                    neighbor_ids = [nid for nid in neighbor_ids if nid >= 0]
+                    
+                    prefetched = 0
+                    for neighbor_id in neighbor_ids:
+                        # Zaten cache'de mi kontrol et
+                        if await cache_service.get_cluster(neighbor_id, actual_mv):
+                            continue
+                        
+                        try:
+                            neighbor_result = await nlp_service.get_cluster_detail(
+                                cluster_id=neighbor_id,
+                                model_version=actual_mv,
+                                include_articles=True,
+                                article_limit=settings.prefetch_neighbor_articles_limit
+                            )
+                            if neighbor_result:
+                                neighbor_data = {k: v for k, v in neighbor_result.items() if k != "articles"}
+                                await cache_service.set_cluster(neighbor_id, actual_mv, neighbor_data)
+                                if neighbor_result.get("articles"):
+                                    await cache_service.set_cluster_articles(
+                                        neighbor_id, actual_mv, neighbor_result["articles"]
+                                    )
+                                prefetched += 1
+                        except Exception:
+                            pass  # Komşu cluster yoksa sessizce geç
+                    
+                    if prefetched > 0:
+                        logger.info(f"Prefetch completed: {prefetched} neighbor clusters for cluster {cluster_id}")
+                except Exception as e:
+                    logger.error(f"Neighbor cluster prefetch error: {e}")
+            
+            cache_service._schedule_prefetch(prefetch_neighbor_clusters())
         
         return result
         
@@ -242,9 +395,32 @@ async def get_cluster_articles(
     skip: int = Query(0, ge=0, description="Atlanacak makale sayısı")
 ):
     """
-    Belirli bir cluster'daki makaleleri sayfalı olarak döndürür.
+    Belirli bir cluster'daki makaleleri sayfalı olarak döndürür (cached).
     """
     try:
+        # Önce gerçek model version'ı belirle
+        actual_mv = model_version
+        if not actual_mv:
+            status = await nlp_service.get_status()
+            actual_mv = status.get("latest_model_version") or status.get("cached_version") or "latest"
+        
+        # Cache'den dene (ilk sayfa için)
+        if skip == 0:
+            cached_articles = await cache_service.get_cluster_articles(cluster_id, actual_mv)
+            if cached_articles:
+                logger.info(f"Cache HIT: cluster {cluster_id} articles")
+                articles = cached_articles[:limit]
+                return {
+                    "cluster_id": cluster_id,
+                    "total_count": len(cached_articles),
+                    "returned_count": len(articles),
+                    "skip": skip,
+                    "limit": limit,
+                    "articles": articles
+                }
+        
+        # Cache'de yoksa DB'den al
+        logger.info(f"Cache MISS: cluster {cluster_id} articles - DB'den alınıyor")
         result = await nlp_service.get_cluster_detail(
             cluster_id=cluster_id,
             model_version=model_version,
@@ -255,7 +431,13 @@ async def get_cluster_articles(
         if not result:
             raise HTTPException(status_code=404, detail="Cluster bulunamadı")
         
-        articles = result.get("articles", [])[skip:skip + limit]
+        all_articles = result.get("articles", [])
+        articles = all_articles[skip:skip + limit]
+        
+        # İlk sayfa ise cache'le
+        if skip == 0:
+            await cache_service.set_cluster_articles(cluster_id, actual_mv, all_articles)
+            logger.info(f"Cluster {cluster_id} articles cached")
         
         return {
             "cluster_id": cluster_id,

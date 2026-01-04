@@ -25,3 +25,6 @@ hdbscan
 numpy
 scikit-learn
 nltk
+
+# Redis Cache
+redis[hiredis]>=5.0.0

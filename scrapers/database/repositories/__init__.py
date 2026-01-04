@@ -10,6 +10,16 @@ from .embedding_repository import EmbeddingRepository
 from .cluster_repository import ClusterRepository
 from .analysis_run_repository import AnalysisRunRepository
 
+# Cached repositories lazy import - circular import önlemek için
+def get_cached_repositories():
+    """Cached repository'leri lazy olarak import et"""
+    from .cached_repositories import (
+        CachedArticleRepository,
+        CachedJournalRepository,
+        CachedIssueRepository
+    )
+    return CachedArticleRepository, CachedJournalRepository, CachedIssueRepository
+
 __all__ = [
     "BaseRepository",
     "JournalRepository",
@@ -19,4 +29,6 @@ __all__ = [
     "EmbeddingRepository",
     "ClusterRepository",
     "AnalysisRunRepository",
+    # Cached Repositories (lazy import function)
+    "get_cached_repositories",
 ]

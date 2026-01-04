@@ -20,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .core.config import settings
 from .core.dependencies import set_scraper_manager
 from .services.scraper_manager import ScraperManager
+from .services.cache_service import cache_service
 from .routers import (
     journals_router,
     issues_router,
@@ -116,6 +117,14 @@ async def lifespan(app: FastAPI):
         raise RuntimeError("Database connection failed")
     logger.success("Database bağlantısı kuruldu")
     
+    # Initialize Redis cache
+    logger.info("Redis cache bağlantısı kuruluyor...")
+    redis_success = await cache_service.connect()
+    if redis_success:
+        logger.success("Redis cache bağlantısı kuruldu")
+    else:
+        logger.warning("Redis cache bağlantısı kurulamadı - cache devre dışı")
+    
     # Initialize scraper manager
     logger.info("Scraper manager başlatılıyor...")
     scraper_manager = ScraperManager()
@@ -152,6 +161,10 @@ async def lifespan(app: FastAPI):
     if scraper_manager:
         await scraper_manager.stop_all()
         await scraper_manager.close()
+    
+    # Close Redis cache
+    logger.info("Redis cache bağlantısı kapatılıyor...")
+    await cache_service.disconnect()
     
     # Close database
     logger.info("Database bağlantısı kapatılıyor...")

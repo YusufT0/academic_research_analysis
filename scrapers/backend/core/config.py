@@ -93,6 +93,92 @@ class Settings(BaseSettings):
         description="HDBSCAN min_samples"
     )
     
+    # Redis Cache Settings
+    redis_enabled: bool = Field(
+        default=True,
+        alias="REDIS_ENABLED",
+        description="Redis cache aktif mi"
+    )
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        alias="REDIS_URL",
+        description="Redis bağlantı URL'i"
+    )
+    redis_prefix: str = Field(
+        default="academic",
+        alias="REDIS_PREFIX",
+        description="Redis key prefix'i"
+    )
+    
+    # Cache TTL Settings (saniye)
+    cache_ttl_article: int = Field(
+        default=3600,  # 1 saat
+        alias="CACHE_TTL_ARTICLE",
+        description="Article cache TTL (saniye)"
+    )
+    cache_ttl_journal: int = Field(
+        default=21600,  # 6 saat
+        alias="CACHE_TTL_JOURNAL",
+        description="Journal cache TTL (saniye)"
+    )
+    cache_ttl_issue: int = Field(
+        default=7200,  # 2 saat
+        alias="CACHE_TTL_ISSUE",
+        description="Issue cache TTL (saniye)"
+    )
+    cache_ttl_cluster: int = Field(
+        default=1800,  # 30 dakika
+        alias="CACHE_TTL_CLUSTER",
+        description="Cluster cache TTL (saniye)"
+    )
+    cache_ttl_search: int = Field(
+        default=900,  # 15 dakika
+        alias="CACHE_TTL_SEARCH",
+        description="Search results cache TTL (saniye)"
+    )
+    cache_ttl_stats: int = Field(
+        default=300,  # 5 dakika
+        alias="CACHE_TTL_STATS",
+        description="Stats cache TTL (saniye)"
+    )
+    
+    # Prefetch Settings
+    prefetch_enabled: bool = Field(
+        default=True,
+        alias="PREFETCH_ENABLED",
+        description="Akıllı prefetch aktif mi"
+    )
+    prefetch_articles_per_issue: int = Field(
+        default=20,
+        alias="PREFETCH_ARTICLES_PER_ISSUE",
+        description="Issue görüntülenince kaç makale prefetch edilsin"
+    )
+    prefetch_issues_per_journal: int = Field(
+        default=20,
+        alias="PREFETCH_ISSUES_PER_JOURNAL",
+        description="Journal görüntülenince kaç issue prefetch edilsin"
+    )
+    prefetch_articles_per_cluster: int = Field(
+        default=50,
+        alias="PREFETCH_ARTICLES_PER_CLUSTER",
+        description="Cluster arama/görüntülemede kaç makale prefetch edilsin"
+    )
+    prefetch_neighbor_clusters: int = Field(
+        default=2,
+        alias="PREFETCH_NEIGHBOR_CLUSTERS",
+        description="Cluster görüntülemede kaç komşu cluster prefetch edilsin (±)"
+    )
+    prefetch_neighbor_issues: int = Field(
+        default=2,
+        alias="PREFETCH_NEIGHBOR_ISSUES",
+        description="Issue görüntülemede kaç komşu issue prefetch edilsin (±)"
+    )
+    prefetch_neighbor_articles_limit: int = Field(
+        default=30,
+        alias="PREFETCH_NEIGHBOR_ARTICLES_LIMIT",
+        description="Komşu cluster için kaç makale prefetch edilsin"
+    )
+    
     @property
     def nlp_model_full_path(self) -> Path:
         """NLP model tam yolu"""

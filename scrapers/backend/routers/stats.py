@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from database.models import Journal, Issue, Article
 from database.connection import get_database
 from ..core.dependencies import get_scraper_manager
+from ..services.cache_service import cache_service
 
 router = APIRouter(prefix="/stats", tags=["Statistics"])
 
@@ -45,7 +46,8 @@ async def get_general_stats():
             "ieee_status": scraper_status["ieee"]["status"],
             "sciencedirect_status": scraper_status["sciencedirect"]["status"],
             "any_running": scraper_status["any_running"],
-        }
+        },
+        "cache": await cache_service.get_cache_stats()
     }
 
 
@@ -207,3 +209,25 @@ async def get_scraper_stats():
             "errors_count": ieee["errors_count"] + sd["errors_count"],
         }
     }
+
+@router.get("/cache", summary="Cache istatistikleri")
+async def get_cache_stats():
+    """Redis cache istatistikleri"""
+    stats = await cache_service.get_cache_stats()
+    return stats
+
+
+@router.delete("/cache", summary="Cache temizle")
+async def clear_cache(pattern: Optional[str] = Query(None, description="Silinecek key pattern (örn: 'search:*')")):
+    """
+    Cache temizleme
+    
+    - pattern belirtilmezse: Tüm cache temizlenir
+    - pattern belirtilirse: Sadece o pattern'e uyan key'ler silinir
+    """
+    if pattern:
+        deleted = await cache_service.invalidate_pattern(pattern)
+        return {"message": f"Pattern '{pattern}' ile eşleşen {deleted} key silindi"}
+    else:
+        deleted = await cache_service.invalidate_pattern("*")
+        return {"message": f"Tüm cache temizlendi ({deleted} key silindi)"}

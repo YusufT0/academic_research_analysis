@@ -11,6 +11,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from database.models import Article
+from backend.services.cache_service import cache_service
+from backend.core.config import settings
+from utils.logger import get_logger
+
+logger = get_logger('articles_router')
 
 router = APIRouter(prefix="/articles", tags=["Articles"])
 
@@ -174,17 +179,23 @@ async def search_articles(
 
 @router.get("/{article_id}", summary="Makale detayı")
 async def get_article(article_id: str):
-    """Belirli bir makalenin tüm detaylarını getir"""
+    """Belirli bir makalenin tüm detaylarını getir (cached)"""
     try:
         obj_id = PydanticObjectId(article_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid article ID")
     
+    # Cache'den dene
+    cached = await cache_service.get_article(article_id)
+    if cached:
+        logger.info(f"Cache HIT: article {article_id}")
+        return cached
+    
     article = await Article.get(obj_id)
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
     
-    return {
+    result = {
         "id": str(article.id),
         "journal_id": str(article.journal_id),
         "journal_name": article.journal_name,
@@ -210,16 +221,91 @@ async def get_article(article_id: str):
         "created_at": article.created_at,
         "updated_at": article.updated_at,
     }
+    
+    # Cache'e yaz
+    await cache_service.set_article(article_id, result)
+    logger.info(f"Cache MISS: article {article_id} - cached")
+    
+    # Prefetch: Aynı issue'daki makaleleri VE issue bilgisini background'da cache'le
+    if settings.prefetch_enabled and article.issue_id:
+        async def prefetch_issue_data():
+            try:
+                issue_id_str = str(article.issue_id)
+                
+                # 1. Issue bilgisini prefetch et (eğer cache'de yoksa)
+                if not await cache_service.get_issue(issue_id_str):
+                    logger.info(f"Prefetch starting: issue {issue_id_str} info")
+                    from database.models import Issue
+                    issue = await Issue.get(article.issue_id)
+                    if issue:
+                        issue_data = {
+                            "id": str(issue.id),
+                            "journal_id": str(issue.journal_id),
+                            "journal_name": issue.journal_name,
+                            "source_website": issue.source_website,
+                            "issue_number": issue.issue_number,
+                            "volume": issue.volume,
+                            "number": issue.number,
+                            "date": issue.date,
+                            "year": issue.year,
+                            "month": issue.month,
+                            "url": issue.url,
+                            "status": issue.status,
+                            "article_count": issue.article_count,
+                            "pages": issue.pages,
+                            "created_at": issue.created_at,
+                            "updated_at": issue.updated_at,
+                        }
+                        await cache_service.set_issue(issue_id_str, issue_data)
+                        logger.info(f"Prefetch completed: issue {issue_id_str} info")
+                
+                # 2. Issue makalelerini prefetch et (eğer cache'de yoksa)
+                if not await cache_service.get_issue_articles(issue_id_str):
+                    logger.info(f"Prefetch starting: issue {issue_id_str} articles")
+                    issue_articles = await Article.find({"issue_id": article.issue_id}).limit(settings.prefetch_articles_per_issue).to_list()
+                    if issue_articles:
+                        articles_data = [
+                            {
+                                "id": str(a.id),
+                                "title": a.title,
+                                "url": a.url,
+                                "doi": a.doi,
+                                "authors": a.authors,
+                                "abstract": a.abstract[:300] + "..." if a.abstract and len(a.abstract) > 300 else a.abstract,
+                                "keywords": a.keywords,
+                                "publication_date": a.publication_date,
+                                "article_type": a.article_type,
+                                "open_access": a.open_access,
+                                "pdf_url": a.pdf_url,
+                            }
+                            for a in issue_articles
+                        ]
+                        await cache_service.set_issue_articles(issue_id_str, articles_data)
+                        logger.info(f"Prefetch completed: {len(issue_articles)} articles for issue {issue_id_str}")
+                else:
+                    logger.info(f"Prefetch skipped: issue {issue_id_str} articles already cached")
+                    
+            except Exception as e:
+                logger.error(f"Prefetch error (article's issue): {e}")
+        cache_service._schedule_prefetch(prefetch_issue_data())
+    
+    return result
 
 
 @router.get("/by-doi/{doi:path}", summary="DOI ile makale bul")
 async def get_article_by_doi(doi: str):
-    """DOI numarasına göre makale getir"""
+    """DOI numarasına göre makale getir (cached)"""
+    # Cache'den dene
+    cached = await cache_service.get_article_by_doi(doi)
+    if cached:
+        logger.info(f"Cache HIT: article DOI {doi}")
+        return cached
+    
     article = await Article.find_one({"doi": doi})
     if not article:
         raise HTTPException(status_code=404, detail="Article not found")
     
-    return {
+    result = {
         "id": str(article.id),
         "title": article.title,
         "journal_name": article.journal_name,
@@ -230,3 +316,10 @@ async def get_article_by_doi(doi: str):
         "keywords": article.keywords,
         "publication_year": article.publication_year,
     }
+    
+    # Cache'e yaz (hem DOI hem ID ile)
+    await cache_service.set_article_by_doi(doi, result)
+    await cache_service.set_article(str(article.id), result)
+    logger.info(f"Cache MISS: article DOI {doi} - cached")
+    
+    return result
