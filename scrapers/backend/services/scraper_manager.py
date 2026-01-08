@@ -35,13 +35,16 @@ logger = get_logger('scraper_manager')
 # Bu import'lar thread başlamadan önce yapılır
 logger.info("Scraper modülleri yükleniyor...")
 try:
-    from ieee_xplore.scraper import IEEEXploreScraper
-    from science_direct.scraper import ScienceDirectScraper
+    from ieee_xplore.scraper import IEEEXploreScraper, ScraperStoppedException as IEEEScraperStoppedException
+    from science_direct.scraper import ScienceDirectScraper, ScraperStoppedException as SDScraperStoppedException
+    # Birleşik exception - her iki scraper için de kullanılabilir
+    ScraperStoppedException = (IEEEScraperStoppedException, SDScraperStoppedException)
     logger.success("Scraper modülleri yüklendi")
 except Exception as e:
     logger.error(f"Scraper modülleri yüklenemedi: {e}")
     IEEEXploreScraper = None
     ScienceDirectScraper = None
+    ScraperStoppedException = Exception  # Fallback
 
 
 class ScraperStatus(str, Enum):
@@ -310,7 +313,7 @@ class ScraperManager:
             # Create and initialize
             logger.info("[IEEE Thread] Browser başlatılıyor...")
             print("[IEEE Thread] Browser başlatılıyor...", flush=True)
-            scraper = IEEEXploreScraper(headless=self.ieee_headless)
+            scraper = IEEEXploreScraper(headless=self.ieee_headless, stop_flag=self._ieee_stop_flag)
             print("[IEEE Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
             print("[IEEE Thread] Browser başlatıldı!", flush=True)
@@ -442,6 +445,12 @@ class ScraperManager:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[IEEE Thread] {journal_name}: Makale yok, journal kaydedildi")
                     
+                except ScraperStoppedException:
+                    # Stop sinyali alındı - döngüden çık
+                    progress.status = ScraperStatus.STOPPED
+                    progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                    logger.warning(f"[IEEE Thread] Scraper durduruldu (makale işlemi sırasında)")
+                    break
                 except Exception as e:
                     progress.errors_count += 1
                     progress.last_error = str(e)
@@ -457,6 +466,11 @@ class ScraperManager:
                 progress.add_log("success", "IEEE scraper tamamlandı")
                 logger.success("[IEEE Thread] Scraper tamamlandı")
         
+        except ScraperStoppedException:
+            # Stop sinyali - normal sonlanma
+            progress.status = ScraperStatus.STOPPED
+            progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+            logger.warning("[IEEE Thread] Scraper durduruldu")
         except Exception as e:
             progress.status = ScraperStatus.ERROR
             progress.last_error = str(e)
@@ -479,17 +493,22 @@ class ScraperManager:
         if self.ieee_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
             return False
         
+        logger.info("IEEE scraper durduruluyor...")
         self._ieee_stop_flag.set()
         self.ieee_progress.status = ScraperStatus.STOPPING
+        self.ieee_progress.add_log("warning", "Durdurma sinyali gönderildi")
         
         if self._ieee_future:
             try:
-                # Thread'in bitmesini bekle (max 10 saniye)
-                self._ieee_future.result(timeout=10)
+                # Thread'in bitmesini bekle (max 15 saniye - browser kapanması için yeterli)
+                self._ieee_future.result(timeout=15)
+                logger.success("IEEE scraper düzgün şekilde durduruldu")
             except concurrent.futures.TimeoutError:
-                logger.warning("IEEE scraper stop timeout")
-            except Exception:
-                pass
+                logger.warning("IEEE scraper stop timeout - browser kapanmayı bekliyor olabilir")
+                self.ieee_progress.status = ScraperStatus.STOPPED
+            except Exception as e:
+                logger.warning(f"IEEE scraper stop hatası: {e}")
+                self.ieee_progress.status = ScraperStatus.STOPPED
         
         return True
     
@@ -554,7 +573,7 @@ class ScraperManager:
             # Create and initialize
             logger.info("[SD Thread] Browser başlatılıyor...")
             print("[SD Thread] Browser başlatılıyor...", flush=True)
-            scraper = ScienceDirectScraper(headless=self.sciencedirect_headless)
+            scraper = ScienceDirectScraper(headless=self.sciencedirect_headless, stop_flag=self._sciencedirect_stop_flag)
             print("[SD Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
             print("[SD Thread] Browser başlatıldı!", flush=True)
@@ -687,6 +706,12 @@ class ScraperManager:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[SD Thread] {journal_name}: Makale yok, journal kaydedildi")
                     
+                except ScraperStoppedException:
+                    # Stop sinyali alındı - döngüden çık
+                    progress.status = ScraperStatus.STOPPED
+                    progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                    logger.warning(f"[SD Thread] Scraper durduruldu (makale işlemi sırasında)")
+                    break
                 except Exception as e:
                     progress.errors_count += 1
                     progress.last_error = str(e)
@@ -702,6 +727,11 @@ class ScraperManager:
                 progress.add_log("success", "ScienceDirect scraper tamamlandı")
                 logger.success("[SD Thread] Scraper tamamlandı")
         
+        except ScraperStoppedException:
+            # Stop sinyali - normal sonlanma
+            progress.status = ScraperStatus.STOPPED
+            progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+            logger.warning("[SD Thread] Scraper durduruldu")
         except Exception as e:
             progress.status = ScraperStatus.ERROR
             progress.last_error = str(e)
@@ -724,17 +754,22 @@ class ScraperManager:
         if self.sciencedirect_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
             return False
         
+        logger.info("ScienceDirect scraper durduruluyor...")
         self._sciencedirect_stop_flag.set()
         self.sciencedirect_progress.status = ScraperStatus.STOPPING
+        self.sciencedirect_progress.add_log("warning", "Durdurma sinyali gönderildi")
         
         if self._sciencedirect_future:
             try:
-                # Thread'in bitmesini bekle (max 10 saniye)
-                self._sciencedirect_future.result(timeout=10)
+                # Thread'in bitmesini bekle (max 15 saniye - browser kapanması için yeterli)
+                self._sciencedirect_future.result(timeout=15)
+                logger.success("ScienceDirect scraper düzgün şekilde durduruldu")
             except concurrent.futures.TimeoutError:
-                logger.warning("ScienceDirect scraper stop timeout")
-            except Exception:
-                pass
+                logger.warning("ScienceDirect scraper stop timeout - browser kapanmayı bekliyor olabilir")
+                self.sciencedirect_progress.status = ScraperStatus.STOPPED
+            except Exception as e:
+                logger.warning(f"ScienceDirect scraper stop hatası: {e}")
+                self.sciencedirect_progress.status = ScraperStatus.STOPPED
         
         return True
     

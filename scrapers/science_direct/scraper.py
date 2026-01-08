@@ -23,11 +23,16 @@ from .rate_limiter import RateLimiter
 from .utils import handle_cookie_consent, print_article_summary
 
 
+class ScraperStoppedException(Exception):
+    """Scraper durdurulduğunda fırlatılır"""
+    pass
+
+
 class ScienceDirectScraper:
     """Science Direct scraper ana sınıfı"""
     
     def __init__(self, use_proxy: bool = None, headless: bool = False, 
-                 use_undetected: bool = True):
+                 use_undetected: bool = True, stop_flag=None):
         """
         Science Direct scraper'ı başlatır
         
@@ -35,7 +40,9 @@ class ScienceDirectScraper:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
             use_undetected: undetected-chromedriver kullan (Cloudflare bypass)
+            stop_flag: threading.Event - durdurma sinyali için
         """
+        self.stop_flag = stop_flag
         self.config = ScienceDirectConfig()
         
         # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
@@ -77,6 +84,12 @@ class ScienceDirectScraper:
         self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
         
         logger.success(f"Hedef URL: {self.config.base_url}")
+    
+    def check_stop_flag(self):
+        """Stop flag kontrol et, set ise exception fırlat"""
+        if self.stop_flag and self.stop_flag.is_set():
+            logger.warning("Stop sinyali alındı, scraper durduruluyor...")
+            raise ScraperStoppedException("Scraper durduruldu")
     
     def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
@@ -514,6 +527,9 @@ class ScienceDirectScraper:
             all_articles = []
             
             for idx, article_url in enumerate(article_urls, 1):
+                # Stop flag kontrolü - her makale öncesi
+                self.check_stop_flag()
+                
                 logger.section(f"Makale {idx}/{len(article_urls)}")
                 
                 article_details = self.extract_article_details(article_url)
@@ -572,6 +588,10 @@ class ScienceDirectScraper:
             
             return all_articles
             
+        except ScraperStoppedException:
+            # Stop sinyali - yukarı fırlat
+            logger.warning(f"{journal_info['name']}: Stop sinyali alındı")
+            raise
         except Exception as e:
             logger.failed("Journal tarama hatası", e)
             import traceback
@@ -651,6 +671,9 @@ class ScienceDirectScraper:
         page_count = 0
         
         while True:
+            # Stop flag kontrolü - her sayfa öncesi
+            self.check_stop_flag()
+            
             # Sayfa bilgilerini al
             page_info = self.navigator.get_current_page_info()
             current_page = page_info['current_page']

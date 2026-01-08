@@ -22,17 +22,24 @@ from .parsers import JournalParser, ArticleParser
 from .rate_limiter import IEEERateLimiter, RateLimitException
 
 
+class ScraperStoppedException(Exception):
+    """Scraper durdurulduğunda fırlatılır"""
+    pass
+
+
 class IEEEXploreScraper:
     """IEEE Xplore scraper ana sınıfı"""
     
-    def __init__(self, use_proxy: bool = None, headless: bool = False):
+    def __init__(self, use_proxy: bool = None, headless: bool = False, stop_flag=None):
         """
         IEEE Xplore scraper'ı başlatır
         
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
+            stop_flag: threading.Event - durdurma sinyali için
         """
+        self.stop_flag = stop_flag
         self.config = IEEEXploreConfig()
         
         # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
@@ -68,6 +75,12 @@ class IEEEXploreScraper:
         
         # Veri tutucular
         self.all_journals: List[Dict[str, Any]] = []
+    
+    def check_stop_flag(self):
+        """Stop flag kontrol et, set ise exception fırlat"""
+        if self.stop_flag and self.stop_flag.is_set():
+            logger.warning("Stop sinyali alındı, scraper durduruluyor...")
+            raise ScraperStoppedException("Scraper durduruldu")
     
     def initialize(self):
         """Scraper'ı başlatır"""
@@ -130,6 +143,9 @@ class IEEEXploreScraper:
         
         # Tüm sayfaları tara
         while True:
+            # Stop flag kontrolü - her sayfa öncesi
+            self.check_stop_flag()
+            
             logger.subsection(f"Sayfa {current_page}/{total_pages} taranıyor")
             
             # Mevcut sayfadaki journal'ları parse et
@@ -227,6 +243,9 @@ class IEEEXploreScraper:
             
             # Her makale için detay sayfasına git
             for idx, article_url in enumerate(article_urls, 1):
+                # Stop flag kontrolü - her makale öncesi
+                self.check_stop_flag()
+                
                 try:
                     # Full URL yap
                     if article_url.startswith('/'):
@@ -261,6 +280,9 @@ class IEEEXploreScraper:
                 except RateLimitException:
                     # Rate limit exception'ı yukarı fırlat
                     raise
+                except ScraperStoppedException:
+                    # Stop sinyali - yukarı fırlat
+                    raise
                 except Exception as e:
                     logger.warning(f"Makale {idx} hatası: {e}")
                     continue
@@ -270,6 +292,10 @@ class IEEEXploreScraper:
         except RateLimitException:
             # Rate limit exception'ı yukarı fırlat
             logger.warning(f"{journal_name}: Rate limit nedeniyle durduruldu")
+            raise
+        except ScraperStoppedException:
+            # Stop sinyali - yukarı fırlat
+            logger.warning(f"{journal_name}: Stop sinyali alındı")
             raise
         except Exception as e:
             logger.error(f"{journal_name}: Makale toplama hatası: {e}")
