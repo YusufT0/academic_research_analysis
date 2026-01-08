@@ -8,6 +8,25 @@ import { Button } from '@/components/ui/Button';
 import { searchArticles } from '@/lib/api';
 import type { SearchResult } from '@/lib/types';
 
+// Relative URL'leri tam URL'ye çevir
+function getFullUrl(url: string): string {
+  if (!url) return '';
+  
+  // Zaten tam URL ise direkt döndür
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return url;
+  }
+  
+  // URL'den kaynak siteyi tahmin et
+  if (url.includes('/xpl/') || url.includes('/document/') || url.includes('punumber=')) {
+    return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (url.includes('/science/') || url.includes('/pii/')) {
+    return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  }
+  
+  return url;
+}
+
 type SearchType = 'text' | 'title' | 'keyword' | 'author';
 
 const searchTypes: { value: SearchType; label: string; icon: React.ReactNode }[] = [
@@ -192,7 +211,7 @@ export default function SearchPage() {
                       </div>
                       
                       <a
-                        href={article.url}
+                        href={getFullUrl(article.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="flex-shrink-0 p-2 text-slate-400 hover:text-emerald-600 transition-colors"
