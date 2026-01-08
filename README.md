@@ -1,301 +1,166 @@
-# 📚 Yapay Zeka Destekli Bilimsel Dergilerin Trend Analiz Sistemi
+# Kurulum ve Çalıştırma
 
-**BM495 Bilgisayar Mühendisliği Projesi I - 2025-2026 Güz**
+## Gereksinimler
 
-Bu proje, IEEE Xplore ve ScienceDirect gibi akademik platformlardan bilimsel makale meta-verilerini toplayan ve trend analizi için görselleştiren bir sistemdir.
+| Yazılım | Minimum Versiyon |
+|---------|------------------|
+| Python | 3.11+ |
+| Node.js | 20+ LTS |
+| Docker Desktop | Latest |
+| Google Chrome | Latest |
 
-## 👥 Ekip
+## Kurulum
 
-| İsim | Numara |
-|------|--------|
-| Emre Faruk Küçük | 22118080039 |
-| Yusuf Taha Sarıtiken | 22118080058 |
-| Ali Burak Pekışık | 22118080062 |
+### 1. Docker Servislerini Başlat
 
----
-
-## 🛠️ Teknolojiler
-
-### Backend
-- **Python 3.11+** - Ana programlama dili
-- **FastAPI** - REST API framework
-- **MongoDB** - NoSQL veritabanı
-- **Beanie** - MongoDB ODM
-- **Selenium** - Web scraping
-
-### Frontend
-- **Next.js 15** - React framework
-- **TypeScript** - Type-safe JavaScript
-- **Tailwind CSS** - Styling
-- **Lucide React** - İkonlar
-
-### Altyapı
-- **Docker** - MongoDB containerization
-- **Mongo Express** - MongoDB web UI
-
----
-
-## 📋 Gereksinimler
-
-Projeyi çalıştırmak için aşağıdaki yazılımların yüklü olması gerekir:
-
-| Yazılım | Versiyon | İndirme |
-|---------|----------|---------|
-| Python | 3.11+ | https://python.org |
-| Node.js | 20+ LTS | https://nodejs.org |
-| Docker Desktop | Latest | https://docker.com |
-| Git | Latest | https://git-scm.com |
-| Google Chrome | Latest | (Scraper için) |
-
----
-
-## 🚀 Kurulum
-
-### 1. Repoyu Klonla
-```bash
-git clone https://github.com/emrefkucuk/academic_research_analysis.git
-cd academic_research_analysis
-```
-
-### 2. MongoDB'yi Başlat (Docker)
 ```bash
 cd scrapers
 docker-compose up -d
 ```
 
-Bu komut şunları başlatır:
-- **MongoDB** → `localhost:27017`
-- **Mongo Express** → `http://localhost:8081` (user: `admin`, pass: `admin123`)
+Bu komut MongoDB, Redis ve web arayüzlerini başlatır:
+- MongoDB: `localhost:27017`
+- Redis: `localhost:6379`
+- Mongo Express: `http://localhost:8081` (admin/admin123)
+- Redis Commander: `http://localhost:8082`
 
-### 3. Python Bağımlılıklarını Yükle
+### 2. Backend Kurulumu
+
 ```bash
 cd scrapers
 pip install -r requirements.txt
 ```
 
-### 4. Backend .env Dosyasını Oluştur
 `scrapers/.env` dosyası oluştur:
 
-```env
-# MongoDB
+```
+# Proxy Configuration
+USE_PROXY=True
+proxy_user=
+proxy_pass=
+proxy_host=proxy2.gazi.edu.tr
+proxy_port=2001
+
+# Science Direct URL
+SCIENCEDIRECT_BASE_URL=https://www.sciencedirect.com/browse/journals-and-books?contentType=JL&subject=computer-science
+IEEEXPLORE_BASE_URL=https://ieeexplore.ieee.org/browse/periodicals/title?contentType=periodicals&showActiveTitlesOnly=true&refinements=ContentType:Journals&rowsPerPage=100&pageNumber=1
+
+# MongoDB Configuration
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DATABASE=academic_research
 
-# Scraper Ayarları
-AUTO_START_SCRAPERS=false
-SCRAPER_HEADLESS=true
-SCRAPER_RUN_MODE=parallel
+# MongoDB Authentication (optional - for production)
+MONGODB_USERNAME=
+MONGODB_PASSWORD=
 
-# Makale Limitleri
-IEEE_MAX_ARTICLES=10
-SCIENCEDIRECT_MAX_ARTICLES=5
+# MongoDB Connection Settings
+MONGODB_MIN_POOL_SIZE=1
+MONGODB_MAX_POOL_SIZE=10
+
+# Scraper Settings
+SCRAPER_LOG_LEVEL=INFO
+SCRAPER_LOG_FILE=logs/scraper.log
+
+# Backend Settings
+AUTO_START_SCRAPERS=false
+SCRAPER_HEADLESS=false
+IEEE_MAX_ARTICLES=100
+SCIENCEDIRECT_MAX_ARTICLES=100
+
+# Enabled Scrapers (comma separated: ieee,sciencedirect)
+# ieee: Sadece IEEE Xplore scraper çalışır
+# sciencedirect: Sadece ScienceDirect scraper çalışır
+# ieee,sciencedirect: Her iki scraper da çalışır (varsayılan)
+ENABLED_SCRAPERS=ieee,sciencedirect
+
+# Scraper Run Mode
+# parallel: Scraper'lar aynı anda çalışır (5 sn arayla başlar)
+# sequential: Scraper'lar sırayla çalışır (biri bitince diğeri başlar)
+# round_robin: Her 3 journalda bir diğer siteye geçilir (döngüsel: IEEE -> SD -> IEEE -> ...)
+SCRAPER_RUN_MODE=round_robin
+
+# Round Robin Settings (only for round_robin mode)
+ROUND_ROBIN_JOURNALS_PER_SWITCH=1
+
+# NLP/Clustering Settings
+# true: Önce PKL dosyasını kullan, yoksa DB'ye bak
+# false: Önce DB'ye bak, yoksa PKL'yi dene
+NLP_PREFER_PKL=true
+
+# NLP/Clustering Settings
+NLP_MODEL_PATH=analyzer/clustering_model_.pkl
+NLP_MODEL_VERSION=v1.0
+NLP_EMBEDDER_MODEL=all-MiniLM-L6-v2
+NLP_UMAP_N_NEIGHBORS=15
+NLP_UMAP_N_COMPONENTS=10
+NLP_MIN_CLUSTER_SIZE=20
+
+# Redis Cache Settings
+REDIS_ENABLED=true
+REDIS_URL=redis://localhost:6379/0
+REDIS_PREFIX=academic
+
+# Cache TTL Settings (saniye)
+CACHE_TTL_ARTICLE=3600
+CACHE_TTL_JOURNAL=21600
+CACHE_TTL_ISSUE=7200
+CACHE_TTL_CLUSTER=1800
+CACHE_TTL_SEARCH=900
+CACHE_TTL_STATS=300
+
+# Prefetch Settings
+PREFETCH_ENABLED=true
+PREFETCH_ARTICLES_PER_ISSUE=20
+PREFETCH_ISSUES_PER_JOURNAL=3
+PREFETCH_ARTICLES_PER_CLUSTER=50
+PREFETCH_NEIGHBOR_CLUSTERS=1
+PREFETCH_NEIGHBOR_ISSUES=1
+PREFETCH_NEIGHBOR_ARTICLES_LIMIT=20
+NLP_MIN_SAMPLES=1
 ```
 
-### 5. Frontend Bağımlılıklarını Yükle
+### 3. Frontend Kurulumu
+
 ```bash
 cd client
 npm install
-npm install lucide-react recharts
 ```
 
-### 6. Frontend .env Dosyasını Oluştur
 `client/.env.local` dosyası oluştur:
 
-```env
+```
 NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 ```
 
----
+## Çalıştırma
 
-## ▶️ Çalıştırma
+### Backend
 
-### Terminal 1: MongoDB (Docker çalışıyor olmalı)
-```bash
-cd scrapers
-docker-compose up -d
-```
-
-### Terminal 2: Backend
 ```bash
 cd scrapers
 python run_backend.py
 ```
-Backend başladığında:
+
 - API: http://localhost:8000
 - Swagger Docs: http://localhost:8000/docs
 
-### Terminal 3: Frontend
+### Frontend
+
 ```bash
 cd client
 npm run dev
 ```
-Frontend başladığında:
+
 - Web UI: http://localhost:3000
 
----
+## Servis Adresleri
 
-## 🌐 Servis Adresleri
-
-| Servis | URL | Açıklama |
-|--------|-----|----------|
-| Frontend | http://localhost:3000 | Next.js Web UI |
-| Backend API | http://localhost:8000 | FastAPI REST API |
-| API Docs | http://localhost:8000/docs | Swagger Documentation |
-| MongoDB | localhost:27017 | Database |
-| Mongo Express | http://localhost:8081 | Database Web UI |
-
----
-
-## 📁 Proje Yapısı
-
-```
-academic_research_analysis/
-│
-├── client/                          # Frontend (Next.js)
-│   ├── app/                         # Sayfalar
-│   │   ├── page.tsx                 # Dashboard
-│   │   ├── articles/                # Makaleler listesi
-│   │   ├── journals/                # Dergiler listesi
-│   │   ├── search/                  # Arama sayfası
-│   │   ├── trends/                  # Trend analizi
-│   │   └── scrapers/                # Scraper kontrol
-│   ├── components/                  # React componentleri
-│   │   ├── dashboard/               # Dashboard componentleri
-│   │   ├── layout/                  # Layout (Sidebar)
-│   │   └── ui/                      # UI componentleri
-│   └── lib/                         # API client & types
-│
-└── scrapers/                        # Backend (Python)
-    ├── backend/                     # FastAPI API
-    │   ├── core/                    # Config & dependencies
-    │   ├── routers/                 # API endpoints
-    │   ├── schemas/                 # Pydantic schemas
-    │   └── services/                # Business logic
-    ├── database/                    # MongoDB
-    │   ├── models/                  # Beanie models
-    │   └── repositories/            # Data access
-    ├── ieee_xplore/                 # IEEE scraper
-    ├── science_direct/              # ScienceDirect scraper
-    ├── utils/                       # Utilities
-    ├── docker/                      # Docker configs
-    ├── docker-compose.yml
-    ├── requirements.txt
-    └── run_backend.py               # Başlatma scripti
-```
-
----
-
-## 🔌 API Endpoints
-
-### Stats
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/stats` | Genel istatistikler |
-| GET | `/api/v1/stats/articles` | Makale istatistikleri |
-| GET | `/api/v1/stats/scraper` | Scraper durumu |
-
-### Journals
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/journals` | Dergi listesi |
-| GET | `/api/v1/journals/{id}` | Dergi detayı |
-| GET | `/api/v1/journals/{id}/issues` | Derginin sayıları |
-| GET | `/api/v1/journals/{id}/articles` | Derginin makaleleri |
-
-### Articles
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/articles` | Makale listesi |
-| GET | `/api/v1/articles/{id}` | Makale detayı |
-| GET | `/api/v1/articles/search?q=...` | Makale arama |
-
-### Scrapers
-| Method | Endpoint | Açıklama |
-|--------|----------|----------|
-| GET | `/api/v1/scrapers/status` | Tüm scraper durumu |
-| POST | `/api/v1/scrapers/ieee/start` | IEEE scraper başlat |
-| POST | `/api/v1/scrapers/ieee/stop` | IEEE scraper durdur |
-| POST | `/api/v1/scrapers/sciencedirect/start` | ScienceDirect başlat |
-| POST | `/api/v1/scrapers/sciencedirect/stop` | ScienceDirect durdur |
-| POST | `/api/v1/scrapers/start-all` | Tümünü başlat |
-| POST | `/api/v1/scrapers/stop-all` | Tümünü durdur |
-
----
-
-## ⚙️ Environment Variables
-
-### Backend (`scrapers/.env`)
-
-```env
-# ======== MongoDB ========
-MONGODB_URI=mongodb://localhost:27017
-MONGODB_DATABASE=academic_research
-# Eğer authentication varsa:
-# MONGODB_USERNAME=admin
-# MONGODB_PASSWORD=password
-
-# ======== Scraper ========
-# Backend başladığında scraper otomatik başlasın mı
-AUTO_START_SCRAPERS=false
-
-# Browser görünmez modda çalışsın mı (true önerilir)
-SCRAPER_HEADLESS=true
-
-# Scraper'lar paralel mi sıralı mı çalışsın
-# parallel: Aynı anda çalışır
-# sequential: Önce IEEE biter, sonra ScienceDirect başlar
-SCRAPER_RUN_MODE=parallel
-
-# Her dergiden maksimum kaç makale çekilsin
-IEEE_MAX_ARTICLES=10
-SCIENCEDIRECT_MAX_ARTICLES=5
-```
-
-### Frontend (`client/.env.local`)
-
-```env
-# Backend API URL
-NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
-```
-
----
-
-## 🔧 Sorun Giderme
-
-### MongoDB bağlantı hatası
-```bash
-# Docker'ın çalıştığından emin ol
-docker ps
-
-# Container'ları yeniden başlat
-cd scrapers
-docker-compose down
-docker-compose up -d
-```
-
-### Scraper modülü yüklenemedi hatası
-```bash
-# distutils hatası için (Python 3.12+)
-pip install setuptools
-```
-
-### Frontend CORS hatası
-Backend'in CORS ayarları `scrapers/backend/core/config.py` dosyasında. Varsayılan olarak tüm originlere izin verir.
-
-### PowerShell script execution hatası
-```powershell
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
-```
-
----
-
-## 📝 Lisans
-
-Bu proje Sakarya Üniversitesi Bilgisayar Mühendisliği Bölümü BM495 dersi kapsamında geliştirilmiştir.
-
----
-
-## 📧 İletişim
-
-Sorularınız için: [GitHub Issues](https://github.com/emrefkucuk/academic_research_analysis/issues)
-
+| Servis | URL |
+|--------|-----|
+| Frontend | http://localhost:3000 |
+| Backend API | http://localhost:8000 |
+| API Docs | http://localhost:8000/docs |
+| MongoDB | localhost:27017 |
+| Mongo Express | http://localhost:8081 |
+| Redis | localhost:6379 |
+| Redis Commander | http://localhost:8082 |
