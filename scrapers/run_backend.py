@@ -7,6 +7,7 @@ uvicorn ile FastAPI backend'i başlatır.
 import uvicorn
 import sys
 from pathlib import Path
+import warnings
 
 # Path setup
 scrapers_path = Path(__file__).parent

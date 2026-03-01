@@ -19,15 +19,20 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import settings
 from .core.dependencies import set_scraper_manager
+from .core.error_handlers import register_error_handlers
 from .services.scraper_manager import ScraperManager
 from .services.cache_service import cache_service
+from .middleware import RequestIdMiddleware, TimingMiddleware, RequestLoggingMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 from .routers import (
     journals_router,
     issues_router,
     articles_router,
     scrapers_router,
     stats_router,
-    nlp_router
+    nlp_router,
+    websocket_router,
+    search_router,
 )
 
 from database import init_database, close_database
@@ -125,6 +130,18 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Redis cache bağlantısı kurulamadı - cache devre dışı")
     
+    # Initialize Elasticsearch
+    logger.info("Elasticsearch bağlantısı kuruluyor...")
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        await elasticsearch_service.connect()
+        if elasticsearch_service.is_connected:
+            logger.success("Elasticsearch bağlantısı kuruldu")
+        else:
+            logger.warning("Elasticsearch bağlantısı kurulamadı - arama devre dışı")
+    except Exception as e:
+        logger.warning(f"Elasticsearch başlatılamadı: {e}")
+    
     # Initialize scraper manager
     logger.info("Scraper manager başlatılıyor...")
     scraper_manager = ScraperManager()
@@ -212,6 +229,20 @@ app.include_router(articles_router, prefix="/api/v1")
 app.include_router(scrapers_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(nlp_router, prefix="/api/v1")
+app.include_router(websocket_router)  # WebSocket — prefix yok, /ws/scrapers/events
+app.include_router(search_router, prefix="/api/v1")
+
+# Register global error handlers
+register_error_handlers(app)
+
+# Middleware zinciri (LIFO sıra — en son eklenen en dışta çalışır)
+# 1. RequestId → 2. Timing → 3. Logging
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(TimingMiddleware)
+app.add_middleware(RequestIdMiddleware)
+
+# Prometheus HTTP metrics (auto: request count, latency, status codes)
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", tags=["Monitoring"])
 
 
 # Root endpoint
@@ -226,14 +257,98 @@ async def root():
     }
 
 
-@app.get("/health", tags=["Root"])
+@app.get("/health", tags=["Health"])
 async def health_check():
-    """Health check endpoint"""
+    """Health check (backward compatible — redirects to /health/ready logic)"""
+    return await health_ready()
+
+
+@app.get("/health/live", tags=["Health"])
+async def health_live():
+    """Liveness probe — uygulama ayakta mı"""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready", tags=["Health"])
+async def health_ready():
+    """Readiness probe — tüm dependency'ler hazır mı"""
     from database.connection import get_database
     
-    db = get_database()
-    db_connected = db is not None
+    checks = {}
+    overall = True
     
+    # MongoDB check
+    try:
+        db = get_database()
+        if db and db.client:
+            await db.client.admin.command("ping")
+            checks["mongodb"] = {"status": "up"}
+        else:
+            checks["mongodb"] = {"status": "down", "error": "not connected"}
+            overall = False
+    except Exception as e:
+        checks["mongodb"] = {"status": "down", "error": str(e)}
+        overall = False
+    
+    # Redis check
+    try:
+        if cache_service and cache_service.redis:
+            await cache_service.redis.ping()
+            checks["redis"] = {"status": "up"}
+        else:
+            checks["redis"] = {"status": "down", "error": "not connected"}
+            overall = False
+    except Exception as e:
+        checks["redis"] = {"status": "down", "error": str(e)}
+        overall = False
+    
+    status_code = 200 if overall else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "healthy" if overall else "unhealthy",
+            "checks": checks,
+        }
+    )
+
+
+@app.get("/health/deep", tags=["Health"])
+async def health_deep():
+    """Deep health check — detaylı diagnostik bilgi"""
+    import time
+    import psutil
+    from database.connection import get_database
+    from .core.circuit_breaker import get_all_breaker_statuses
+    
+    checks = {}
+    
+    # MongoDB check with latency
+    try:
+        db = get_database()
+        if db and db.client:
+            start = time.perf_counter()
+            await db.client.admin.command("ping")
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            checks["mongodb"] = {"status": "up", "latency_ms": latency}
+        else:
+            checks["mongodb"] = {"status": "down"}
+    except Exception as e:
+        checks["mongodb"] = {"status": "down", "error": str(e)}
+    
+    # Redis check with latency
+    try:
+        if cache_service and cache_service.redis:
+            start = time.perf_counter()
+            await cache_service.redis.ping()
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            checks["redis"] = {"status": "up", "latency_ms": latency}
+        else:
+            checks["redis"] = {"status": "down"}
+    except Exception as e:
+        checks["redis"] = {"status": "down", "error": str(e)}
+    
+    # Scrapers status
     scraper_status = {}
     if scraper_manager:
         status = scraper_manager.get_all_status()
@@ -242,10 +357,27 @@ async def health_check():
             "sciencedirect": status["sciencedirect"]["status"],
         }
     
+    # System info
+    process = psutil.Process()
+    system = {
+        "uptime_seconds": round(time.time() - process.create_time(), 1),
+        "memory_mb": round(process.memory_info().rss / 1024 / 1024, 1),
+        "cpu_percent": process.cpu_percent(),
+        "threads": process.num_threads(),
+    }
+    
+    # WebSocket connections
+    from .routers.websocket import ws_manager
+    
     return {
-        "status": "healthy" if db_connected else "unhealthy",
-        "database": "connected" if db_connected else "disconnected",
+        "status": "healthy" if all(
+            c.get("status") == "up" for c in checks.values()
+        ) else "degraded",
+        "checks": checks,
         "scrapers": scraper_status,
+        "circuit_breakers": get_all_breaker_statuses(),
+        "websocket_connections": ws_manager.connection_count,
+        "system": system,
     }
 
 

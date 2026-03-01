@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from database.models import Article
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
+from backend.schemas.article import ArticleListResponse, ArticleResponse
 from utils.logger import get_logger
 
 logger = get_logger('articles_router')
@@ -20,7 +21,7 @@ logger = get_logger('articles_router')
 router = APIRouter(prefix="/articles", tags=["Articles"])
 
 
-@router.get("/", summary="Tüm makaleleri listele")
+@router.get("/", summary="Tüm makaleleri listele", response_model=ArticleListResponse)
 async def list_articles(
     # Pagination
     page: int = Query(1, ge=1, description="Sayfa numarası"),
@@ -177,7 +178,7 @@ async def search_articles(
     }
 
 
-@router.get("/{article_id}", summary="Makale detayı")
+@router.get("/{article_id}", summary="Makale detayı", response_model=ArticleResponse)
 async def get_article(article_id: str):
     """Belirli bir makalenin tüm detaylarını getir (cached)"""
     try:

@@ -401,9 +401,11 @@ class ScienceDirectScraper:
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
                 logger.warning("Content error tespit edildi!")
+                
                 if retry_attempt == 0:
-                    # İlk deneme - 3 dakika bekle (başarısız olursa yeni user agent ile tarayıcı açılır)
-                    if self.rate_limiter.handle_content_error(full_url, wait_time=180):
+                    # İlk deneme - 30 saniye bekle ve YENİ USER AGENT ile tarayıcıyı yeniden başlat
+                    logger.info("İlk content error - Tarayıcı yeni User Agent ile başlatılacak (30 saniye bekleme)...")
+                    if self.rate_limiter.handle_content_error(full_url, wait_time=30, force_restart=True):
                         # Başarılı - driver değişmiş olabilir, güncelle
                         self._update_driver_references()
                         self.rate_limiter.reset_consecutive_failures()
@@ -414,8 +416,9 @@ class ScienceDirectScraper:
                         self.rate_limiter.add_to_retry_queue(article_url)
                         return None
                 elif retry_attempt == 1:
-                    # İkinci deneme - 3 dakika daha bekle
-                    if self.rate_limiter.handle_content_error(full_url, wait_time=180):
+                    # İkinci deneme - Bu sefer sabit 3 dakika bekle
+                    logger.info("İkinci content error - Sabit 3 dakika bekleme...")
+                    if self.rate_limiter.handle_content_error(full_url, wait_time=180, force_restart=False):
                         self._update_driver_references()
                         self.rate_limiter.reset_consecutive_failures()
                     else:

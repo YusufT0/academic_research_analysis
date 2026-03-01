@@ -71,6 +71,9 @@ class DatabaseService:
         Returns:
             tuple: (Journal, created: bool)
         """
+        import time
+        start_time = time.time()
+        
         journal, created = await self.journal_repo.upsert(
             name=name,
             source_website=source_website,
@@ -81,6 +84,12 @@ class DatabaseService:
             type=journal_type,
             **kwargs
         )
+        
+        try:
+            from backend.core.metrics import DB_OPERATION_DURATION
+            DB_OPERATION_DURATION.labels(operation="upsert_journal").observe(time.time() - start_time)
+        except ImportError:
+            pass
         
         if created:
             logger.success(f"Yeni dergi eklendi: {name}")
@@ -130,6 +139,9 @@ class DatabaseService:
         Returns:
             tuple: (Issue, created: bool)
         """
+        import time
+        start_time = time.time()
+        
         issue, created = await self.issue_repo.upsert(
             journal_id=journal.id,
             journal_name=journal.name,
@@ -140,6 +152,12 @@ class DatabaseService:
             status=status,
             **kwargs
         )
+        
+        try:
+            from backend.core.metrics import DB_OPERATION_DURATION
+            DB_OPERATION_DURATION.labels(operation="upsert_issue").observe(time.time() - start_time)
+        except ImportError:
+            pass
         
         if created:
             # Dergi sayı sayısını güncelle
@@ -186,6 +204,9 @@ class DatabaseService:
         Returns:
             tuple: (Article, created: bool)
         """
+        import time
+        start_time = time.time()
+        
         article, created = await self.article_repo.upsert(
             url=url,
             title=title,
@@ -203,6 +224,12 @@ class DatabaseService:
             article_type=article_type,
             **kwargs
         )
+        
+        try:
+            from backend.core.metrics import DB_OPERATION_DURATION
+            DB_OPERATION_DURATION.labels(operation="upsert_article").observe(time.time() - start_time)
+        except ImportError:
+            pass
         
         if created:
             # Sayı ve dergi makale sayılarını güncelle

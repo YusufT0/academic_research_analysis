@@ -64,7 +64,7 @@ class ScraperProgress:
     
     def __init__(self, scraper_type: str):
         self.scraper_type = scraper_type
-        self.status = ScraperStatus.IDLE
+        self._status = ScraperStatus.IDLE
         
         # İlerleme
         self.current_journal: Optional[str] = None
@@ -87,7 +87,41 @@ class ScraperProgress:
         
         # Logs
         self.logs: List[Dict[str, Any]] = []
-    
+        
+    @property
+    def status(self) -> ScraperStatus:
+        return self._status
+        
+    @status.setter
+    def status(self, new_status: ScraperStatus):
+        if hasattr(self, '_status') and self._status == new_status:
+            return
+            
+        old_status = getattr(self, '_status', None)
+        self._status = new_status
+        
+        # Prometheus Gauge update
+        try:
+            from backend.core.metrics import ACTIVE_SCRAPERS
+            if new_status == ScraperStatus.RUNNING and old_status != ScraperStatus.RUNNING:
+                ACTIVE_SCRAPERS.inc()
+            elif old_status == ScraperStatus.RUNNING and new_status != ScraperStatus.RUNNING:
+                ACTIVE_SCRAPERS.dec()
+        except Exception:
+            pass
+        
+        # Canlı websocket bildirimi
+        try:
+            # Geç import ile circular dependency önle
+            from backend.routers.websocket import emit_scraper_event
+            emit_scraper_event(
+                event_type="status_update",
+                scraper_type=self.scraper_type,
+                data=self.to_dict()
+            )
+        except Exception:
+            pass
+            
     @property
     def progress_percent(self) -> float:
         """İlerleme yüzdesi"""
@@ -150,7 +184,38 @@ class ScraperProgress:
         self.last_activity = None
         self.last_error = None
         self.logs = []
-
+        
+    def __setattr__(self, name, value):
+        # Önceki değeri al (sadece metrik artışlarını hesaplamak için)
+        old_value = getattr(self, name, 0) if isinstance(value, int) else None
+        
+        super().__setattr__(name, value)
+        
+        # Sadece sayısal değerler (makale, hata) büyüyorsa Prometheus'a fırlat
+        if old_value is not None and value > old_value:
+            try:
+                from backend.core.metrics import ARTICLES_SCRAPED, SCRAPER_ERRORS
+                inc_amount = value - old_value
+                if name == 'articles_scraped':
+                    ARTICLES_SCRAPED.labels(source=self.scraper_type).inc(inc_amount)
+                elif name == 'errors_count':
+                    SCRAPER_ERRORS.labels(source=self.scraper_type, error_type="scraper_error").inc(inc_amount)
+            except Exception:
+                pass
+        
+        # Track UI-facing metric changes to keep the frontend progress bar fluid
+        if name in ('current_journal_index', 'journals_scraped', 'articles_scraped', 'articles_updated', 'errors_count'):
+            # Sadece koşuyorken ilerlemeyi fırlat (başlangıçtaki resetleri yoksaymak için)
+            if getattr(self, '_status', None) == ScraperStatus.RUNNING:
+                try:
+                    from backend.routers.websocket import emit_scraper_event
+                    emit_scraper_event(
+                        event_type="progress",
+                        scraper_type=self.scraper_type,
+                        data=self.to_dict()
+                    )
+                except Exception:
+                    pass
 
 class ScraperManager:
     """
@@ -400,8 +465,16 @@ class ScraperManager:
                 logger.info(f"[IEEE Thread] [{idx+1}/{len(all_journals)}] {journal_name} işleniyor...")
                 
                 try:
+                    import time
+                    scrape_start_t = time.time()
                     # Scrape articles
                     articles = scraper.scrape_journal_articles(journal, max_articles=self.ieee_max_articles)
+                    
+                    try:
+                        from backend.core.metrics import SCRAPER_DURATION
+                        SCRAPER_DURATION.labels(source="ieee").observe(time.time() - scrape_start_t)
+                    except ImportError:
+                        pass
                     
                     # Makale olsun olmasın journal'ı veritabanına kaydet
                     # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
@@ -660,8 +733,16 @@ class ScraperManager:
                 logger.info(f"[SD Thread] [{idx+1}/{len(all_journals)}] {journal_name} işleniyor...")
                 
                 try:
+                    import time
+                    scrape_start_t = time.time()
                     # Scrape articles
                     articles = scraper.scrape_journal_articles(journal, max_articles=self.sciencedirect_max_articles)
+                    
+                    try:
+                        from backend.core.metrics import SCRAPER_DURATION
+                        SCRAPER_DURATION.labels(source="sciencedirect").observe(time.time() - scrape_start_t)
+                    except ImportError:
+                        pass
                     
                     # Makale olsun olmasın journal'ı veritabanına kaydet
                     # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez

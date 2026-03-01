@@ -6,14 +6,10 @@ services:
     ports:
       - "27017:27017"
     environment:
-      # Eğer authentication istiyorsanız bu satırları aktifleştirin
-      # MONGO_INITDB_ROOT_USERNAME: admin
-      # MONGO_INITDB_ROOT_PASSWORD: your_secure_password
       MONGO_INITDB_DATABASE: academic_research
     volumes:
       - mongodb_data:/data/db
       - mongodb_config:/data/configdb
-      # İlk başlatmada çalışacak init scriptleri
       - ./docker/mongo-init:/docker-entrypoint-initdb.d:ro
     networks:
       - academic_network
@@ -24,7 +20,7 @@ services:
       retries: 5
       start_period: 30s
 
-  # Redis Cache Server
+  # Redis — Cache + Streams
   redis:
     image: redis:7.4-alpine
     container_name: academic_research_redis
@@ -49,7 +45,67 @@ services:
       retries: 5
       start_period: 10s
 
-  # Redis Commander - Web UI (opsiyonel - geliştirme için)
+  # Elasticsearch — Full-text search
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: academic_research_elasticsearch
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms256m -Xmx512m"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    networks:
+      - academic_network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  # Prometheus — Metrics
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: academic_research_prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks:
+      - academic_network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Grafana — Dashboards
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: academic_research_grafana
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - academic_network
+
+  # Redis Commander — Dev UI
   redis-commander:
     image: rediscommander/redis-commander:latest
     container_name: academic_research_redis_commander
@@ -64,7 +120,7 @@ services:
     networks:
       - academic_network
 
-  # MongoDB Web UI (opsiyonel - geliştirme için)
+  # Mongo Express — Dev UI
   mongo-express:
     image: mongo-express:latest
     container_name: academic_research_mongo_express
@@ -74,9 +130,6 @@ services:
     environment:
       ME_CONFIG_MONGODB_SERVER: mongodb
       ME_CONFIG_MONGODB_PORT: 27017
-      # Authentication aktifse bunları da ayarlayın
-      # ME_CONFIG_MONGODB_ADMINUSERNAME: admin
-      # ME_CONFIG_MONGODB_ADMINPASSWORD: your_secure_password
       ME_CONFIG_BASICAUTH_USERNAME: admin
       ME_CONFIG_BASICAUTH_PASSWORD: admin123
     depends_on:
@@ -91,6 +144,12 @@ volumes:
   mongodb_config:
     driver: local
   redis_data:
+    driver: local
+  es_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
     driver: local
 
 networks:

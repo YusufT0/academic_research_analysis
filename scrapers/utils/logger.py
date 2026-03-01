@@ -1,11 +1,19 @@
 """
-Universal Logger System - Singleton Pattern
+Universal Logger System — structlog Refactored
 
-Tüm scraper'larda kullanılabilecek merkezi loglama sistemi.
-- Renkli console çıktıları
-- Dosyaya loglama
-- Farklı log seviyeleri (DEBUG, INFO, SUCCESS, WARNING, ERROR)
-- Thread-safe singleton pattern
+structlog tabanlı, JSON ve console formatlarını destekleyen logger.
+Eski ScraperLogger API'siyle geriye uyumlu.
+
+Kullanım:
+    from utils.logger import get_logger
+    
+    logger = get_logger("ieee_scraper")
+    logger.info("Scraping started", journal="IEEE Access", progress=50)
+    logger.error("Connection failed", url="https://...", retry=3)
+
+Ortam değişkeni:
+    LOG_FORMAT=json    → Production (Grafana/Loki parseable)
+    LOG_FORMAT=pretty  → Development (renkli console)
 """
 
 import os
@@ -14,39 +22,61 @@ import logging
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 from enum import Enum
 
+import structlog
+
+
+# ==================== Eski API Uyumluluk ====================
 
 class LogLevel(Enum):
-    """Log seviyeleri"""
+    """Log seviyeleri — geriye uyumluluk için"""
     DEBUG = 10
     INFO = 20
-    SUCCESS = 25  # Custom level
+    SUCCESS = 25
     WARNING = 30
     ERROR = 40
     CRITICAL = 50
 
 
+class LogIcons:
+    """Log ikonları — geriye uyumluluk için"""
+    SUCCESS = '✓'
+    ERROR = '✗'
+    WARNING = '⚠'
+    INFO = 'ℹ'
+    DEBUG = '🔍'
+    ARROW_RIGHT = '→'
+    BULLET = '•'
+    STAR = '★'
+    GLOBE = '🌐'
+    PAGE = '📄'
+    BOOK = '📖'
+    JOURNAL = '📚'
+    ARTICLE = '📝'
+    DOWNLOAD = '⬇'
+    CLOCK = '⏳'
+    CHECK = '✅'
+    CROSS = '❌'
+    GEAR = '⚙'
+    DATABASE = '💾'
+    SEARCH = '🔎'
+    LINK = '🔗'
+    PROGRESS = '🔄'
+    DONE = '✅'
+    LINE = '─'
+    DOUBLE_LINE = '═'
+    DOTTED = '┄'
+
+
+# ==================== Colors (dev mode için) ====================
+
 class Colors:
-    """ANSI renk kodları"""
-    # Temel renkler
+    """ANSI renk kodları — dev console için"""
     RESET = '\033[0m'
     BOLD = '\033[1m'
     DIM = '\033[2m'
-    UNDERLINE = '\033[4m'
-    
-    # Metin renkleri
-    BLACK = '\033[30m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    MAGENTA = '\033[35m'
-    CYAN = '\033[36m'
-    WHITE = '\033[37m'
-    
-    # Parlak renkler
     BRIGHT_BLACK = '\033[90m'
     BRIGHT_RED = '\033[91m'
     BRIGHT_GREEN = '\033[92m'
@@ -55,476 +85,327 @@ class Colors:
     BRIGHT_MAGENTA = '\033[95m'
     BRIGHT_CYAN = '\033[96m'
     BRIGHT_WHITE = '\033[97m'
-    
-    # Arka plan renkleri
+    WHITE = '\033[37m'
     BG_RED = '\033[41m'
-    BG_GREEN = '\033[42m'
-    BG_YELLOW = '\033[43m'
-    BG_BLUE = '\033[44m'
 
 
-class LogIcons:
-    """Log ikonları (emoji/unicode)"""
-    # Durum ikonları
-    SUCCESS = '✓'
-    ERROR = '✗'
-    WARNING = '⚠'
-    INFO = 'ℹ'
-    DEBUG = '🔍'
-    
-    # İşlem ikonları
-    ARROW_RIGHT = '→'
-    ARROW_LEFT = '←'
-    BULLET = '•'
-    STAR = '★'
-    
-    # Scraper ikonları
-    GLOBE = '🌐'
-    PAGE = '📄'
-    BOOK = '📖'
-    JOURNAL = '📚'
-    ARTICLE = '📝'
-    DOWNLOAD = '⬇'
-    UPLOAD = '⬆'
-    CLOCK = '⏳'
-    CHECK = '✅'
-    CROSS = '❌'
-    GEAR = '⚙'
-    DATABASE = '💾'
-    SEARCH = '🔎'
-    LINK = '🔗'
-    FOLDER = '📁'
-    FILE = '📄'
-    
-    # Progress ikonları
-    PROGRESS = '🔄'
-    DONE = '✅'
-    PENDING = '⏸'
-    
-    # Separator
-    LINE = '─'
-    DOUBLE_LINE = '═'
-    DOTTED = '┄'
+# ==================== structlog Configuration ====================
 
+_configured = False
+_lock = threading.Lock()
+
+
+def _configure_structlog():
+    """structlog'u bir kez yapılandır"""
+    global _configured
+    
+    if _configured:
+        return
+    
+    with _lock:
+        if _configured:
+            return
+        
+        # Log formatını belirle
+        log_format = os.environ.get("LOG_FORMAT", "pretty").lower()
+        
+        # Custom SUCCESS level ekle
+        logging.addLevelName(25, "SUCCESS")
+        
+        # Log dizinini oluştur
+        log_dir = Path(__file__).parent.parent / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Shared processors
+        shared_processors = [
+            structlog.contextvars.merge_contextvars,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.UnicodeDecoder(),
+        ]
+        
+        if log_format == "json":
+            # Production: JSON output
+            renderer = structlog.processors.JSONRenderer()
+        else:
+            # Development: renkli console
+            renderer = structlog.dev.ConsoleRenderer(
+                colors=_supports_color(),
+            )
+        
+        def _websocket_broadcaster(logger, log_method, event_dict):
+            """Websocket üzerinden frontend'e logları canlı yayınlamak için processor"""
+            try:
+                # İsimlendirme ve seviye çıkarma
+                level = event_dict.get('level', 'info').lower()
+                event_name = event_dict.get('event', '')
+                logger_name = event_dict.get('logger', 'system')
+                
+                # Frontend beklentisi 'ieee' veya 'sciencedirect'
+                scraper_name = 'system'
+                if 'ieee' in logger_name.lower() or '[ieee thread]' in event_name.lower():
+                    scraper_name = 'ieee'
+                elif 'science' in logger_name.lower() or 'sd' in logger_name.lower() or '[sd thread]' in event_name.lower():
+                    scraper_name = 'sciencedirect'
+                else:
+                    scraper_name = logger_name
+                
+                # Websocket router modülünü gecikmeli import ediyoruz (circular error olmaması için)
+                from backend.routers.websocket import ws_manager
+                
+                # Sadece scraper kaynaklı veya system mesajlarını atalım
+                # Diğer kütüphanelerden (noisy loggers) gelmemesi için
+                payload = {
+                    "type": "log",
+                    "scraper_type": scraper_name,
+                    "timestamp": event_dict.get('timestamp', datetime.now().isoformat()),
+                    "data": {
+                        "level": level,
+                        "message": event_name,
+                        **{k: v for k, v in event_dict.items() if k not in ('level', 'event', 'timestamp', 'logger')}
+                    }
+                }
+                
+                ws_manager.broadcast_from_thread(payload)
+            except Exception:
+                pass
+            return event_dict
+
+        structlog.configure(
+            processors=[
+                *shared_processors,
+                _websocket_broadcaster,
+                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+            ],
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            wrapper_class=structlog.stdlib.BoundLogger,
+            cache_logger_on_first_use=True,
+        )
+        
+        # Root logger handler setup
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        
+        # Sadece bizim eklediğimiz formatter var mı kontrol et
+        has_structlog_console = any(
+            isinstance(h, logging.StreamHandler) and hasattr(h, 'formatter') and h.formatter and
+            'ProcessorFormatter' in type(h.formatter).__name__
+            for h in root_logger.handlers
+        )
+        
+        # 3. parti kütüphane log seviyelerini sınırla (selenium-wire vb. log kirliliğini önlemek için)
+        noisy_loggers = [
+            'seleniumwire', 'urllib3', 'hpack', 'selenium', 
+            'WDM', 'undetected_chromedriver'
+        ]
+        for nl in noisy_loggers:
+            logging.getLogger(nl).setLevel(logging.WARNING)
+            
+        if not has_structlog_console:
+            # Console handler
+            console_handler = logging.StreamHandler(sys.stdout)
+            console_handler.setLevel(logging.INFO)
+            console_formatter = structlog.stdlib.ProcessorFormatter(
+                processors=[
+                    structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    renderer,
+                ],
+            )
+            console_handler.setFormatter(console_formatter)
+            root_logger.addHandler(console_handler)
+            
+            # File handler (JSON formatında)
+            log_filename = f"scraper_{datetime.now().strftime('%Y%m%d')}.log"
+            file_handler = logging.FileHandler(log_dir / log_filename, encoding="utf-8")
+            file_handler.setLevel(logging.DEBUG)
+            file_formatter = structlog.stdlib.ProcessorFormatter(
+                processors=[
+                    structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                    structlog.processors.JSONRenderer(),
+                ],
+            )
+            file_handler.setFormatter(file_formatter)
+            root_logger.addHandler(file_handler)
+        
+        _configured = True
+
+
+def _supports_color() -> bool:
+    """Terminal renk desteğini kontrol et"""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+            return True
+        except Exception:
+            return os.environ.get("TERM") is not None
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
+
+
+# ==================== ScraperLogger (Backward Compatible Wrapper) ====================
 
 class ScraperLogger:
     """
-    Singleton Logger sınıfı
+    structlog wrapper — eski API ile uyumlu.
     
-    Kullanım:
-        from utils.logger import ScraperLogger
-        
-        logger = ScraperLogger()
-        logger.info("Mesaj")
-        logger.success("Başarılı işlem")
-        logger.warning("Uyarı mesajı")
-        logger.error("Hata mesajı")
-        logger.debug("Debug mesajı")
-        
-        # Özel formatlar
-        logger.header("Başlık")
-        logger.section("Bölüm başlığı")
-        logger.progress(current=5, total=10, message="İşlem")
-        logger.stats({"key": "value"})
+    Artık singleton DEĞİL. Her get_logger(name) farklı logger döner.
+    Tüm çıktılar structlog üzerinden geçer (JSON veya pretty).
     """
     
-    _instance = None
-    _lock = threading.Lock()
-    _initialized = False
-    
-    def __new__(cls, *args, **kwargs):
-        """Singleton pattern - thread-safe"""
-        if cls._instance is None:
-            with cls._lock:
-                if cls._instance is None:
-                    cls._instance = super().__new__(cls)
-        return cls._instance
-    
-    def __init__(
-        self,
-        name: str = 'scraper',
-        log_dir: Optional[str] = None,
-        console_level: LogLevel = LogLevel.INFO,
-        file_level: LogLevel = LogLevel.DEBUG,
-        enable_file_logging: bool = True,
-        enable_colors: bool = True
-    ):
-        """
-        Logger'ı başlat
-        
-        Args:
-            name: Logger adı
-            log_dir: Log dosyalarının kaydedileceği dizin
-            console_level: Console log seviyesi
-            file_level: Dosya log seviyesi
-            enable_file_logging: Dosya loglamayı aktif et
-            enable_colors: Renkli çıktıyı aktif et
-        """
-        # Singleton için sadece bir kez initialize et
-        if ScraperLogger._initialized:
-            return
-        
+    def __init__(self, name: str = "scraper"):
+        _configure_structlog()
+        self._logger = structlog.get_logger(name)
         self.name = name
-        self.console_level = console_level
-        self.file_level = file_level
-        self.enable_colors = enable_colors and self._supports_color()
-        self.enable_file_logging = enable_file_logging
-        
-        # Log dizinini ayarla
-        if log_dir:
-            self.log_dir = Path(log_dir)
-        else:
-            # Varsayılan: scrapers/logs
-            self.log_dir = Path(__file__).parent.parent / 'logs'
-        
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Python logging modülünü yapılandır
-        self._setup_logging()
-        
-        ScraperLogger._initialized = True
-    
-    def _supports_color(self) -> bool:
-        """Terminal renk desteğini kontrol et"""
-        # Windows için
-        if sys.platform == 'win32':
-            try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
-                return True
-            except:
-                return os.environ.get('TERM') is not None
-        
-        # Unix/Linux/Mac için
-        return hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
-    
-    def _setup_logging(self):
-        """Python logging modülünü yapılandır"""
-        # Custom SUCCESS level ekle
-        logging.addLevelName(LogLevel.SUCCESS.value, 'SUCCESS')
-        
-        # Ana logger'ı oluştur
-        self.logger = logging.getLogger(self.name)
-        self.logger.setLevel(logging.DEBUG)
-        self.logger.handlers = []  # Mevcut handler'ları temizle
-        
-        # Dosya handler
-        if self.enable_file_logging:
-            log_filename = f"{self.name}_{datetime.now().strftime('%Y%m%d')}.log"
-            log_filepath = self.log_dir / log_filename
-            
-            file_handler = logging.FileHandler(log_filepath, encoding='utf-8')
-            file_handler.setLevel(self.file_level.value)
-            file_formatter = logging.Formatter(
-                '%(asctime)s | %(levelname)-8s | %(message)s',
-                datefmt='%Y-%m-%d %H:%M:%S'
-            )
-            file_handler.setFormatter(file_formatter)
-            self.logger.addHandler(file_handler)
-    
-    def _colorize(self, text: str, color: str) -> str:
-        """Metni renklendir"""
-        if self.enable_colors:
-            return f"{color}{text}{Colors.RESET}"
-        return text
-    
-    def _get_timestamp(self) -> str:
-        """Zaman damgası al"""
-        return datetime.now().strftime('%H:%M:%S')
-    
-    def _format_message(self, level: LogLevel, message: str, icon: str = None) -> str:
-        """Console için mesajı formatla"""
-        timestamp = self._get_timestamp()
-        
-        # Seviyeye göre renk ve ikon belirle
-        level_configs = {
-            LogLevel.DEBUG: (Colors.BRIGHT_BLACK, LogIcons.DEBUG, 'DEBUG'),
-            LogLevel.INFO: (Colors.BRIGHT_BLUE, LogIcons.INFO, 'INFO'),
-            LogLevel.SUCCESS: (Colors.BRIGHT_GREEN, LogIcons.SUCCESS, 'SUCCESS'),
-            LogLevel.WARNING: (Colors.BRIGHT_YELLOW, LogIcons.WARNING, 'WARNING'),
-            LogLevel.ERROR: (Colors.BRIGHT_RED, LogIcons.ERROR, 'ERROR'),
-            LogLevel.CRITICAL: (Colors.BG_RED + Colors.WHITE, LogIcons.CROSS, 'CRITICAL'),
-        }
-        
-        color, default_icon, level_name = level_configs.get(level, (Colors.WHITE, '', 'INFO'))
-        icon = icon or default_icon
-        
-        # Zaman damgası (gri)
-        ts_colored = self._colorize(timestamp, Colors.BRIGHT_BLACK)
-        
-        # Seviye etiketi
-        level_colored = self._colorize(f"[{level_name}]", color)
-        
-        # İkon
-        icon_colored = self._colorize(icon, color)
-        
-        return f"{ts_colored} {level_colored} {icon_colored} {message}"
-    
-    def _log(self, level: LogLevel, message: str, icon: str = None):
-        """Genel log fonksiyonu"""
-        # Console'a yaz (seviye kontrolü)
-        if level.value >= self.console_level.value:
-            formatted = self._format_message(level, message, icon)
-            print(formatted)
-        
-        # Dosyaya yaz
-        if self.enable_file_logging:
-            log_func = {
-                LogLevel.DEBUG: self.logger.debug,
-                LogLevel.INFO: self.logger.info,
-                LogLevel.SUCCESS: lambda m: self.logger.log(LogLevel.SUCCESS.value, m),
-                LogLevel.WARNING: self.logger.warning,
-                LogLevel.ERROR: self.logger.error,
-                LogLevel.CRITICAL: self.logger.critical,
-            }.get(level, self.logger.info)
-            log_func(message)
+        self.enable_colors = _supports_color()
     
     # ==================== Ana Log Metodları ====================
     
-    def debug(self, message: str):
+    def debug(self, message: str, **kwargs):
         """Debug mesajı"""
-        self._log(LogLevel.DEBUG, message)
+        self._logger.debug(message, **kwargs)
     
-    def info(self, message: str, icon: str = None):
+    def info(self, message: str, icon: str = None, **kwargs):
         """Bilgi mesajı"""
-        self._log(LogLevel.INFO, message, icon)
+        if icon:
+            kwargs["icon"] = icon
+        self._logger.info(message, **kwargs)
     
-    def success(self, message: str):
-        """Başarı mesajı"""
-        self._log(LogLevel.SUCCESS, message)
+    def success(self, message: str, **kwargs):
+        """Başarı mesajı (info seviyesinde, level=success marker)"""
+        self._logger.info(message, **kwargs)
     
-    def warning(self, message: str):
+    def warning(self, message: str, **kwargs):
         """Uyarı mesajı"""
-        self._log(LogLevel.WARNING, message)
+        self._logger.warning(message, **kwargs)
     
-    def error(self, message: str):
+    def error(self, message: str, **kwargs):
         """Hata mesajı"""
-        self._log(LogLevel.ERROR, message)
+        self._logger.error(message, **kwargs)
     
-    def critical(self, message: str):
+    def critical(self, message: str, **kwargs):
         """Kritik hata mesajı"""
-        self._log(LogLevel.CRITICAL, message)
+        self._logger.critical(message, **kwargs)
     
-    # ==================== Özel Formatlar ====================
+    # ==================== Özel Formatlar (Backward Compat) ====================
     
     def header(self, title: str, width: int = 80):
         """Büyük başlık"""
-        line = LogIcons.DOUBLE_LINE * width
-        print(self._colorize(line, Colors.BRIGHT_CYAN))
-        print(self._colorize(f"  {title.upper()}", Colors.BOLD + Colors.BRIGHT_CYAN))
-        print(self._colorize(line, Colors.BRIGHT_CYAN))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"{'=' * width}")
-            self.logger.info(f"  {title.upper()}")
-            self.logger.info(f"{'=' * width}")
+        self._logger.info(f"{'=' * width}")
+        self._logger.info(f"  {title.upper()}")
+        self._logger.info(f"{'=' * width}")
     
     def section(self, title: str, width: int = 80):
         """Bölüm başlığı"""
-        line = LogIcons.LINE * width
-        print(self._colorize(line, Colors.BRIGHT_BLACK))
-        print(self._colorize(f"{LogIcons.STAR} {title}", Colors.BRIGHT_WHITE + Colors.BOLD))
-        print(self._colorize(line, Colors.BRIGHT_BLACK))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"{'-' * width}")
-            self.logger.info(f"* {title}")
-            self.logger.info(f"{'-' * width}")
+        self._logger.info(f"--- {title} ---")
     
     def subsection(self, title: str):
         """Alt bölüm başlığı"""
-        dotted = LogIcons.DOTTED * 76
-        print(self._colorize(f"  {dotted}", Colors.BRIGHT_BLACK))
-        print(self._colorize(f"  {LogIcons.BULLET} {title}", Colors.BRIGHT_WHITE))
-        print(self._colorize(f"  {dotted}", Colors.BRIGHT_BLACK))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"  --- {title} ---")
+        self._logger.info(f"  · {title}")
     
     def progress(self, current: int, total: int, message: str = "İşlem"):
         """İlerleme durumu"""
         percentage = (current / total * 100) if total > 0 else 0
-        bar_length = 20
-        filled = int(bar_length * current / total) if total > 0 else 0
-        bar = '█' * filled + '░' * (bar_length - filled)
-        
-        progress_str = f"[{current}/{total}]"
-        bar_str = f"[{bar}]"
-        percent_str = f"{percentage:.1f}%"
-        
-        output = f"{LogIcons.PROGRESS} {message} {progress_str} {bar_str} {percent_str}"
-        
-        print(self._colorize(output, Colors.BRIGHT_CYAN))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Progress: {message} [{current}/{total}] {percentage:.1f}%")
+        self._logger.info(
+            message,
+            current=current,
+            total=total,
+            percent=round(percentage, 1),
+        )
     
     def stats(self, data: dict, title: str = "İstatistikler"):
         """İstatistik tablosu"""
-        print(self._colorize(f"\n{LogIcons.DATABASE} {title}:", Colors.BRIGHT_MAGENTA + Colors.BOLD))
-        
-        for key, value in data.items():
-            key_colored = self._colorize(f"  {LogIcons.BULLET} {key}:", Colors.BRIGHT_WHITE)
-            value_colored = self._colorize(str(value), Colors.BRIGHT_YELLOW)
-            print(f"{key_colored} {value_colored}")
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Stats - {title}:")
-            for key, value in data.items():
-                self.logger.info(f"  - {key}: {value}")
+        self._logger.info(title, **data)
     
     def step(self, step_num: int, total_steps: int, description: str):
         """Adım göstergesi"""
-        step_str = f"[{step_num}/{total_steps}]"
-        output = f"{LogIcons.ARROW_RIGHT} Adım {step_str}: {description}"
-        
-        print(self._colorize(output, Colors.BRIGHT_BLUE))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Step {step_num}/{total_steps}: {description}")
+        self._logger.info(description, step=step_num, total_steps=total_steps)
     
     def item(self, index: int, total: int, name: str, extra: str = None):
         """Liste öğesi"""
-        idx_str = f"[{index}/{total}]"
-        main = f"  {idx_str} {name}"
-        
-        print(self._colorize(main, Colors.WHITE), end='')
+        kwargs = {"index": index, "total": total}
         if extra:
-            print(self._colorize(f" - {extra}", Colors.BRIGHT_BLACK))
-        else:
-            print()
-        
-        if self.enable_file_logging:
-            log_msg = f"Item {index}/{total}: {name}"
-            if extra:
-                log_msg += f" - {extra}"
-            self.logger.info(log_msg)
+            kwargs["extra"] = extra
+        self._logger.info(name, **kwargs)
     
     def url(self, url: str, prefix: str = "URL"):
         """URL gösterimi"""
-        output = f"  {LogIcons.LINK} {prefix}: {url}"
-        print(self._colorize(output, Colors.BRIGHT_CYAN))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"{prefix}: {url}")
+        self._logger.info(prefix, url=url)
     
     def found(self, count: int, item_type: str):
         """Bulunan öğe sayısı"""
-        output = f"  {LogIcons.SUCCESS} {count} {item_type} bulundu"
-        print(self._colorize(output, Colors.BRIGHT_GREEN))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Found: {count} {item_type}")
+        self._logger.info(f"{count} {item_type} bulundu", count=count, item_type=item_type)
     
     def not_found(self, item_type: str):
         """Bulunamayan öğe"""
-        output = f"  {LogIcons.WARNING} {item_type} bulunamadı"
-        print(self._colorize(output, Colors.BRIGHT_YELLOW))
-        
-        if self.enable_file_logging:
-            self.logger.warning(f"Not found: {item_type}")
+        self._logger.warning(f"{item_type} bulunamadı", item_type=item_type)
     
     def skipped(self, reason: str):
         """Atlanan öğe"""
-        output = f"  {LogIcons.ARROW_RIGHT} Atlandı: {reason}"
-        print(self._colorize(output, Colors.BRIGHT_BLACK))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Skipped: {reason}")
+        self._logger.info(f"Atlandı: {reason}")
     
     def saved(self, filepath: str):
         """Kaydedilen dosya"""
-        output = f"  {LogIcons.DATABASE} Kaydedildi: {filepath}"
-        print(self._colorize(output, Colors.BRIGHT_GREEN))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Saved: {filepath}")
+        self._logger.info("Kaydedildi", filepath=filepath)
     
     def connecting(self, target: str):
         """Bağlantı mesajı"""
-        output = f"{LogIcons.GLOBE} {target} bağlanılıyor..."
-        print(self._colorize(output, Colors.BRIGHT_CYAN))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Connecting to: {target}")
+        self._logger.info(f"{target} bağlanılıyor...", target=target)
     
     def loading(self, message: str = "Yükleniyor"):
         """Yükleme mesajı"""
-        output = f"{LogIcons.CLOCK} {message}..."
-        print(self._colorize(output, Colors.BRIGHT_YELLOW))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Loading: {message}")
+        self._logger.info(f"{message}...")
     
     def done(self, message: str = "Tamamlandı"):
         """Tamamlanma mesajı"""
-        output = f"{LogIcons.DONE} {message}"
-        print(self._colorize(output, Colors.BRIGHT_GREEN + Colors.BOLD))
-        
-        if self.enable_file_logging:
-            self.logger.info(f"Done: {message}")
+        self._logger.info(message)
     
     def failed(self, message: str, error: Exception = None):
         """Başarısız işlem"""
-        output = f"{LogIcons.CROSS} {message}"
+        kwargs = {}
         if error:
-            output += f": {str(error)}"
-        
-        print(self._colorize(output, Colors.BRIGHT_RED))
-        
-        if self.enable_file_logging:
-            log_msg = f"Failed: {message}"
-            if error:
-                log_msg += f" - {str(error)}"
-            self.logger.error(log_msg)
+            kwargs["error"] = str(error)
+            kwargs["error_type"] = type(error).__name__
+        self._logger.error(message, **kwargs)
     
     def newline(self):
-        """Boş satır"""
-        print()
+        """Boş satır — structlog'da no-op"""
+        pass
     
-    def separator(self, char: str = '-', width: int = 80):
+    def separator(self, char: str = "-", width: int = 80):
         """Ayırıcı çizgi"""
-        print(self._colorize(char * width, Colors.BRIGHT_BLACK))
+        self._logger.debug(char * min(width, 40))
 
 
-# Global logger instance
-_logger_instance = None
+# ==================== Logger Factory ====================
+
+# Her logger name için ayrı instance cache
+_loggers: Dict[str, ScraperLogger] = {}
+_loggers_lock = threading.Lock()
 
 
 def get_logger(
-    name: str = 'scraper',
+    name: str = "scraper",
     log_dir: Optional[str] = None,
     console_level: LogLevel = LogLevel.INFO,
     file_level: LogLevel = LogLevel.DEBUG,
-    enable_file_logging: bool = True
+    enable_file_logging: bool = True,
 ) -> ScraperLogger:
     """
-    Global logger instance'ı al veya oluştur
+    Logger instance al veya oluştur.
+    
+    Her name için farklı logger döner (singleton bug FIX).
     
     Args:
-        name: Logger adı
-        log_dir: Log dizini
-        console_level: Console log seviyesi
-        file_level: Dosya log seviyesi
-        enable_file_logging: Dosya loglamayı aktif et
-        
-    Returns:
-        ScraperLogger instance
+        name: Logger adı (her çağrıda aynı name = aynı logger)
     """
-    global _logger_instance
-    
-    if _logger_instance is None:
-        _logger_instance = ScraperLogger(
-            name=name,
-            log_dir=log_dir,
-            console_level=console_level,
-            file_level=file_level,
-            enable_file_logging=enable_file_logging
-        )
-    
-    return _logger_instance
+    with _loggers_lock:
+        if name not in _loggers:
+            _loggers[name] = ScraperLogger(name=name)
+        return _loggers[name]
 
 
-# Kısa erişim için alias
+# Kısa erişim alias
 logger = get_logger()

@@ -1,23 +1,22 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { 
-  Play, 
-  Pause, 
-  Square, 
-  RefreshCw, 
-  CheckCircle, 
-  XCircle, 
-  Clock,
-  Settings,
-  AlertTriangle
+import { useEffect, useState, useCallback } from 'react';
+import {
+  Play,
+  Pause,
+  Square,
+  RefreshCw,
+  AlertTriangle,
+  Wifi,
+  WifiOff,
+  Radio,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { 
-  getScrapersStatus, 
-  startIeeeScraper, 
+import {
+  getScrapersStatus,
+  startIeeeScraper,
   stopIeeeScraper,
   pauseIeeeScraper,
   resumeIeeeScraper,
@@ -27,7 +26,11 @@ import {
   resumeScienceDirectScraper,
   getScraperLogs
 } from '@/lib/api';
+import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
+import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
+
+// ==================== Status Config ====================
 
 const statusConfig: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info'; color: string }> = {
   idle: { label: 'Bekliyor', variant: 'default', color: 'text-slate-500' },
@@ -40,11 +43,40 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'succes
   completed: { label: 'Tamamlandı', variant: 'success', color: 'text-emerald-500' },
 };
 
+// ==================== Connection Status Badge ====================
+
+function ConnectionBadge({ status }: { status: ConnectionStatus }) {
+  if (status === 'connected') {
+    return (
+      <Badge variant="success" className="text-xs gap-1">
+        <Wifi className="h-3 w-3" />
+        Canlı
+      </Badge>
+    );
+  }
+  if (status === 'reconnecting') {
+    return (
+      <Badge variant="warning" className="text-xs gap-1 animate-pulse">
+        <Radio className="h-3 w-3" />
+        Bağlanıyor...
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="default" className="text-xs gap-1">
+      <WifiOff className="h-3 w-3" />
+      Çevrimdışı
+    </Badge>
+  );
+}
+
+// ==================== Scraper Control Card ====================
+
 interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: () => Promise<void>;
+  onStart: (limit: number) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
@@ -52,7 +84,27 @@ interface ScraperControlProps {
 
 function ScraperControl({ scraper, title, description, onStart, onStop, onPause, onResume }: ScraperControlProps) {
   const [actionLoading, setActionLoading] = useState(false);
+  const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
+  const [limit, setLimit] = useState<number>(25);
   const config = statusConfig[scraper.status] || statusConfig.idle;
+
+  // Gelen scraper nesnesindeki süre güncellendiğinde local state'i senkronize et
+  useEffect(() => {
+    setLocalElapsed(scraper.elapsed_seconds);
+  }, [scraper.elapsed_seconds]);
+
+  // Scraper çalışıyorsa her saniye süreyi artır
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (scraper.status === 'running') {
+      interval = setInterval(() => {
+        setLocalElapsed((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [scraper.status]);
 
   const handleAction = async (action: () => Promise<void>) => {
     setActionLoading(true);
@@ -90,12 +142,11 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
             <span className="font-semibold">{scraper.progress_percent.toFixed(1)}%</span>
           </div>
           <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
-            <div 
-              className={`h-full rounded-full transition-all duration-500 ${
-                scraper.status === 'error' ? 'bg-red-500' :
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${scraper.status === 'error' ? 'bg-red-500' :
                 scraper.status === 'completed' ? 'bg-emerald-500' :
-                'bg-gradient-to-r from-emerald-500 to-teal-400'
-              }`}
+                  'bg-gradient-to-r from-emerald-500 to-teal-400'
+                }`}
               style={{ width: `${scraper.progress_percent}%` }}
             />
           </div>
@@ -150,94 +201,119 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           {scraper.started_at && (
             <span>Başlangıç: {new Date(scraper.started_at).toLocaleTimeString('tr-TR')}</span>
           )}
-          {scraper.elapsed_seconds > 0 && (
-            <span>Geçen süre: {Math.floor(scraper.elapsed_seconds / 60)} dk {Math.floor(scraper.elapsed_seconds % 60)} sn</span>
+          {localElapsed > 0 && (
+            <span>Geçen süre: {Math.floor(localElapsed / 60)} dk {Math.floor(localElapsed % 60)} sn</span>
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex gap-3 pt-4 border-t border-slate-100">
+        {/* Actions Menu */}
+        <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
           {canStart && (
-            <Button
-              variant="primary"
-              onClick={() => handleAction(onStart)}
-              isLoading={actionLoading}
-              className="flex-1"
-            >
-              <Play className="h-4 w-4 mr-2" />
-              Başlat
-            </Button>
-          )}
-          {isRunning && (
-            <>
-              <Button
-                variant="secondary"
-                onClick={() => handleAction(onPause)}
-                isLoading={actionLoading}
-                className="flex-1"
-              >
-                <Pause className="h-4 w-4 mr-2" />
-                Duraklat
-              </Button>
-              <Button
-                variant="danger"
-                onClick={() => handleAction(onStop)}
-                isLoading={actionLoading}
-                className="flex-1"
-              >
-                <Square className="h-4 w-4 mr-2" />
-                Durdur
-              </Button>
-            </>
-          )}
-          {isPaused && (
-            <>
+            <div className="flex items-center gap-3 w-full">
+              <div className="flex items-center gap-2">
+                <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                  Makale Limiti:
+                </label>
+                <input
+                  id={`limit-${title}`}
+                  type="number"
+                  min="1"
+                  max="5000"
+                  value={limit}
+                  onChange={(e) => setLimit(parseInt(e.target.value) || 25)}
+                  className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+
               <Button
                 variant="primary"
-                onClick={() => handleAction(onResume)}
+                onClick={() => handleAction(() => onStart(limit))}
                 isLoading={actionLoading}
                 className="flex-1"
               >
                 <Play className="h-4 w-4 mr-2" />
-                Devam Et
+                Başlat
               </Button>
-              <Button
-                variant="danger"
-                onClick={() => handleAction(onStop)}
-                isLoading={actionLoading}
-                className="flex-1"
-              >
-                <Square className="h-4 w-4 mr-2" />
-                Durdur
-              </Button>
-            </>
+            </div>
           )}
+
+          <div className="flex gap-3 w-full">
+            {isRunning && (
+              <>
+                <Button variant="secondary" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
+                  <Square className="h-4 w-4 mr-2" />
+                  Durdur
+                </Button>
+              </>
+            )}
+            {isPaused && (
+              <>
+                <Button variant="primary" onClick={() => handleAction(onResume)} isLoading={actionLoading} className="flex-1">
+                  <Play className="h-4 w-4 mr-2" />
+                  Devam Et
+                </Button>
+                <Button variant="danger" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
+                  <Square className="h-4 w-4 mr-2" />
+                  Durdur
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </CardContent>
     </Card>
   );
 }
 
-function ScraperLogs() {
-  const [logs, setLogs] = useState<Array<{timestamp: string; level: string; message: string; scraper_type: string}>>([]);
+// ==================== Live Event Log ====================
+
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+  scraper_type: string;
+}
+
+function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; isWsConnected: boolean }) {
+  const [polledLogs, setPolledLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchLogs() {
-      try {
-        const data = await getScraperLogs('all', 30);
-        setLogs(data.logs || []);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
-      }
+  const fetchLogs = useCallback(async () => {
+    try {
+      const data = await getScraperLogs('all', 30);
+      setPolledLogs(data.logs || []);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
     }
-    
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
   }, []);
+
+  // Sadece ilk yüklemede ve fetchLogs değiştiğinde (asla değişmez) bir kere çalışır
+  useEffect(() => {
+    fetchLogs();
+  }, [fetchLogs]);
+
+  // Polled logs (fallback + initial)
+  useEffect(() => {
+    // WS bağlıysa poll yapma (event'lere güven, gerçek zamanlı akar), değilse 5 saniyede bir poll yap
+    if (!isWsConnected) {
+      const interval = setInterval(fetchLogs, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [isWsConnected, fetchLogs]);
+
+  // Merge: WS events + polled logs
+  const wsLogEntries: LogEntry[] = wsEvents
+    .filter((e) => e.type === 'log' || e.type === 'error' || e.type === 'progress')
+    .map((e) => ({
+      timestamp: e.timestamp,
+      level: e.type === 'error' ? 'error' : (e.data?.level as string) || 'info',
+      message: (e.data?.message as string) || JSON.stringify(e.data),
+      scraper_type: e.scraper_type,
+    }));
+
+  const allLogs = [...wsLogEntries, ...polledLogs].slice(0, 50);
 
   const getLevelColor = (level: string) => {
     switch (level) {
@@ -251,21 +327,33 @@ function ScraperLogs() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Son Loglar</CardTitle>
-        <CardDescription>Scraper aktivite logları</CardDescription>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle>Son Loglar</CardTitle>
+            <CardDescription>
+              {isWsConnected ? 'Canlı takip (WebSocket)' : 'Scraper aktivite logları (polling)'}
+            </CardDescription>
+          </div>
+          {isWsConnected && (
+            <span className="flex items-center gap-1.5 text-xs text-emerald-600">
+              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+              Canlı
+            </span>
+          )}
+        </div>
       </CardHeader>
       <CardContent>
         {loading ? (
           <div className="animate-pulse space-y-2">
             {[...Array(5)].map((_, i) => (
-              <div key={i} className="h-8 bg-slate-100 rounded"></div>
+              <div key={i} className="h-8 bg-slate-100 rounded" />
             ))}
           </div>
-        ) : logs.length === 0 ? (
+        ) : allLogs.length === 0 ? (
           <p className="text-slate-500 text-sm text-center py-4">Henüz log yok</p>
         ) : (
           <div className="space-y-2 max-h-80 overflow-y-auto">
-            {logs.map((log, idx) => (
+            {allLogs.map((log, idx) => (
               <div key={idx} className="flex items-start gap-2 text-sm">
                 <span className="text-xs text-slate-400 w-16 flex-shrink-0">
                   {new Date(log.timestamp).toLocaleTimeString('tr-TR')}
@@ -286,11 +374,41 @@ function ScraperLogs() {
   );
 }
 
+// ==================== Main Page ====================
+
 export default function ScrapersPage() {
   const [status, setStatus] = useState<AllScrapersStatus | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchStatus = async () => {
+  // Global WebSocket connection
+  const { connectionStatus, events: wsEvents, isConnected } = useGlobalScraperEvents({
+    onEvent: (event) => {
+      // WS event'ı geldiğinde gönderilen payload'ı kullanarak durumu LOKAL olarak güncelle!
+      // ESKİ KOD: fetchStatus() çağırıyordu. Bu da saniyede onlarca HTTP isteğine yol açıp backend'i çökertiyordu.
+      if (event.type === 'status_update' || event.type === 'progress') {
+        if (event.data) {
+          setStatus(prev => {
+            if (!prev) return prev;
+
+            // Mevcut state'in klonunu al ve sadece güncellenen scraper'ı değiştir
+            const newState = { ...prev };
+            const sType = event.scraper_type;
+
+            if (sType === 'ieee' || sType === 'sciencedirect') {
+              newState[sType] = {
+                ...newState[sType],
+                ...event.data
+              };
+            }
+
+            return newState;
+          });
+        }
+      }
+    },
+  });
+
+  const fetchStatus = useCallback(async () => {
     try {
       const data = await getScrapersStatus();
       setStatus(data);
@@ -299,13 +417,19 @@ export default function ScrapersPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 2000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [fetchStatus]);
+
+  useEffect(() => {
+    // WS bağlıysa poll yapma (event'lere güven), değilse 5 saniyede bir poll yap
+    if (!isConnected) {
+      const interval = setInterval(fetchStatus, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchStatus, isConnected]);
 
   if (loading) {
     return (
@@ -319,9 +443,9 @@ export default function ScrapersPage() {
             <Card key={i}>
               <CardContent className="pt-6">
                 <div className="animate-pulse space-y-4">
-                  <div className="h-6 bg-slate-200 rounded w-1/3"></div>
-                  <div className="h-4 bg-slate-100 rounded w-full"></div>
-                  <div className="h-32 bg-slate-50 rounded"></div>
+                  <div className="h-6 bg-slate-200 rounded w-1/3" />
+                  <div className="h-4 bg-slate-100 rounded w-full" />
+                  <div className="h-32 bg-slate-50 rounded" />
                 </div>
               </CardContent>
             </Card>
@@ -340,9 +464,10 @@ export default function ScrapersPage() {
           <p className="mt-1 text-slate-500">Web scraper yönetimi ve izleme</p>
         </div>
         <div className="flex items-center gap-2">
+          <ConnectionBadge status={connectionStatus} />
           {status?.any_running && (
             <Badge variant="success" className="animate-pulse">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full mr-2"></span>
+              <span className="w-2 h-2 bg-emerald-500 rounded-full mr-2" />
               Aktif
             </Badge>
           )}
@@ -360,7 +485,7 @@ export default function ScrapersPage() {
               scraper={status.ieee}
               title="IEEE Xplore Scraper"
               description="IEEE akademik makalelerini toplar"
-              onStart={async () => { await startIeeeScraper(false, 10); await fetchStatus(); }}
+              onStart={async (limit) => { await startIeeeScraper(false, limit); await fetchStatus(); }}
               onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
@@ -369,7 +494,7 @@ export default function ScrapersPage() {
               scraper={status.sciencedirect}
               title="ScienceDirect Scraper"
               description="Elsevier ScienceDirect makalelerini toplar"
-              onStart={async () => { await startScienceDirectScraper(false, 5); await fetchStatus(); }}
+              onStart={async (limit) => { await startScienceDirectScraper(false, limit); await fetchStatus(); }}
               onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
@@ -378,9 +503,8 @@ export default function ScrapersPage() {
         )}
       </div>
 
-      {/* Logs */}
-      <ScraperLogs />
+      {/* Logs with WebSocket */}
+      <ScraperLogs wsEvents={wsEvents} isWsConnected={isConnected} />
     </div>
   );
 }
-

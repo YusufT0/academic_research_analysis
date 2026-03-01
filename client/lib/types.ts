@@ -140,3 +140,61 @@ export interface SearchResult {
   }>;
 }
 
+// ==================== Elasticsearch Types ====================
+
+export interface ElasticSearchHit {
+  id: string;
+  title: string;
+  journal_name: string;
+  authors: string[];
+  publication_year: number | null;
+  doi: string | null;
+  url: string;
+  abstract: string | null;
+  keywords: string[];
+  source_website: string;
+  score: number;
+  highlights?: {
+    title?: string[];
+    abstract?: string[];
+    keywords?: string[];
+    authors?: string[];
+  };
+}
+
+export interface SearchFacetBucket {
+  key: string;
+  count: number;
+}
+
+export interface SearchFacets {
+  sources: SearchFacetBucket[];
+  years: SearchFacetBucket[];
+  journals: SearchFacetBucket[];
+  keywords: SearchFacetBucket[];
+}
+
+export interface ElasticSearchResult {
+  query: string;
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  items: ElasticSearchHit[];
+  facets?: SearchFacets;
+}
+
+export interface SearchSuggestion {
+  text: string;
+  score?: number;
+}
+
+// ==================== WebSocket Types ====================
+
+export interface ScraperEvent {
+  type: 'status_update' | 'progress' | 'log' | 'error' | 'completed' | 'started' | 'stopped' | 'pong';
+  scraper_type: string;
+  timestamp: string;
+  data: Record<string, unknown>;
+}
+

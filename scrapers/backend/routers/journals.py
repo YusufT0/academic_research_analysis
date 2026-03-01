@@ -14,6 +14,7 @@ from database.models import Journal
 from database.repositories import JournalRepository
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
+from backend.schemas.journal import JournalListResponse, JournalResponse
 from utils.logger import get_logger
 
 logger = get_logger('journals_router')
@@ -25,7 +26,7 @@ def get_journal_repo() -> JournalRepository:
     return JournalRepository()
 
 
-@router.get("/", summary="Tüm dergileri listele")
+@router.get("/", summary="Tüm dergileri listele", response_model=JournalListResponse)
 async def list_journals(
     # Pagination
     page: int = Query(1, ge=1, description="Sayfa numarası"),
@@ -107,7 +108,7 @@ async def list_journals(
     }
 
 
-@router.get("/{journal_id}", summary="Dergi detayı")
+@router.get("/{journal_id}", summary="Dergi detayı", response_model=JournalResponse)
 async def get_journal(journal_id: str):
     """Belirli bir derginin detaylarını getir (cached)"""
     try:

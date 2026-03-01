@@ -9,6 +9,9 @@ import type {
   GeneralStats,
   ArticleStats,
   SearchResult,
+  ElasticSearchResult,
+  SearchSuggestion,
+  SearchFacets,
 } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -22,7 +25,7 @@ class ApiError extends Error {
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_URL}${endpoint}`;
-  
+
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -67,7 +70,7 @@ export interface JournalFilters {
 
 export async function getJournals(filters: JournalFilters = {}): Promise<PaginatedResponse<Journal>> {
   const params = new URLSearchParams();
-  
+
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.source_website) params.set('source_website', filters.source_website);
@@ -76,7 +79,7 @@ export async function getJournals(filters: JournalFilters = {}): Promise<Paginat
   if (filters.search) params.set('search', filters.search);
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
-  
+
   return fetchApi<PaginatedResponse<Journal>>(`/journals?${params.toString()}`);
 }
 
@@ -111,7 +114,7 @@ export interface ArticleFilters {
 
 export async function getArticles(filters: ArticleFilters = {}): Promise<PaginatedResponse<Article>> {
   const params = new URLSearchParams();
-  
+
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.journal_id) params.set('journal_id', filters.journal_id);
@@ -124,7 +127,7 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.has_abstract !== undefined) params.set('has_abstract', filters.has_abstract.toString());
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
-  
+
   return fetchApi<PaginatedResponse<Article>>(`/articles?${params.toString()}`);
 }
 
@@ -142,7 +145,7 @@ export async function searchArticles(
     search_type: searchType,
     limit: limit.toString(),
   });
-  
+
   return fetchApi<SearchResult>(`/articles/search?${params.toString()}`);
 }
 
@@ -160,7 +163,7 @@ export interface IssueFilters {
 
 export async function getIssues(filters: IssueFilters = {}): Promise<PaginatedResponse<Issue>> {
   const params = new URLSearchParams();
-  
+
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.journal_id) params.set('journal_id', filters.journal_id);
@@ -168,7 +171,7 @@ export async function getIssues(filters: IssueFilters = {}): Promise<PaginatedRe
   if (filters.year) params.set('year', filters.year.toString());
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
-  
+
   return fetchApi<PaginatedResponse<Issue>>(`/issues?${params.toString()}`);
 }
 
@@ -241,3 +244,35 @@ export async function getScraperLogs(scraperType = 'all', limit = 50): Promise<S
   return fetchApi<ScraperLogsResponse>(`/scrapers/logs?scraper_type=${scraperType}&limit=${limit}`);
 }
 
+// ==================== Elasticsearch Search ====================
+
+export interface ElasticSearchFilters {
+  query: string;
+  source_website?: string;
+  year?: number;
+  journal_name?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export async function elasticSearch(filters: ElasticSearchFilters): Promise<ElasticSearchResult> {
+  const params = new URLSearchParams();
+  params.set('q', filters.query);
+  if (filters.source_website) params.set('source_website', filters.source_website);
+  if (filters.year) params.set('year', filters.year.toString());
+  if (filters.journal_name) params.set('journal_name', filters.journal_name);
+  if (filters.page) params.set('page', filters.page.toString());
+  if (filters.page_size) params.set('page_size', filters.page_size.toString());
+
+  return fetchApi<ElasticSearchResult>(`/search?${params.toString()}`);
+}
+
+export async function getSearchSuggestions(prefix: string, limit = 5): Promise<SearchSuggestion[]> {
+  const params = new URLSearchParams({ q: prefix, limit: limit.toString() });
+  const data = await fetchApi<{ query: string; suggestions: string[] }>(`/search/suggest?${params.toString()}`);
+  return (data.suggestions || []).map(text => ({ text }));
+}
+
+export async function getSearchFacets(): Promise<SearchFacets> {
+  return fetchApi<SearchFacets>('/search/facets');
+}

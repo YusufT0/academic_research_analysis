@@ -179,6 +179,42 @@ class Settings(BaseSettings):
         description="Komşu cluster için kaç makale prefetch edilsin"
     )
     
+    # ==================== Elasticsearch ====================
+    elasticsearch_url: str = Field(
+        default="http://localhost:9200",
+        alias="ELASTICSEARCH_URL",
+        description="Elasticsearch URL"
+    )
+    elasticsearch_index_prefix: str = Field(
+        default="academic",
+        alias="ELASTICSEARCH_INDEX_PREFIX",
+        description="Elasticsearch index prefix"
+    )
+    
+    # ==================== Redis Streams ====================
+    redis_streams_enabled: bool = Field(
+        default=True,
+        alias="REDIS_STREAMS_ENABLED",
+        description="Redis Streams event pipeline aktif mi"
+    )
+    redis_streams_consumer_group: str = Field(
+        default="academic-backend",
+        alias="REDIS_STREAMS_CONSUMER_GROUP",
+        description="Consumer group adı"
+    )
+    redis_streams_dlq_retry_interval: int = Field(
+        default=300,
+        alias="REDIS_STREAMS_DLQ_RETRY_INTERVAL",
+        description="DLQ retry aralığı (saniye)"
+    )
+    
+    # ==================== Logging ====================
+    log_format: str = Field(
+        default="pretty",
+        alias="LOG_FORMAT",
+        description="Log format: json (production) veya pretty (dev)"
+    )
+    
     @property
     def nlp_model_full_path(self) -> Path:
         """NLP model tam yolu"""

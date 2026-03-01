@@ -34,7 +34,7 @@ class JournalParser:
             soup = BeautifulSoup(page_source, 'html.parser')
             
             # Publications list'i bul
-            publication_list = soup.find('ul', class_='publications-list')
+            publication_list = soup.find('div', class_='publications-list')
             if not publication_list:
                 logger.not_found("publications-list")
                 return []
