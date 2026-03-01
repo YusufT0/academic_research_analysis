@@ -40,11 +40,19 @@ function useDebounce<T>(value: T, delay: number): T {
 
 // ==================== Active Filters ====================
 
+// ==================== Active Filters ====================
+
 interface ActiveFilters {
   source_website?: string;
   year?: number;
   journal_name?: string;
 }
+
+const formatSourceName = (key: string) => {
+  if (key === 'ieeexplore') return 'IEEE Xplore';
+  if (key === 'sciencedirect') return 'Science Direct';
+  return key;
+};
 
 // ==================== Main Component ====================
 
@@ -111,7 +119,7 @@ export default function SearchPage() {
         setEsResults(data);
         setFallbackResults(null);
       } else {
-        const data = await searchArticles(q.trim(), 'text', 100);
+        const data = await searchArticles(q.trim(), 'text', searchPage, 20);
         setFallbackResults(data);
         setEsResults(null);
       }
@@ -120,7 +128,7 @@ export default function SearchPage() {
       // ES hata verirse MongoDB'ye fallback
       if (useElastic) {
         try {
-          const data = await searchArticles(q.trim(), 'text', 100);
+          const data = await searchArticles(q.trim(), 'text', searchPage, 20);
           setFallbackResults(data);
           setEsResults(null);
           setUseElastic(false);
@@ -159,9 +167,10 @@ export default function SearchPage() {
   const clearFilters = () => setFilters({});
 
   const activeFilterCount = Object.keys(filters).length;
-  const totalResults = esResults?.total || fallbackResults?.count || 0;
+  const totalResults = esResults?.total || fallbackResults?.total || 0;
   const items = esResults?.items || [];
   const facets = esResults?.facets;
+  const totalPages = esResults?.total_pages || fallbackResults?.total_pages || 1;
 
   return (
     <div className="space-y-6">
@@ -170,7 +179,7 @@ export default function SearchPage() {
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Makale Ara</h1>
           <p className="mt-1 text-slate-500">
-            {useElastic ? 'Elasticsearch full-text arama' : 'Veritabanı araması'}
+            {useElastic ? 'Elasticsearch full-text arama' : 'Veri tabanı araması'}
           </p>
         </div>
         <button
@@ -294,7 +303,7 @@ export default function SearchPage() {
                             : 'text-slate-600 hover:bg-slate-50'
                             }`}
                         >
-                          <span className="truncate">{s.key}</span>
+                          <span className="truncate">{formatSourceName(s.key)}</span>
                           <span className="text-xs text-slate-400 ml-2">{s.count}</span>
                         </button>
                       ))}
@@ -364,9 +373,9 @@ export default function SearchPage() {
               <h2 className="text-lg font-semibold text-slate-900">
                 {loading ? 'Aranıyor...' : `${totalResults.toLocaleString()} sonuç bulundu`}
               </h2>
-              {esResults && (
+              {(esResults || fallbackResults) && (
                 <Badge variant="info">
-                  Sayfa {esResults.page} / {esResults.total_pages}
+                  Sayfa {page} / {totalPages}
                 </Badge>
               )}
             </div>
@@ -425,7 +434,7 @@ export default function SearchPage() {
                 ))}
 
                 {/* Pagination */}
-                {esResults && esResults.total_pages > 1 && (
+                {totalPages > 1 && (
                   <div className="flex items-center justify-center gap-2 pt-4">
                     <Button
                       variant="secondary"
@@ -436,12 +445,12 @@ export default function SearchPage() {
                       Önceki
                     </Button>
                     <span className="text-sm text-slate-600 px-4">
-                      Sayfa {page} / {esResults.total_pages}
+                      Sayfa {page} / {totalPages}
                     </span>
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={page >= esResults.total_pages}
+                      disabled={page >= totalPages}
                       onClick={() => handleSearch(query, page + 1)}
                     >
                       Sonraki
@@ -463,7 +472,7 @@ export default function SearchPage() {
             <p className="text-slate-500 mt-1">
               {useElastic
                 ? 'Elasticsearch ile full-text arama, facet filtreleme ve autocomplete'
-                : 'Veritabanı üzerinden başlık, özet, yazar veya anahtar kelime araması'}
+                : 'Veri tabanı üzerinden başlık, özet, yazar veya anahtar kelime araması'}
             </p>
           </CardContent>
         </Card>

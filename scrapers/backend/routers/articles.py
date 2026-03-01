@@ -135,7 +135,8 @@ async def list_articles(
 async def search_articles(
     q: str = Query(..., min_length=2, description="Arama sorgusu"),
     search_type: str = Query("text", description="Arama tipi: text, title, keyword, author"),
-    limit: int = Query(50, ge=1, le=200, description="Maksimum sonuç sayısı"),
+    page: int = Query(1, ge=1, description="Sayfa numarası"),
+    page_size: int = Query(20, ge=1, le=100, description="Sayfa başına kayıt"),
 ):
     """
     Makale ara.
@@ -145,22 +146,34 @@ async def search_articles(
     - **keyword**: Anahtar kelimelerde arama
     - **author**: Yazarlarda arama
     """
+    skip = (page - 1) * page_size
+
     if search_type == "text":
-        # Full-text search
-        items = await Article.find({"$text": {"$search": q}}).limit(limit).to_list()
+        query_dict = {"$text": {"$search": q}}
     elif search_type == "title":
-        items = await Article.find({"title": {"$regex": q, "$options": "i"}}).limit(limit).to_list()
+        query_dict = {"title": {"$regex": q, "$options": "i"}}
     elif search_type == "keyword":
-        items = await Article.find({"keywords": {"$in": [q]}}).limit(limit).to_list()
+        query_dict = {"keywords": {"$in": [q]}}
     elif search_type == "author":
-        items = await Article.find({"authors": {"$regex": q, "$options": "i"}}).limit(limit).to_list()
+        query_dict = {"authors": {"$regex": q, "$options": "i"}}
     else:
         raise HTTPException(status_code=400, detail="Invalid search type")
+    
+    # Get total count first for pagination
+    total = await Article.find(query_dict).count()
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+
+    # Fetch paginated items
+    items = await Article.find(query_dict).skip(skip).limit(page_size).to_list()
     
     return {
         "query": q,
         "search_type": search_type,
         "count": len(items),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "items": [
             {
                 "id": str(a.id),

@@ -1,7 +1,7 @@
 """
 Database Package
 
-MongoDB ile async veritabanı işlemleri için modüller.
+MongoDB ile async veri tabanı işlemleri için modüller.
 Beanie ODM kullanır.
 
 Kullanım:

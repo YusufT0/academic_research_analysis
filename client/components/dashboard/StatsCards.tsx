@@ -101,7 +101,7 @@ export default function StatsCards() {
         color="bg-purple-100"
       />
       <StatCard
-        title="Veritabanı Boyutu"
+        title="Veri Tabanı Boyutu"
         value={`${stats.database.data_size_mb} MB`}
         icon={<Database className="h-6 w-6 text-amber-600" />}
         color="bg-amber-100"

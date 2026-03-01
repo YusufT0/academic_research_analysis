@@ -406,8 +406,8 @@ class ScraperManager:
             # ============================================================
             # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
             # ============================================================
-            logger.info("[IEEE Thread] Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
-            progress.add_log("info", "Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
+            logger.info("[IEEE Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+            progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
             
             # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
             journal_names = [j.get('name', '') for j in all_journals]
@@ -674,8 +674,8 @@ class ScraperManager:
             # ============================================================
             # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
             # ============================================================
-            logger.info("[SD Thread] Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
-            progress.add_log("info", "Öncelik sistemi: Veritabanı kontrolü yapılıyor...")
+            logger.info("[SD Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+            progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
             
             # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
             journal_names = [j.get('name', '') for j in all_journals]

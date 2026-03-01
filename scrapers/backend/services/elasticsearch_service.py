@@ -256,6 +256,7 @@ class ElasticsearchService:
                 items.append(item)
             
             total = hits["total"]["value"] if isinstance(hits["total"], dict) else hits["total"]
+            total_pages = (total + page_size - 1) // page_size if total > 0 else 1
             
             # Frontend: SearchFacetBucket ({key: string, count: number}) dönüşümü
             aggs = result.get("aggregations", {})
@@ -274,6 +275,7 @@ class ElasticsearchService:
                 "query": query,
                 "page": page,
                 "page_size": page_size,
+                "total_pages": total_pages,
                 "facets": facets,
             }
         except Exception as e:

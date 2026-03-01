@@ -138,12 +138,14 @@ export async function getArticle(id: string): Promise<Article> {
 export async function searchArticles(
   query: string,
   searchType: 'text' | 'title' | 'keyword' | 'author' = 'text',
-  limit = 50
+  page = 1,
+  pageSize = 20
 ): Promise<SearchResult> {
   const params = new URLSearchParams({
     q: query,
     search_type: searchType,
-    limit: limit.toString(),
+    page: page.toString(),
+    page_size: pageSize.toString(),
   });
 
   return fetchApi<SearchResult>(`/articles/search?${params.toString()}`);

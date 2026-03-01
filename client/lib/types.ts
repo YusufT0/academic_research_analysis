@@ -127,6 +127,10 @@ export interface SearchResult {
   query: string;
   search_type: string;
   count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
   items: Array<{
     id: string;
     title: string;
