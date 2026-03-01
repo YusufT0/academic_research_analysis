@@ -148,6 +148,21 @@ class ScraperProgress:
         # Son 100 log'u tut
         if len(self.logs) > 100:
             self.logs = self.logs[-100:]
+        
+        # WebSocket üzerinden log event'i yayınla
+        try:
+            from backend.routers.websocket import emit_scraper_event
+            emit_scraper_event(
+                event_type="log",
+                scraper_type=self.scraper_type,
+                data={
+                    "level": level,
+                    "message": message,
+                    "details": details,
+                }
+            )
+        except Exception:
+            pass
     
     def to_dict(self) -> Dict[str, Any]:
         """Dict'e çevir"""

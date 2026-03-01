@@ -240,6 +240,10 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           <div className="flex gap-3 w-full">
             {isRunning && (
               <>
+                <Button variant="warning" onClick={() => handleAction(onPause)} isLoading={actionLoading} className="flex-1">
+                  <Pause className="h-4 w-4 mr-2" />
+                  Duraklat
+                </Button>
                 <Button variant="secondary" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
                   <Square className="h-4 w-4 mr-2" />
                   Durdur
@@ -305,7 +309,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 
   // Merge: WS events + polled logs
   const wsLogEntries: LogEntry[] = wsEvents
-    .filter((e) => e.type === 'log' || e.type === 'error' || e.type === 'progress')
+    .filter((e) => e.type === 'log' || e.type === 'error')
     .map((e) => ({
       timestamp: e.timestamp,
       level: e.type === 'error' ? 'error' : (e.data?.level as string) || 'info',

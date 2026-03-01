@@ -72,8 +72,9 @@ class ConnectionManager:
     async def _start_redis_consumer(self):
         """Redis'e bağlanır ve haber bekler."""
         await redis_pubsub.connect()
-        # Bind the broadcast method to receive events
-        redis_pubsub.add_handler(self.broadcast)
+        # Bind the broadcast method to receive events (only once)
+        if self.broadcast not in redis_pubsub._handlers:
+            redis_pubsub.add_handler(self.broadcast)
         # Start listening in background
         await redis_pubsub.start_listening(SCRAPER_EVENTS_CHANNEL)
     

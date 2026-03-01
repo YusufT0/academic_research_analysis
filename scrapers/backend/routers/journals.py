@@ -47,6 +47,25 @@ async def list_journals(
     
     Filtreleme, sıralama ve sayfalama destekler.
     """
+    
+    # Cache Check
+    cache_params = {
+        "page": page,
+        "page_size": page_size,
+        "source_website": source_website,
+        "publisher": publisher,
+        "open_access": open_access,
+        "letter_group": letter_group,
+        "sort_by": sort_by,
+        "sort_order": sort_order
+    }
+    search_query = search or ""
+    
+    cached_result = await cache_service.get_search_results(f"journals_list_{search_query}", cache_params)
+    if cached_result:
+        logger.info(f"Cache HIT: journals list (page {page})")
+        return cached_result
+
     # Build query
     query = {}
     
@@ -77,7 +96,7 @@ async def list_journals(
     # Calculate pagination info
     total_pages = (total + page_size - 1) // page_size if total > 0 else 1
     
-    return {
+    result = {
         "items": [
             {
                 "id": str(j.id),
@@ -106,6 +125,10 @@ async def list_journals(
         "has_next": page < total_pages,
         "has_prev": page > 1,
     }
+    
+    await cache_service.set_search_results(f"journals_list_{search_query}", cache_params, result)
+    logger.info(f"Cache MISS: journals list (page {page}) - cached")
+    return result
 
 
 @router.get("/{journal_id}", summary="Dergi detayı", response_model=JournalResponse)

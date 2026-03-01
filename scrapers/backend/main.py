@@ -96,6 +96,52 @@ async def delayed_scraper_start(manager: ScraperManager, delay: float = 2.0):
     logger.success("Scraper'lar arka planda başlatıldı")
 
 
+async def sync_es_on_startup():
+    """Uygulama başlatılırken veritabanı ile Elasticsearch'ü senkronize eder."""
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        if not elasticsearch_service.is_connected:
+            return
+            
+        from database.models import Article
+        
+        # Mongo makale sayısını al
+        mongo_count = await Article.count()
+        
+        # ES makale sayısını al
+        try:
+            es_count_res = await elasticsearch_service._client.count(index=elasticsearch_service.articles_index)
+            es_count = es_count_res.get("count", 0)
+        except Exception:
+            es_count = 0
+            
+        logger.info(f"Startup ES Sync Check: Mongo ({mongo_count}) vs ES ({es_count})")
+        
+        if mongo_count > 0 and mongo_count != es_count:
+            logger.info("MongoDB -> ES senkronizasyonu başlatılıyor...")
+            articles = await Article.find_all().to_list()
+            
+            article_dicts = []
+            for a in articles:
+                d = a.model_dump()
+                d["id"] = str(a.id)
+                if a.journal_id: d["journal_id"] = str(a.journal_id)
+                if a.issue_id: d["issue_id"] = str(a.issue_id)
+                article_dicts.append(d)
+                
+            batch_size = 500
+            total_indexed = 0
+            for i in range(0, len(article_dicts), batch_size):
+                batch = article_dicts[i:i + batch_size]
+                count = await elasticsearch_service.bulk_index(batch)
+                total_indexed += count
+                
+            logger.success(f"ES Senkronizasyonu tamamlandı: {total_indexed} makale indexlendi")
+        else:
+            logger.info("ES Senkronizasyonu atlandı (Veriler güncel)")
+    except Exception as e:
+        logger.error(f"ES Startup Sync hatası: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -137,6 +183,8 @@ async def lifespan(app: FastAPI):
         await elasticsearch_service.connect()
         if elasticsearch_service.is_connected:
             logger.success("Elasticsearch bağlantısı kuruldu")
+            # Auto-sync datbase to ES in background
+            asyncio.create_task(sync_es_on_startup())
         else:
             logger.warning("Elasticsearch bağlantısı kurulamadı - arama devre dışı")
     except Exception as e:

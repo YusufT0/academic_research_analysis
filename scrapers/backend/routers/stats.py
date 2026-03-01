@@ -13,6 +13,9 @@ from database.models import Journal, Issue, Article
 from database.connection import get_database
 from ..core.dependencies import get_scraper_manager
 from ..services.cache_service import cache_service
+from utils.logger import get_logger
+
+logger = get_logger("stats_router")
 
 router = APIRouter(prefix="/stats", tags=["Statistics"])
 
@@ -54,6 +57,12 @@ async def get_general_stats():
 @router.get("/journals", summary="Journal istatistikleri")
 async def get_journal_stats():
     """Journal istatistikleri"""
+    # Cache Check
+    cached = await cache_service.get_search_results("stats_journals", {})
+    if cached:
+        logger.info("Cache HIT: stats journals")
+        return cached
+
     # By source
     pipeline_source = [
         {
@@ -86,16 +95,24 @@ async def get_journal_stats():
     cursor = collection.aggregate(pipeline_publisher)
     by_publisher = await cursor.to_list(length=None)
     
-    return {
+    result = {
         "total": await Journal.count(),
         "by_source": {item["_id"]: item for item in by_source},
         "top_publishers": by_publisher,
     }
+    await cache_service.set_search_results("stats_journals", {}, result)
+    return result
 
 
 @router.get("/articles", summary="Article istatistikleri")
 async def get_article_stats():
     """Article istatistikleri"""
+    # Cache Check
+    cached = await cache_service.get_search_results("stats_articles", {})
+    if cached:
+        logger.info("Cache HIT: stats articles")
+        return cached
+
     collection = Article.get_pymongo_collection()
     
     # By source
@@ -162,13 +179,16 @@ async def get_article_stats():
     cursor = collection.aggregate(pipeline_authors)
     top_authors = await cursor.to_list(length=None)
     
-    return {
+    result = {
         "total": await Article.count(),
         "by_source": {item["_id"]: item for item in by_source},
         "by_year": {str(item["_id"]): item["count"] for item in by_year},
         "top_keywords": top_keywords,
         "top_authors": top_authors,
     }
+    
+    await cache_service.set_search_results("stats_articles", {}, result)
+    return result
 
 
 @router.get("/scraper", summary="Scraper istatistikleri")

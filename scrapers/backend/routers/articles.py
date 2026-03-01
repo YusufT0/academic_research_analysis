@@ -146,6 +146,19 @@ async def search_articles(
     - **keyword**: Anahtar kelimelerde arama
     - **author**: Yazarlarda arama
     """
+    
+    # Cache Check
+    cache_params = {
+        "search_type": search_type,
+        "page": page,
+        "page_size": page_size
+    }
+    
+    cached_result = await cache_service.get_search_results(f"articles_search_{q}", cache_params)
+    if cached_result:
+        logger.info(f"Cache HIT: articles search ({q}) page {page}")
+        return cached_result
+
     skip = (page - 1) * page_size
 
     if search_type == "text":
@@ -166,7 +179,7 @@ async def search_articles(
     # Fetch paginated items
     items = await Article.find(query_dict).skip(skip).limit(page_size).to_list()
     
-    return {
+    result = {
         "query": q,
         "search_type": search_type,
         "count": len(items),
@@ -189,6 +202,10 @@ async def search_articles(
             for a in items
         ],
     }
+    
+    await cache_service.set_search_results(f"articles_search_{q}", cache_params, result)
+    logger.info(f"Cache MISS: articles search ({q}) page {page} - cached")
+    return result
 
 
 @router.get("/{article_id}", summary="Makale detayı", response_model=ArticleResponse)

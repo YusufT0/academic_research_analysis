@@ -8,6 +8,10 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from ..services.elasticsearch_service import elasticsearch_service
+from ..services.cache_service import cache_service
+from utils.logger import get_logger
+
+logger = get_logger('search_router')
 
 router = APIRouter(prefix="/search", tags=["Search"])
 
@@ -86,12 +90,28 @@ async def search_articles(
     if open_access is not None:
         filters["open_access"] = open_access
     
-    return await elasticsearch_service.search(
+    # Cache Check
+    cache_params = {
+        "filters": filters,
+        "page": page,
+        "page_size": page_size
+    }
+    
+    cached_result = await cache_service.get_search_results(f"es_search_{q}", cache_params)
+    if cached_result:
+        logger.info(f"Cache HIT: ES search ({q}) page {page}")
+        return cached_result
+    
+    result = await elasticsearch_service.search(
         query=q,
         filters=filters if filters else None,
         page=page,
         page_size=page_size,
     )
+    
+    await cache_service.set_search_results(f"es_search_{q}", cache_params, result)
+    logger.info(f"Cache MISS: ES search ({q}) page {page} - cached")
+    return result
 
 
 @router.get("/suggest", summary="Autocomplete önerileri")
