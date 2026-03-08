@@ -63,8 +63,9 @@ class ElasticsearchService:
     
     def __init__(self):
         self._client: Optional[AsyncElasticsearch] = None
-        self._index_prefix = os.environ.get("ELASTICSEARCH_INDEX_PREFIX", "academic")
-        self._url = os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200")
+        from backend.core.config import settings
+        self._index_prefix = settings.elasticsearch_index_prefix
+        self._url = settings.elasticsearch_url
     
     @property
     def articles_index(self) -> str:

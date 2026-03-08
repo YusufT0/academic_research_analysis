@@ -107,7 +107,11 @@ def _configure_structlog():
             return
         
         # Log formatını belirle
-        log_format = os.environ.get("LOG_FORMAT", "pretty").lower()
+        try:
+            from backend.core.config import settings
+            log_format = settings.log_format.lower()
+        except ImportError:
+            log_format = os.environ.get("LOG_FORMAT", "pretty").lower()
         
         # Custom SUCCESS level ekle
         logging.addLevelName(25, "SUCCESS")

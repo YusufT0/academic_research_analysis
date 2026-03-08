@@ -160,6 +160,17 @@ async def lifespan(app: FastAPI):
     
     logger.header("BACKEND BAŞLATILIYOR")
     
+    # Run tests if enabled
+    if settings.run_tests_on_startup:
+        logger.info("Startup testleri çalıştırılıyor (RUN_TESTS_ON_STARTUP=true)...")
+        import pytest
+        loop = asyncio.get_running_loop()
+        exit_code = await loop.run_in_executor(None, pytest.main, ["tests/", "-q"])
+        if exit_code != 0:
+            logger.error(f"Testler başarısız oldu (Exit code: {exit_code}). Kurulum iptal ediliyor.")
+            raise RuntimeError("Test execution failed. Aborting startup.")
+        logger.success("Tüm startup testleri başarıyla geçti")
+    
     # Initialize database
     logger.info("Database bağlantısı kuruluyor...")
     db_success = await init_database()
@@ -184,7 +195,10 @@ async def lifespan(app: FastAPI):
         if elasticsearch_service.is_connected:
             logger.success("Elasticsearch bağlantısı kuruldu")
             # Auto-sync datbase to ES in background
-            asyncio.create_task(sync_es_on_startup())
+            if settings.elasticsearch_auto_sync:
+                asyncio.create_task(sync_es_on_startup())
+            else:
+                logger.info("Elasticsearch otomatik senkronizasyon kapalı.")
         else:
             logger.warning("Elasticsearch bağlantısı kurulamadı - arama devre dışı")
     except Exception as e:
@@ -242,19 +256,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="""
-## Academic Research Scraper API
-
-IEEE Xplore ve ScienceDirect'ten akademik makale toplayan scraper'ları yönetir.
-
-### Özellikler
-
-* **Scraper Yönetimi**: Başlatma, durdurma, duraklatma
-* **İlerleme Takibi**: Gerçek zamanlı scraping ilerleme durumu
-* **Database Erişimi**: Journals, Issues, Articles
-* **Filtreleme & Pagination**: Gelişmiş arama ve sıralama
-* **İstatistikler**: Database ve scraper metrikleri
-    """,
+    description=settings.app_description,
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,

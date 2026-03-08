@@ -15,12 +15,20 @@ class Settings(BaseSettings):
     """Backend ayarları"""
     
     # API Settings
-    app_name: str = Field(default="Academic Research Scraper API")
-    app_version: str = Field(default="1.0.0")
-    debug: bool = Field(default=False)
+    app_name: str = Field(default="Academic Research Scraper API", alias="APP_NAME")
+    app_version: str = Field(default="1.0.0", alias="APP_VERSION")
+    app_description: str = Field(default="Academic Research Scraper API Documentation", alias="APP_DESCRIPTION")
+    debug: bool = Field(default=False, alias="DEBUG")
     
     # CORS
-    cors_origins: List[str] = Field(default=["*"])
+    cors_origins: List[str] = Field(default=["*"], alias="CORS_ORIGINS")
+    
+    # Proxy Settings
+    use_proxy: bool = Field(default=False, alias="USE_PROXY", description="Proxy kullanılsın mı")
+    proxy_user: str = Field(default="", env="proxy_user", alias="proxy_user", description="Proxy username")
+    proxy_pass: str = Field(default="", env="proxy_pass", alias="proxy_pass", description="Proxy password")
+    proxy_host: str = Field(default="", env="proxy_host", alias="proxy_host", description="Proxy host or IP")
+    proxy_port: str = Field(default="8080", env="proxy_port", alias="proxy_port", description="Proxy port")
     
     # MongoDB
     mongodb_uri: str = Field(default="mongodb://localhost:27017")
@@ -29,7 +37,8 @@ class Settings(BaseSettings):
     mongodb_password: Optional[str] = Field(default=None)
     
     # Scraper Settings
-    auto_start_scrapers: bool = Field(default=True, alias="AUTO_START_SCRAPERS", description="Backend başladığında scraper'ları otomatik başlat")
+    auto_start_scrapers: bool = Field(default=False, alias="AUTO_START_SCRAPERS")
+    run_tests_on_startup: bool = Field(default=False, alias="RUN_TESTS_ON_STARTUP", description="Backend başlarken testler çalıştırılsın mı")
     scraper_headless: bool = Field(default=True, alias="SCRAPER_HEADLESS", description="Browser headless modda çalışsın mı")
     ieee_max_articles: int = Field(default=100, alias="IEEE_MAX_ARTICLES", description="IEEE scraper maksimum makale sayısı")
     sciencedirect_max_articles: int = Field(default=100, alias="SCIENCEDIRECT_MAX_ARTICLES", description="ScienceDirect scraper maksimum makale sayısı")
@@ -47,9 +56,17 @@ class Settings(BaseSettings):
         """ScienceDirect scraper etkin mi?"""
         return 'sciencedirect' in self.enabled_scrapers.lower()
     
-    # Rate Limiting
-    scrape_delay_min: float = Field(default=2.0, description="Minimum bekleme süresi (saniye)")
-    scrape_delay_max: float = Field(default=5.0, description="Maksimum bekleme süresi (saniye)")
+    # Scraper Timeouts & Delays
+    ieee_min_wait: int = Field(default=4, alias="IEEE_MIN_WAIT", description="IEEE scraper minimum bekleme süresi (sn)")
+    ieee_max_wait: int = Field(default=10, alias="IEEE_MAX_WAIT", description="IEEE scraper maksimum bekleme süresi (sn)")
+    ieee_page_load_timeout: int = Field(default=90, alias="IEEE_PAGE_LOAD_TIMEOUT", description="IEEE sayfa yükleme timeout (sn)")
+    
+    sd_timeout: int = Field(default=90, alias="SD_TIMEOUT", description="Science Direct sayfa yükleme timeout (sn)")
+    sd_implicit_wait: int = Field(default=90, alias="SD_IMPLICIT_WAIT", description="Science Direct implicit wait (sn)")
+    
+    # PDF Settings
+    pdf_download_timeout: int = Field(default=60, alias="PDF_DOWNLOAD_TIMEOUT", description="PDF indirme timeout süresi (sn)")
+    pdf_download_chunk_size: int = Field(default=8192, alias="PDF_DOWNLOAD_CHUNK_SIZE", description="PDF dosya yazma parça boyutu (byte)")
     
     # NLP/Clustering Settings
     nlp_prefer_pkl: bool = Field(
@@ -189,6 +206,11 @@ class Settings(BaseSettings):
         default="academic",
         alias="ELASTICSEARCH_INDEX_PREFIX",
         description="Elasticsearch index prefix"
+    )
+    elasticsearch_auto_sync: bool = Field(
+        default=True,
+        alias="ELASTICSEARCH_AUTO_SYNC",
+        description="Elasticsearch otomatik senkronizasyon (startup ve live) yapılsın mı"
     )
     
     # ==================== Redis Streams ====================

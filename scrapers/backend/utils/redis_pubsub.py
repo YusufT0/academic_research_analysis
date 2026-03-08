@@ -3,14 +3,7 @@ import json
 from typing import Optional, Callable, Dict, Any, Awaitable
 from redis.asyncio import Redis
 
-try:
-    from backend.core.config import settings
-except ImportError:
-    class MockSettings:
-        redis_url = "redis://localhost:6379/0"
-        redis_enabled = True
-    settings = MockSettings()
-
+from backend.core.config import settings
 from utils.logger import get_logger
 
 logger = get_logger("redis_pubsub")

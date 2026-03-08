@@ -1,6 +1,6 @@
 # 📚 Yapay Zeka Destekli Bilimsel Dergilerin Trend Analiz Sistemi
 
-**BM495 Bilgisayar Mühendisliği Projesi I - 2025-2026 Güz**
+**BM495-BM496 Bilgisayar Mühendisliği Projesi I-II - 2025-2026 Güz-Bahar**
 
 Bu proje, IEEE Xplore ve ScienceDirect gibi akademik platformlardan bilimsel makale meta-verilerini toplayan ve trend analizi için görselleştiren bir sistemdir.
 
@@ -227,28 +227,56 @@ academic_research_analysis/
 ### Backend (`scrapers/.env`)
 
 ```env
-# ======== MongoDB ========
+# ==========================================
+# APP SETTINGS
+# ==========================================
+APP_NAME=Academic Research Scraper API
+APP_VERSION=1.0.0
+APP_DESCRIPTION="IEEE Xplore ve ScienceDirect'ten akademik makale toplayan scraper'ları yönetir."
+
+# ==================== Proxy Configuration ====================
+USE_PROXY=True
+proxy_user=
+proxy_pass=
+proxy_host=proxy.example.com
+proxy_port=8080
+
+# ==================== MongoDB ====================
 MONGODB_URI=mongodb://localhost:27017
 MONGODB_DATABASE=academic_research
-# Eğer authentication varsa:
 # MONGODB_USERNAME=admin
 # MONGODB_PASSWORD=password
 
-# ======== Scraper ========
-# Backend başladığında scraper otomatik başlasın mı
+# ==================== Scraper ====================
 AUTO_START_SCRAPERS=false
-
-# Browser görünmez modda çalışsın mı (true önerilir)
+RUN_TESTS_ON_STARTUP=false
 SCRAPER_HEADLESS=true
-
-# Scraper'lar paralel mi sıralı mı çalışsın
-# parallel: Aynı anda çalışır
-# sequential: Önce IEEE biter, sonra ScienceDirect başlar
 SCRAPER_RUN_MODE=parallel
+ENABLED_SCRAPERS=ieee,sciencedirect
 
-# Her dergiden maksimum kaç makale çekilsin
-IEEE_MAX_ARTICLES=10
-SCIENCEDIRECT_MAX_ARTICLES=5
+# ==================== Makale Limitleri ====================
+IEEE_MAX_ARTICLES=100
+SCIENCEDIRECT_MAX_ARTICLES=100
+
+# ==================== Timeouts & Implicit Waits ====================
+IEEE_MIN_WAIT=4
+IEEE_MAX_WAIT=10
+IEEE_PAGE_LOAD_TIMEOUT=90
+SD_TIMEOUT=90
+SD_IMPLICIT_WAIT=90
+PDF_DOWNLOAD_TIMEOUT=60
+PDF_DOWNLOAD_CHUNK_SIZE=8192
+
+# ==================== Redis & Cache ====================
+REDIS_ENABLED=true
+REDIS_URL=redis://localhost:6379/0
+CACHE_TTL_ARTICLE=3600
+REDIS_STREAMS_ENABLED=true
+REDIS_STREAMS_CONSUMER_GROUP=academic-backend
+
+# ==================== Elasticsearch ====================
+ELASTICSEARCH_AUTO_SYNC=true
+ELASTICSEARCH_URL=http://localhost:9200
 ```
 
 ### Frontend (`client/.env.local`)
@@ -291,7 +319,7 @@ Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 
 ## 📝 Lisans
 
-Bu proje Sakarya Üniversitesi Bilgisayar Mühendisliği Bölümü BM495 dersi kapsamında geliştirilmiştir.
+Bu proje Gazi Üniversitesi Bilgisayar Mühendisliği Bölümü BM495-BM496 dersleri kapsamında geliştirilmiştir.
 
 ---
 

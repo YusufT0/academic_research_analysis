@@ -269,8 +269,9 @@ class DatabaseService:
             logger.info(f"Makale güncellendi: {title[:50]}...")
         
         # ES indexing
+        from backend.core.config import settings
         _es = _get_es()
-        if _es and _es.is_connected:
+        if _es and _es.is_connected and settings.elasticsearch_auto_sync:
             doc = article.model_dump()
             doc["id"] = str(article.id)
             if article.journal_id: doc["journal_id"] = str(article.journal_id)
@@ -329,8 +330,9 @@ class DatabaseService:
                 await _cache.invalidate_pattern("es_search_*")
                 await _cache.invalidate_pattern("search:*")
             
+        from backend.core.config import settings
         _es = _get_es()
-        if articles and _es and _es.is_connected:
+        if articles and _es and _es.is_connected and settings.elasticsearch_auto_sync:
             es_docs = []
             for a in articles:
                 d = a.model_dump()

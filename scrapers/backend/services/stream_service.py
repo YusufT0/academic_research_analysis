@@ -51,10 +51,12 @@ class RedisStreamService:
     def is_connected(self) -> bool:
         return self._redis is not None
     
-    async def connect(self, redis_url: str = "redis://localhost:6379/0"):
+    async def connect(self, redis_url: Optional[str] = None):
         """Redis'e bağlan ve consumer group'ları oluştur"""
         try:
-            self._redis = aioredis.from_url(redis_url, decode_responses=True)
+            from backend.core.config import settings
+            url = redis_url or settings.redis_url
+            self._redis = aioredis.from_url(url, decode_responses=True)
             await self._redis.ping()
             
             # Stream'ler ve consumer group'ları oluştur
