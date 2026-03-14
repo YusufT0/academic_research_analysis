@@ -167,6 +167,21 @@ class JournalRepository(BaseRepository[Journal]):
             **kwargs
         )
         await journal.insert()
+        
+        # Redis Stream Publish for Citation Update
+        try:
+            from backend.services.stream_service import stream_service
+            if stream_service.is_connected:
+                import asyncio
+                asyncio.create_task(
+                    stream_service.publish(
+                        "journal:citation_needed", 
+                        {"journal_id": str(journal.id)}
+                    )
+                )
+        except Exception as e:
+            logger.error(f"Failed to publish journal:citation_needed for {journal.id}: {e}")
+            
         return journal, True
     
     async def check_exists(self, name: str, source_website: str) -> bool:

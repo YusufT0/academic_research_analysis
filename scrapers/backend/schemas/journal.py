@@ -40,6 +40,14 @@ class JournalResponse(BaseModel):
     impact_factor: Optional[float] = None
     subjects: List[str] = Field(default_factory=list)
     
+    openalex_id: Optional[str] = None
+    h_index: Optional[int] = None
+    i10_index: Optional[int] = None
+    average_citation_count: Optional[float] = None
+    total_citation_count: int = 0
+    historical_citation_data: dict = Field(default_factory=dict)
+    last_citation_update_date: Optional[datetime] = None
+    
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
     
@@ -64,3 +72,18 @@ class JournalStatsResponse(BaseModel):
     by_source: dict
     by_publisher: dict
     open_access_count: int
+
+class JournalCitationMetricsResponse(BaseModel):
+    """Dergi Atıf ve Etki Metrikleri Response"""
+    id: str
+    name: str
+    openalex_id: Optional[str] = None
+    h_index: Optional[int] = None
+    i10_index: Optional[int] = None
+    average_citation_count: Optional[float] = None
+    total_citation_count: int = 0
+    historical_citation_data: dict = Field(default_factory=dict, description="Yıllara göre atıf sayıları {2023: 10}")
+    last_citation_update_date: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

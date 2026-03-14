@@ -454,7 +454,7 @@ class ScraperManager:
             
             # Get all journals
             logger.info("[IEEE Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_journals() if current_site == 'acm' else scraper.scrape_all_journals()
+            all_journals = scraper.scrape_all_journals()
             progress.total_journals = len(all_journals)
             progress.add_log("info", f"{len(all_journals)} journal bulundu")
             logger.info(f"[IEEE Thread] {len(all_journals)} journal bulundu")
@@ -740,7 +740,7 @@ class ScraperManager:
             
             # Get all journals
             logger.info("[SD Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_journals() if current_site == 'acm' else scraper.scrape_all_journals()
+            all_journals = scraper.scrape_all_journals()
             progress.total_journals = len(all_journals)
             progress.add_log("info", f"{len(all_journals)} journal bulundu")
             logger.info(f"[SD Thread] {len(all_journals)} journal bulundu")

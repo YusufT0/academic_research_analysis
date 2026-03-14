@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from database.models import Article
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
-from backend.schemas.article import ArticleListResponse, ArticleResponse
+from backend.schemas.article import ArticleListResponse, ArticleResponse, ArticleCitationMetricsResponse
 from utils.logger import get_logger
 
 logger = get_logger('articles_router')
@@ -27,6 +27,7 @@ async def list_articles(
     page: int = Query(1, ge=1, description="Sayfa numarası"),
     page_size: int = Query(20, ge=1, le=100, description="Sayfa başına kayıt"),
     # Filters
+    id: Optional[str] = Query(None, description="Makale ID'si"),
     journal_id: Optional[str] = Query(None, description="Dergi ID'si"),
     issue_id: Optional[str] = Query(None, description="Sayı ID'si"),
     source_website: Optional[str] = Query(None, description="Kaynak site"),
@@ -46,7 +47,13 @@ async def list_articles(
     """
     # Build query
     query = {}
-    
+
+    if id:
+        try:
+            query["_id"] = PydanticObjectId(id)
+        except:
+            raise HTTPException(status_code=400, detail="Invalid article ID")
+            
     if journal_id:
         try:
             query["journal_id"] = PydanticObjectId(journal_id)
@@ -117,6 +124,11 @@ async def list_articles(
                 "open_access": a.open_access,
                 "pdf_url": a.pdf_url,
                 "citation_count": a.citation_count,
+                "openalex_id": getattr(a, "openalex_id", None),
+                "is_openalex_indexed": getattr(a, "is_openalex_indexed", False),
+                "citation_percentile": getattr(a, "citation_percentile", None),
+                "fwci": getattr(a, "fwci", None),
+                "last_citation_update_date": getattr(a, "last_citation_update_date", None),
                 "created_at": a.created_at,
                 "updated_at": a.updated_at,
             }
@@ -248,6 +260,13 @@ async def get_article(article_id: str):
         "open_access": article.open_access,
         "pdf_url": article.pdf_url,
         "citation_count": article.citation_count,
+        "openalex_id": article.openalex_id,
+        "is_openalex_indexed": article.is_openalex_indexed,
+        "historical_citation_data": article.historical_citation_data,
+        "citation_percentile": article.citation_percentile,
+        "fwci": article.fwci,
+        "last_citation_update_date": article.last_citation_update_date,
+        "scraped_at": article.scraped_at,
         "references": article.references,
         "created_at": article.created_at,
         "updated_at": article.updated_at,
@@ -321,6 +340,32 @@ async def get_article(article_id: str):
         cache_service._schedule_prefetch(prefetch_issue_data())
     
     return result
+
+
+@router.get("/{article_id}/citation-metrics", summary="Makale Atıf Metrikleri", response_model=ArticleCitationMetricsResponse)
+async def get_article_citation_metrics(article_id: str):
+    """Belirli bir makalenin sadece atıf ve metriklerini getirir."""
+    try:
+        obj_id = PydanticObjectId(article_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid article ID")
+
+    # Burada da ufak bir cache arayabiliriz (isteğe bağlı)
+    article = await Article.get(obj_id)
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    return {
+        "id": str(article.id),
+        "doi": article.doi,
+        "citation_count": article.citation_count,
+        "openalex_id": article.openalex_id,
+        "is_openalex_indexed": article.is_openalex_indexed,
+        "historical_citation_data": article.historical_citation_data or {},
+        "citation_percentile": article.citation_percentile,
+        "fwci": article.fwci,
+        "last_citation_update_date": article.last_citation_update_date,
+    }
 
 
 @router.get("/by-doi/{doi:path}", summary="DOI ile makale bul")

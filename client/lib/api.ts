@@ -51,6 +51,10 @@ export async function getArticleStats(): Promise<ArticleStats> {
   return fetchApi<ArticleStats>('/stats/articles');
 }
 
+export async function getCitationStats(): Promise<import('./types').CitationStats> {
+  return fetchApi<import('./types').CitationStats>('/stats/citations');
+}
+
 export async function getScraperStats() {
   return fetchApi('/stats/scraper');
 }
@@ -95,9 +99,14 @@ export async function getJournalArticles(journalId: string, page = 1, pageSize =
   return fetchApi(`/journals/${journalId}/articles?page=${page}&page_size=${pageSize}`);
 }
 
+export async function getJournalCitationMetrics(journalId: string) {
+  return fetchApi(`/journals/${journalId}/citation-metrics`);
+}
+
 // ==================== Articles ====================
 
 export interface ArticleFilters {
+  id?: string;
   page?: number;
   page_size?: number;
   journal_id?: string;
@@ -115,6 +124,7 @@ export interface ArticleFilters {
 export async function getArticles(filters: ArticleFilters = {}): Promise<PaginatedResponse<Article>> {
   const params = new URLSearchParams();
 
+  if (filters.id) params.set('id', filters.id);
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.journal_id) params.set('journal_id', filters.journal_id);
@@ -133,6 +143,24 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
 
 export async function getArticle(id: string): Promise<Article> {
   return fetchApi<Article>(`/articles/${id}`);
+}
+
+export async function getArticleCitationMetrics(id: string) {
+  return fetchApi(`/articles/${id}/citation-metrics`);
+}
+
+// ==================== OpenAlex ====================
+
+export async function getOpenAlexStatus() {
+  return fetchApi(`/openalex/status`);
+}
+
+export async function startOpenAlexScan() {
+  return fetchApi(`/openalex/start`, { method: 'POST' });
+}
+
+export async function stopOpenAlexScan() {
+  return fetchApi(`/openalex/stop`, { method: 'POST' });
 }
 
 export async function searchArticles(

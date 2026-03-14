@@ -217,6 +217,28 @@ class Settings(BaseSettings):
         description="Komşu cluster için kaç makale prefetch edilsin"
     )
     
+    # ==================== OpenAlex API Settings ====================
+    openalex_api_base_url: str = Field(
+        default="https://api.openalex.org",
+        alias="OPENALEX_API_BASE_URL",
+        description="OpenAlex API Base URL"
+    )
+    openalex_polite_email: Optional[str] = Field(
+        default=None,
+        alias="OPENALEX_POLITE_EMAIL",
+        description="Email address for polite pool access to bypass rate limits"
+    )
+    openalex_api_timeout: int = Field(
+        default=30,
+        alias="OPENALEX_API_TIMEOUT",
+        description="OpenAlex API timeout in seconds"
+    )
+    openalex_bulk_chunk_size: int = Field(
+        default=50,
+        alias="OPENALEX_BULK_CHUNK_SIZE",
+        description="Max chunk size for bulk requests"
+    )
+
     # ==================== Elasticsearch ====================
     elasticsearch_url: str = Field(
         default="http://localhost:9200",

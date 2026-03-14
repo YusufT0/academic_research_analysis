@@ -33,6 +33,7 @@ from .routers import (
     nlp_router,
     websocket_router,
     search_router,
+    openalex_router
 )
 
 from database import init_database, close_database
@@ -204,6 +205,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Elasticsearch başlatılamadı: {e}")
     
+    # Redis Streams Worker: Citation Updates
+    try:
+        from backend.services.openalex.worker import citation_worker
+        citation_worker.register_workers()
+        logger.info("OpenAlex Citation worker kaydedildi.")
+    except Exception as e:
+        logger.error(f"Citation worker kayıt edilemedi: {e}")
+
     # Initialize scraper manager
     logger.info("Scraper manager başlatılıyor...")
     scraper_manager = ScraperManager()
@@ -281,6 +290,7 @@ app.include_router(stats_router, prefix="/api/v1")
 app.include_router(nlp_router, prefix="/api/v1")
 app.include_router(websocket_router)  # WebSocket — prefix yok, /ws/scrapers/events
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(openalex_router, prefix="/api/v1")
 
 # Register global error handlers
 register_error_handlers(app)

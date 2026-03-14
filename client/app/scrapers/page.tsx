@@ -38,6 +38,8 @@ import {
 import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
 import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
+import { OpenAlexScanner } from '@/components/dashboard/OpenAlexScanner';
+import { ChevronUp } from 'lucide-react';
 
 // ==================== Status Config ====================
 
@@ -554,6 +556,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 export default function ScrapersPage() {
   const [status, setStatus] = useState<AllScrapersStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [openAlexExpanded, setOpenAlexExpanded] = useState(false);
 
   // Global WebSocket connection
   const { connectionStatus, events: wsEvents, isConnected } = useGlobalScraperEvents({
@@ -650,6 +653,32 @@ export default function ScrapersPage() {
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
+      </div>
+
+      {/* OpenAlex Tarayıcısı - Collapsible */}
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+        <button
+          onClick={() => setOpenAlexExpanded(!openAlexExpanded)}
+          className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+              <FileText className="h-5 w-5" />
+            </div>
+            <div className="text-left">
+              <h2 className="font-semibold text-slate-900">Eksik Veri Taraması (OpenAlex)</h2>
+              <p className="text-sm text-slate-500">Atıf metriği olmayan makaleleri ve dergileri OpenAlex üzerinden tarayın</p>
+            </div>
+          </div>
+          <ChevronUp
+            className={`h-5 w-5 text-slate-400 transition-transform ${openAlexExpanded ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {openAlexExpanded && (
+          <div className="p-4 border-t border-slate-200">
+            <OpenAlexScanner />
+          </div>
+        )}
       </div>
 
       {/* Scraper Controls */}

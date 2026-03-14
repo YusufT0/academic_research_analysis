@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react';
 import { TrendingUp, BarChart3, PieChart, Users } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
-import { getArticleStats } from '@/lib/api';
-import type { ArticleStats } from '@/lib/types';
+import { getArticleStats, getCitationStats } from '@/lib/api';
+import type { ArticleStats, CitationStats } from '@/lib/types';
+import { CitationsSection } from './CitationsSection';
 
 function YearlyTrendChart({ data }: { data: Record<string, number> }) {
   const years = Object.entries(data)
@@ -176,13 +177,18 @@ function TopAuthors({ authors }: { authors: Array<{ _id: string; count: number }
 
 export default function TrendsPage() {
   const [stats, setStats] = useState<ArticleStats | null>(null);
+  const [citationStats, setCitationStats] = useState<CitationStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function fetchStats() {
       try {
-        const data = await getArticleStats();
-        setStats(data);
+        const [articleData, citationData] = await Promise.all([
+          getArticleStats(),
+          getCitationStats()
+        ]);
+        setStats(articleData);
+        setCitationStats(citationData);
       } catch (err) {
         console.error(err);
       } finally {
@@ -315,6 +321,9 @@ export default function TrendsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Citations Section */}
+      {citationStats && <CitationsSection data={citationStats} />}
     </div>
   );
 }

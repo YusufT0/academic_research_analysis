@@ -14,7 +14,7 @@ from database.models import Journal
 from database.repositories import JournalRepository
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
-from backend.schemas.journal import JournalListResponse, JournalResponse
+from backend.schemas.journal import JournalListResponse, JournalResponse, JournalCitationMetricsResponse
 from utils.logger import get_logger
 
 logger = get_logger('journals_router')
@@ -113,6 +113,12 @@ async def list_journals(
                 "eissn": j.eissn,
                 "impact_factor": j.impact_factor,
                 "subjects": j.subjects,
+                "openalex_id": getattr(j, "openalex_id", None),
+                "h_index": getattr(j, "h_index", None),
+                "i10_index": getattr(j, "i10_index", None),
+                "total_citation_count": getattr(j, "total_citation_count", 0),
+                "average_citation_count": getattr(j, "average_citation_count", None),
+                "last_citation_update_date": getattr(j, "last_citation_update_date", None),
                 "created_at": j.created_at,
                 "updated_at": j.updated_at,
             }
@@ -164,6 +170,12 @@ async def get_journal(journal_id: str):
         "eissn": journal.eissn,
         "impact_factor": journal.impact_factor,
         "subjects": journal.subjects,
+        "openalex_id": getattr(journal, "openalex_id", None),
+        "h_index": getattr(journal, "h_index", None),
+        "i10_index": getattr(journal, "i10_index", None),
+        "average_citation_count": getattr(journal, "average_citation_count", None),
+        "total_citation_count": getattr(journal, "total_citation_count", 0),
+        "last_citation_update_date": getattr(journal, "last_citation_update_date", None),
         "created_at": journal.created_at,
         "updated_at": journal.updated_at,
     }
@@ -212,6 +224,30 @@ async def get_journal(journal_id: str):
     
     return result
 
+
+@router.get("/{journal_id}/citation-metrics", summary="Dergi Atıf Metrikleri", response_model=JournalCitationMetricsResponse)
+async def get_journal_citation_metrics(journal_id: str):
+    """Belirli bir derginin detaylı atıf istatistiklerini getirir."""
+    try:
+        obj_id = PydanticObjectId(journal_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid journal ID")
+        
+    journal = await Journal.get(obj_id)
+    if not journal:
+        raise HTTPException(status_code=404, detail="Journal not found")
+        
+    return {
+        "id": str(journal.id),
+        "name": journal.name,
+        "openalex_id": getattr(journal, "openalex_id", None),
+        "h_index": getattr(journal, "h_index", None),
+        "i10_index": getattr(journal, "i10_index", None),
+        "average_citation_count": getattr(journal, "average_citation_count", None),
+        "total_citation_count": getattr(journal, "total_citation_count", 0),
+        "historical_citation_data": getattr(journal, "historical_citation_data", {}),
+        "last_citation_update_date": getattr(journal, "last_citation_update_date", None),
+    }
 
 @router.get("/{journal_id}/issues", summary="Derginin sayıları")
 async def get_journal_issues(

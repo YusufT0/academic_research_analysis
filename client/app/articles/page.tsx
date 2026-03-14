@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Search, Filter, ExternalLink, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Suspense, useEffect, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Search, Filter, ExternalLink, ChevronLeft, ChevronRight, Unlock, Star, TrendingUp, Target } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -9,7 +10,6 @@ import { Input } from '@/components/ui/Input';
 import { getArticles, type ArticleFilters } from '@/lib/api';
 import type { Article, PaginatedResponse } from '@/lib/types';
 
-// Relative URL'leri tam URL'ye çevir
 function getFullUrl(url: string, sourceWebsite: string): string {
   if (!url) return '';
   
@@ -30,7 +30,10 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   return url;
 }
 
-export default function ArticlesPage() {
+function ArticlesContent() {
+  const searchParams = useSearchParams();
+  const articleId = searchParams.get('article_id');
+
   const [data, setData] = useState<PaginatedResponse<Article> | null>(null);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState<ArticleFilters>({
@@ -38,8 +41,22 @@ export default function ArticlesPage() {
     page_size: 10,
     sort_by: 'publication_year',
     sort_order: 'desc',
+    id: articleId || undefined,
   });
   const [showFilters, setShowFilters] = useState(false);
+
+  // URL'den article_id geliyorsa veya değişiyorsa güncelle
+  useEffect(() => {
+    if (articleId) {
+      setFilters(prev => ({ ...prev, id: articleId, page: 1 }));
+    } else {
+      setFilters(prev => {
+        const newFilters = { ...prev };
+        delete newFilters.id;
+        return newFilters;
+      });
+    }
+  }, [articleId]);
 
   useEffect(() => {
     async function fetchArticles() {
@@ -141,6 +158,8 @@ export default function ArticlesPage() {
                   <option value="title-asc">Başlık (A → Z)</option>
                   <option value="title-desc">Başlık (Z → A)</option>
                   <option value="citation_count-desc">Atıf Sayısı</option>
+                  <option value="citation_percentile-desc">Atıf Yüzdeliği (En Yüksek)</option>
+                  <option value="fwci-desc">FWCI (En Yüksek)</option>
                 </select>
               </div>
             </div>
@@ -186,8 +205,38 @@ export default function ArticlesPage() {
                       <Badge variant={article.source_website === 'ieeexplore' ? 'info' : article.source_website === 'acm' ? 'warning' : 'success'}>
                         {article.source_website === 'ieeexplore' ? 'IEEE' : article.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
                       </Badge>
+                    </div>
+
+                    {/* Stats and Open Access */}
+                    <div className="flex flex-wrap items-center gap-3 mt-3">
                       {article.open_access && (
-                        <Badge variant="success">Open Access</Badge>
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 shadow-sm" title="Tam metin ücretsiz erişime açıktır">
+                          <Unlock className="h-3.5 w-3.5" />
+                          <span>Açık Erişim</span>
+                        </div>
+                      )}
+                      
+                      {article.citation_count > 0 && (
+                        <div className="flex items-center gap-4 text-xs font-medium bg-gradient-to-r from-purple-50 to-indigo-50 text-indigo-900 px-3 py-1 rounded-md border border-indigo-100 shadow-sm">
+                           <div className="flex items-center gap-1.5 font-bold">
+                              <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500" />
+                              <span>{article.citation_count} Atıf</span>
+                           </div>
+                           
+                           {article.citation_percentile && (
+                             <div className="flex items-center gap-1.5 border-l border-indigo-200 pl-4" title="Kendi alanında ve aynı yılda yayınlananlar arasındaki atıf yüzdeliği (100 en iyi)">
+                               <TrendingUp className="h-3.5 w-3.5 text-indigo-500" />
+                               <span>%{article.citation_percentile} Dilim</span>
+                             </div>
+                           )}
+
+                           {article.fwci != null && (
+                             <div className="flex items-center gap-1.5 border-l border-indigo-200 pl-4" title="Field-Weighted Citation Impact: 1.0 dünya ortalamasıdır. (Örn: 1.5 demek ortalamadan %50 daha fazla atıf alıyor demektir)">
+                               <Target className="h-3.5 w-3.5 text-indigo-500" />
+                               <span>FWCI: {article.fwci.toFixed(2)}</span>
+                             </div>
+                           )}
+                        </div>
                       )}
                     </div>
                     
@@ -268,3 +317,11 @@ export default function ArticlesPage() {
   );
 }
 
+
+export default function ArticlesPage() {
+  return (
+    <Suspense fallback={<div className='p-8 text-center'>Yükleniyor...</div>}>
+      <ArticlesContent />
+    </Suspense>
+  );
+}

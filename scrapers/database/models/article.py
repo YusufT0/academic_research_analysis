@@ -54,6 +54,14 @@ class Article(Document, TimestampMixin):
     citation_count: int = Field(default=0, description="Atıf sayısı")
     references: List[str] = Field(default_factory=list, description="Referanslar")
     
+    # OpenAlex ve Atıf Meta Verileri
+    openalex_id: Optional[str] = Field(None, description="OpenAlex API üzerindeki ID'si")
+    is_openalex_indexed: bool = Field(default=False, description="OpenAlex tarafında bulundu mu?")
+    historical_citation_data: dict = Field(default_factory=dict, description="Yıllara göre atıf sayıları {2023: 10, 2024: 15}")
+    citation_percentile: Optional[float] = Field(None, description="Aynı yıl yayınlanan makalelere göre atıf yüzdelik dilimi (Örn: 95.5)")
+    fwci: Optional[float] = Field(None, description="Field-Weighted Citation Impact (Alana göre normalize edilmiş atıf etki değeri)")
+    last_citation_update_date: Optional[datetime] = Field(None, description="Atıf verisinin son güncellenme tarihi")
+    
     # Scraping metadata
     scraped_at: datetime = Field(default_factory=datetime.utcnow)
     content_hash: Optional[str] = Field(None, description="İçerik hash'i - değişiklik tespiti için")

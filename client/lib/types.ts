@@ -15,6 +15,12 @@ export interface Journal {
   eissn: string | null;
   impact_factor: number | null;
   subjects: string[];
+  openalex_id?: string | null;
+  h_index?: number | null;
+  i10_index?: number | null;
+  average_citation_count?: number | null;
+  total_citation_count?: number;
+  last_citation_update_date?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -55,6 +61,11 @@ export interface Article {
   open_access: boolean;
   pdf_url: string | null;
   citation_count: number;
+  openalex_id?: string | null;
+  is_openalex_indexed?: boolean;
+  citation_percentile?: number | null;
+  fwci?: number | null;
+  last_citation_update_date?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -129,6 +140,29 @@ export interface ArticleStats {
   by_year: Record<string, number>;
   top_keywords: Array<{ _id: string; count: number }>;
   top_authors: Array<{ _id: string; count: number }>;
+}
+
+export interface CitationStats {
+  citation_distribution: Array<{ _id: number | string; count: number }>;
+  top_cited_articles: Array<{
+    _id: string;
+    title: string;
+    authors: string[];
+    citation_count: number;
+    publication_year: number | null;
+  }>;
+  citations_by_pub_year: Array<{
+    _id: number;
+    total_citations: number;
+    article_count: number;
+  }>;
+  top_h_index_journals: Array<{
+    _id: string;
+    name: string;
+    h_index: number;
+    i10_index: number;
+    total_citation_count: number;
+  }>;
 }
 
 export interface SearchResult {

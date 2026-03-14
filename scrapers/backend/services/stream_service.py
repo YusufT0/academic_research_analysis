@@ -60,7 +60,7 @@ class RedisStreamService:
             await self._redis.ping()
             
             # Stream'ler ve consumer group'ları oluştur
-            streams = ["article:scraped", "article:indexed", "article:dlq", "scraper:events"]
+            streams = ["article:scraped", "article:indexed", "article:dlq", "scraper:events", "article:citation_needed", "journal:citation_needed"]
             for stream in streams:
                 try:
                     await self._redis.xgroup_create(

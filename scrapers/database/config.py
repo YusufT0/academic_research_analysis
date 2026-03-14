@@ -1,29 +1,33 @@
 """
 Database Configuration
-Backend settings üzerinden konfigürasyon yönetimi
 """
 
+import os
 from typing import Optional
-from backend.core.config import settings
+from dotenv import load_dotenv
+
+# dotenv'ı manuel yükle (döngüsel importu önlemek için Backend ayarlarına bağımlı kalmak istemiyorsak)
+load_dotenv()
 
 class DatabaseSettings:
-    """MongoDB bağlantı ayarları - Backend Settings wrapper'ı"""
+    """MongoDB bağlantı ayarları"""
     
     @property
     def mongodb_uri(self) -> str:
-        return settings.mongodb_uri
+        return os.getenv("MONGODB_URI", "mongodb://localhost:27017")
         
     @property
     def mongodb_database(self) -> str:
-        return settings.mongodb_database
+        return os.getenv("MONGODB_DATABASE", "academic_research")
         
     @property
     def mongodb_username(self) -> Optional[str]:
-        return settings.mongodb_username if hasattr(settings, 'mongodb_username') else None
+        return os.getenv("MONGODB_USERNAME")
         
     @property
     def mongodb_password(self) -> Optional[str]:
-        return settings.mongodb_password if hasattr(settings, 'mongodb_password') else None
+        return os.getenv("MONGODB_PASSWORD")
+
     
     # Connection Pool
     @property

@@ -40,6 +40,15 @@ class Journal(Document, TimestampMixin, ScrapingMetaMixin):
     impact_factor: Optional[float] = Field(None, description="Impact factor")
     subjects: List[str] = Field(default_factory=list, description="Konu alanları")
     
+    # OpenAlex ve Denormalize Atıf Metadata
+    openalex_id: Optional[str] = Field(None, description="OpenAlex üzerindeki Dergi/Source ID'si")
+    h_index: Optional[int] = Field(None, description="Derginin H-index değeri")
+    i10_index: Optional[int] = Field(None, description="Derginin i10-index değeri (En az 10 atıf alan makale sayısı)")
+    average_citation_count: Optional[float] = Field(None, description="Ortalama atıf sayısı (OpenAlex verilerinden)")
+    total_citation_count: int = Field(default=0, description="Dergideki makalelerin toplam atıf sayısı")
+    historical_citation_data: dict = Field(default_factory=dict, description="Derginin yıllara göre toplam atıf performansı")
+    last_citation_update_date: Optional[datetime] = Field(None, description="Atıf metriklerinin son güncellenme tarihi")
+    
     class Settings:
         name = "journals"
         indexes = [

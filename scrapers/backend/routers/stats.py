@@ -192,6 +192,79 @@ async def get_article_stats():
     return result
 
 
+@router.get("/citations", summary="Atıf istatistikleri")
+async def get_citation_stats():
+    """Atıf (Citation) yoğunlukları ve özet istatistikleri"""
+    cached = await cache_service.get_search_results("stats_citations", {})
+    if cached:
+        logger.info("Cache HIT: stats citations")
+        return cached
+
+    # Makale Atıf Dağılımı (Citation Distribution)
+    article_coll = Article.get_pymongo_collection()
+    
+    distribution_pipeline = [
+        {
+            "$bucket": {
+                "groupBy": {"$ifNull": ["$citation_count", 0]},
+                "boundaries": [0, 1, 5, 20, 50, 100],
+                "default": "100+",
+                "output": {"count": {"$sum": 1}}
+            }
+        }
+    ]
+    dist_cursor = article_coll.aggregate(distribution_pipeline)
+    distribution_raw = await dist_cursor.to_list(length=None)
+    
+    # En Çok Atıf Alan Makaleler
+    top_articles_pipeline = [
+        {"$sort": {"citation_count": -1}},
+        {"$limit": 10},
+        {"$project": {"title": 1, "authors": 1, "citation_count": 1, "publication_year": 1}}
+    ]
+    top_articles_cursor = article_coll.aggregate(top_articles_pipeline)
+    top_articles = await top_articles_cursor.to_list(length=None)
+
+    # Yıllara Göre Toplam Atıf Yoğunluğu
+    pub_year_pipeline = [
+        {"$match": {"publication_year": {"$ne": None}}},
+        {
+            "$group": {
+                "_id": "$publication_year",
+                "total_citations": {"$sum": {"$ifNull": ["$citation_count", 0]}},
+                "article_count": {"$sum": 1}
+            }
+        },
+        {"$sort": {"_id": -1}},
+        {"$limit": 15},
+        {"$sort": {"_id": 1}}
+    ]
+    pub_year_cursor = article_coll.aggregate(pub_year_pipeline)
+    pub_year_citations = await pub_year_cursor.to_list(length=None)
+
+    journal_coll = Journal.get_pymongo_collection()
+
+    # H-Index'i en yüksek dergiler
+    top_h_index_pipeline = [
+        {"$match": {"h_index": {"$ne": None}}},
+        {"$sort": {"h_index": -1}},
+        {"$limit": 10},
+        {"$project": {"name": 1, "h_index": 1, "i10_index": 1, "total_citation_count": 1}}
+    ]
+    top_h_index_cursor = journal_coll.aggregate(top_h_index_pipeline)
+    top_h_index_journals = await top_h_index_cursor.to_list(length=None)
+
+    result = {
+        "citation_distribution": distribution_raw,
+        "top_cited_articles": [{**a, "_id": str(a["_id"])} for a in top_articles],
+        "citations_by_pub_year": pub_year_citations,
+        "top_h_index_journals": [{**j, "_id": str(j["_id"])} for j in top_h_index_journals]
+    }
+
+    await cache_service.set_search_results("stats_citations", {}, result)
+    return result
+
+
 @router.get("/scraper", summary="Scraper istatistikleri")
 async def get_scraper_stats():
     """Scraper ilerleme ve istatistikleri"""
