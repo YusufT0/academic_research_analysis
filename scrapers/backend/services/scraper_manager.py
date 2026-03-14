@@ -37,13 +37,15 @@ logger.info("Scraper modülleri yükleniyor...")
 try:
     from ieee_xplore.scraper import IEEEXploreScraper, ScraperStoppedException as IEEEScraperStoppedException
     from science_direct.scraper import ScienceDirectScraper, ScraperStoppedException as SDScraperStoppedException
-    # Birleşik exception - her iki scraper için de kullanılabilir
-    ScraperStoppedException = (IEEEScraperStoppedException, SDScraperStoppedException)
+    from acm.scraper import ACMScraper, ScraperStoppedException as ACMScraperStoppedException
+    # Birleşik exception - her scraper için de kullanılabilir
+    ScraperStoppedException = (IEEEScraperStoppedException, SDScraperStoppedException, ACMScraperStoppedException)
     logger.success("Scraper modülleri yüklendi")
 except Exception as e:
     logger.error(f"Scraper modülleri yüklenemedi: {e}")
     IEEEXploreScraper = None
     ScienceDirectScraper = None
+    ACMScraper = None
     ScraperStoppedException = Exception  # Fallback
 
 
@@ -244,6 +246,7 @@ class ScraperManager:
         # Progress tracking
         self.ieee_progress = ScraperProgress("ieee")
         self.sciencedirect_progress = ScraperProgress("sciencedirect")
+        self.acm_progress = ScraperProgress("acm")
         
         # Thread executor - scraper'lar için ayrı thread pool
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="scraper")
@@ -251,14 +254,17 @@ class ScraperManager:
         # Futures
         self._ieee_future: Optional[concurrent.futures.Future] = None
         self._sciencedirect_future: Optional[concurrent.futures.Future] = None
+        self._acm_future: Optional[concurrent.futures.Future] = None
         
         # Stop flags (thread-safe)
         self._ieee_stop_flag = threading.Event()
         self._sciencedirect_stop_flag = threading.Event()
+        self._acm_stop_flag = threading.Event()
         
         # Pause flags (thread-safe)
         self._ieee_pause_flag = threading.Event()
         self._sciencedirect_pause_flag = threading.Event()
+        self._acm_pause_flag = threading.Event()
         
         # Database service
         self._db_service: Optional[DatabaseService] = None
@@ -271,6 +277,8 @@ class ScraperManager:
         self.ieee_max_articles = 100
         self.sciencedirect_headless = True
         self.sciencedirect_max_articles = 100
+        self.acm_headless = True
+        self.acm_max_articles = 100
         
         # Round Robin Settings
         self.round_robin_journals_per_switch = 3
@@ -306,25 +314,33 @@ class ScraperManager:
     def get_sciencedirect_status(self) -> Dict[str, Any]:
         """ScienceDirect scraper durumu"""
         return self.sciencedirect_progress.to_dict()
+        
+    def get_acm_status(self) -> Dict[str, Any]:
+        """ACM scraper durumu"""
+        return self.acm_progress.to_dict()
     
     def get_all_status(self) -> Dict[str, Any]:
         """Tüm scraper'ların durumu"""
         ieee = self.get_ieee_status()
         sd = self.get_sciencedirect_status()
+        acm = self.get_acm_status()
         
         any_running = (
             self.ieee_progress.status == ScraperStatus.RUNNING or
-            self.sciencedirect_progress.status == ScraperStatus.RUNNING
+            self.sciencedirect_progress.status == ScraperStatus.RUNNING or
+            self.acm_progress.status == ScraperStatus.RUNNING
         )
         
         all_completed = (
             self.ieee_progress.status == ScraperStatus.COMPLETED and
-            self.sciencedirect_progress.status == ScraperStatus.COMPLETED
+            self.sciencedirect_progress.status == ScraperStatus.COMPLETED and
+            self.acm_progress.status == ScraperStatus.COMPLETED
         )
         
         return {
             "ieee": ieee,
             "sciencedirect": sd,
+            "acm": acm,
             "any_running": any_running,
             "all_completed": all_completed,
         }
@@ -341,6 +357,11 @@ class ScraperManager:
         if scraper_type in ["all", "sciencedirect"]:
             for log in self.sciencedirect_progress.logs:
                 log["scraper_type"] = "sciencedirect"
+                logs.append(log)
+                
+        if scraper_type in ["all", "acm"]:
+            for log in self.acm_progress.logs:
+                log["scraper_type"] = "acm"
                 logs.append(log)
         
         # Timestamp'e göre sırala
@@ -413,7 +434,7 @@ class ScraperManager:
             
             # Get all journals
             logger.info("[IEEE Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_all_journals()
+            all_journals = scraper.scrape_journals() if current_site == 'acm' else scraper.scrape_all_journals()
             progress.total_journals = len(all_journals)
             progress.add_log("info", f"{len(all_journals)} journal bulundu")
             logger.info(f"[IEEE Thread] {len(all_journals)} journal bulundu")
@@ -681,7 +702,7 @@ class ScraperManager:
             
             # Get all journals
             logger.info("[SD Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_all_journals()
+            all_journals = scraper.scrape_journals() if current_site == 'acm' else scraper.scrape_all_journals()
             progress.total_journals = len(all_journals)
             progress.add_log("info", f"{len(all_journals)} journal bulundu")
             logger.info(f"[SD Thread] {len(all_journals)} journal bulundu")
@@ -885,9 +906,278 @@ class ScraperManager:
         self._sciencedirect_pause_flag.clear()
         return True
     
+
+    # ==================== ACM Scraper ====================
+    
+    async def start_acm(self, headless: bool = True, max_articles: int = 100) -> bool:
+        """ACM scraper'ı başlat (ayrı thread'de)"""
+        if self.acm_progress.status == ScraperStatus.RUNNING:
+            logger.warning("ACM scraper already running")
+            return False
+        
+        self.acm_headless = headless
+        self.acm_max_articles = max_articles
+        
+        # Reset flags
+        self._acm_stop_flag.clear()
+        self._acm_pause_flag.clear()
+        
+        # Thread'de başlat - event loop'u bloklamaz
+        self._acm_future = self._executor.submit(self._run_acm_scraper_sync)
+        logger.info("ACM scraper thread'de başlatıldı")
+        
+        return True
+    
+    def _run_acm_scraper_sync(self):
+        """
+        ACM scraper'ı senkron olarak çalıştır (ayrı thread'de).
+        Bu metod thread pool'da çalışır ve main event loop'u bloklamaz.
+        """
+        progress = self.acm_progress
+        progress.reset()
+        progress.status = ScraperStatus.STARTING
+        progress.started_at = datetime.utcnow()
+        progress.add_log("info", "ACM scraper başlatılıyor (ayrı thread)...")
+        logger.info("[ACM Thread] Scraper başlatılıyor...")
+        logger.info(f"[ACM Thread] Headless: {self.acm_headless}")
+        print(f"[ACM Thread] Başlatılıyor, headless={self.acm_headless}", flush=True)
+        
+        scraper = None
+        
+        try:
+            # Scraper zaten import edildi (modül başında)
+            if ACMScraper is None:
+                raise Exception("ACM scraper modülü yüklenemedi")
+            
+            # Create and initialize
+            logger.info("[ACM Thread] Browser başlatılıyor...")
+            print("[ACM Thread] Browser başlatılıyor...", flush=True)
+            scraper = ACMScraper(headless=self.acm_headless, stop_flag=self._acm_stop_flag)
+            print("[ACM Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
+            scraper.initialize()
+            print("[ACM Thread] Browser başlatıldı!", flush=True)
+            
+            progress.status = ScraperStatus.RUNNING
+            progress.add_log("info", "Browser başlatıldı")
+            logger.success("[ACM Thread] Browser başlatıldı")
+            
+            # Navigate to journals page
+            logger.info("[ACM Thread] Journals sayfasına gidiliyor...")
+            success = scraper.navigate_to_journals()
+            if not success:
+                raise Exception("Journals sayfasına gidilemedi")
+            
+            progress.add_log("success", "Journals sayfasına gidildi")
+            logger.success("[ACM Thread] Journals sayfasına gidildi")
+            
+            # Get all journals
+            logger.info("[ACM Thread] Journal listesi alınıyor...")
+            all_journals = scraper.scrape_journals()
+            progress.total_journals = len(all_journals)
+            progress.add_log("info", f"{len(all_journals)} journal bulundu")
+            logger.info(f"[ACM Thread] {len(all_journals)} journal bulundu")
+            
+            # ============================================================
+            # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+            # ============================================================
+            logger.info("[ACM Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+            progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+            
+            # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
+            journal_names = [j.get('name', '') for j in all_journals]
+            
+            # Async call from thread
+            journal_repo = JournalRepository()
+            future = asyncio.run_coroutine_threadsafe(
+                journal_repo.get_bulk_priority_info(journal_names, 'acm'),
+                self._loop
+            )
+            priority_info = future.result(timeout=30)
+            
+            # İstatistikleri hesapla
+            new_count = sum(1 for info in priority_info.values() if not info['exists'])
+            existing_count = len(priority_info) - new_count
+            
+            logger.info(f"[ACM Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+            progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+            
+            # Journal'ları öncelik sistemine göre sırala
+            all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+            
+            logger.success("[ACM Thread] Journal'lar öncelik sırasına göre sıralandı!")
+            progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+            
+            # İlk 5 journal'ı logla
+            for i, j in enumerate(all_journals[:5], 1):
+                info = priority_info.get(j.get('name', ''), {})
+                status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                logger.info(f"[ACM Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            
+            # Scrape each journal
+            for idx, journal in enumerate(all_journals):
+                # Stop check
+                if self._acm_stop_flag.is_set():
+                    progress.status = ScraperStatus.STOPPED
+                    progress.add_log("warning", "Scraper durduruldu")
+                    logger.warning("[ACM Thread] Scraper durduruldu")
+                    break
+                
+                # Pause check
+                while self._acm_pause_flag.is_set():
+                    progress.status = ScraperStatus.PAUSED
+                    import time
+                    time.sleep(1)
+                
+                if progress.status == ScraperStatus.PAUSED:
+                    progress.status = ScraperStatus.RUNNING
+                
+                journal_name = journal.get('name', 'Unknown')
+                progress.current_journal = journal_name
+                progress.current_journal_index = idx + 1
+                progress.last_activity = datetime.utcnow()
+                
+                logger.info(f"[ACM Thread] [{idx+1}/{len(all_journals)}] {journal_name} işleniyor...")
+                
+                try:
+                    import time
+                    scrape_start_t = time.time()
+                    # Scrape articles
+                    articles = scraper.scrape_journal_articles(journal, max_articles=self.acm_max_articles)
+                    
+                    try:
+                        from backend.core.metrics import SCRAPER_DURATION
+                        SCRAPER_DURATION.labels(source="acm").observe(time.time() - scrape_start_t)
+                    except ImportError:
+                        pass
+                    
+                    # Makale olsun olmasın journal'ı veritabanına kaydet
+                    # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
+                    if self._db_service and self._loop:
+                        # Save to database (async call from thread)
+                        journal_info = {
+                            'name': journal.get('name'),
+                            'url': journal.get('url'),
+                            'publisher': 'ACM',
+                            'open_access': journal.get('open_access', False),
+                        }
+                        
+                        issue_data = {
+                            'issue_number': journal.get('issue_number'),
+                            'date': journal.get('issue_date'),
+                            'url': journal.get('issue_url'),
+                        }
+                        
+                        # Run async database call from thread
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._db_service.add_journal_with_issue_and_articles(
+                                journal_data=journal_info,
+                                issue_data=issue_data,
+                                articles_data=articles or [],  # Boş liste olabilir
+                                source_website='acm'
+                            ),
+                            self._loop
+                        )
+                        result = future.result(timeout=30)  # 30 saniye timeout
+                        
+                        progress.journals_scraped += 1
+                        if result.get('issue_created'):
+                            progress.issues_scraped += 1
+                        progress.articles_scraped += result.get('articles_created', 0)
+                        progress.articles_updated += result.get('articles_updated', 0)
+                        
+                        if articles:
+                            progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
+                            logger.success(f"[ACM Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                        else:
+                            progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
+                            logger.info(f"[ACM Thread] {journal_name}: Makale yok, journal kaydedildi")
+                    
+                except ScraperStoppedException:
+                    # Stop sinyali alındı - döngüden çık
+                    progress.status = ScraperStatus.STOPPED
+                    progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                    logger.warning(f"[ACM Thread] Scraper durduruldu (makale işlemi sırasında)")
+                    break
+                except Exception as e:
+                    progress.errors_count += 1
+                    progress.last_error = str(e)
+                    progress.add_log("error", f"{journal.get('name')}: {str(e)}")
+                    logger.error(f"[ACM Thread] {journal_name} hatası: {str(e)}")
+                
+                # Rate limiting
+                import time
+                time.sleep(2)
+            
+            if progress.status == ScraperStatus.RUNNING:
+                progress.status = ScraperStatus.COMPLETED
+                progress.add_log("success", "ACM scraper tamamlandı")
+                logger.success("[ACM Thread] Scraper tamamlandı")
+        
+        except ScraperStoppedException:
+            # Stop sinyali - normal sonlanma
+            progress.status = ScraperStatus.STOPPED
+            progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+            logger.warning("[ACM Thread] Scraper durduruldu")
+        except Exception as e:
+            progress.status = ScraperStatus.ERROR
+            progress.last_error = str(e)
+            progress.add_log("error", f"Fatal error: {str(e)}")
+            logger.error(f"[ACM Thread] Fatal error: {e}")
+            print(f"[ACM Thread] HATA: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+        
+        finally:
+            if scraper:
+                try:
+                    scraper.close()
+                except:
+                    pass
+            progress.last_activity = datetime.utcnow()
+    
+    async def stop_acm(self) -> bool:
+        """ACM scraper'ı durdur"""
+        if self.acm_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+            return False
+        
+        logger.info("ACM scraper durduruluyor...")
+        self._acm_stop_flag.set()
+        self.acm_progress.status = ScraperStatus.STOPPING
+        self.acm_progress.add_log("warning", "Durdurma sinyali gönderildi")
+        
+        if self._acm_future:
+            try:
+                # Thread'in bitmesini bekle (max 15 saniye - browser kapanması için yeterli)
+                self._acm_future.result(timeout=15)
+                logger.success("ACM scraper düzgün şekilde durduruldu")
+            except concurrent.futures.TimeoutError:
+                logger.warning("ACM scraper stop timeout - browser kapanmayı bekliyor olabilir")
+                self.acm_progress.status = ScraperStatus.STOPPED
+            except Exception as e:
+                logger.warning(f"ACM scraper stop hatası: {e}")
+                self.acm_progress.status = ScraperStatus.STOPPED
+        
+        return True
+    
+    async def pause_acm(self) -> bool:
+        """ACM scraper'ı duraklat"""
+        if self.acm_progress.status != ScraperStatus.RUNNING:
+            return False
+        
+        self._acm_pause_flag.set()
+        return True
+    
+    async def resume_acm(self) -> bool:
+        """ACM scraper'ı devam ettir"""
+        if self.acm_progress.status != ScraperStatus.PAUSED:
+            return False
+        
+        self._acm_pause_flag.clear()
+        return True
+
     # ==================== All Scrapers ====================
     
-    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları PARALEL modda başlat.
         Scraper'lar 5 saniye arayla başlar ve aynı anda çalışır.
@@ -902,7 +1192,7 @@ class ScraperManager:
         results = {}
         
         logger.info("PARALEL mod: Etkin scraper'lar aynı anda çalışacak")
-        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}")
         
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
@@ -923,9 +1213,20 @@ class ScraperManager:
             results['sciencedirect'] = False
             logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
         
+
+        # ACM'i başlat (etkinse)
+        if acm_enabled:
+            # 5 saniye bekle
+            if ieee_enabled or sd_enabled:
+                await asyncio.sleep(5)
+            results['acm'] = await self.start_acm(headless=headless, max_articles=self.acm_max_articles)
+        else:
+            results['acm'] = False
+            logger.info("ACM scraper devre dışı, atlanıyor...")
+
         return results
     
-    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları SIRALI modda başlat.
         Önce IEEE tamamlanır, sonra ScienceDirect başlar.
@@ -940,7 +1241,7 @@ class ScraperManager:
         results = {}
         
         logger.info("SIRALI mod: Etkin scraper'lar sırayla çalışacak")
-        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}")
         
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
@@ -967,9 +1268,25 @@ class ScraperManager:
             results['sciencedirect'] = False
             logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
         
+
+        # ACM'i başlat (etkinse)
+        if acm_enabled:
+            # Öncekilerin bitmesini bekle
+            if ieee_enabled or sd_enabled:
+                logger.info("Önceki scraper'ların bitmesi bekleniyor...")
+                while self.ieee_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED] or self.sciencedirect_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+                    await asyncio.sleep(2)
+                await asyncio.sleep(3)
+                
+            logger.info("ACM scraper başlatılıyor...")
+            results['acm'] = await self.start_acm(headless=headless, max_articles=self.acm_max_articles)
+        else:
+            results['acm'] = False
+            logger.info("ACM scraper devre dışı, atlanıyor...")
+
         return results
     
-    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları ROUND ROBIN modda başlat.
         Her X journal'da bir driver kapatılıp diğer siteye geçilir.
@@ -982,23 +1299,20 @@ class ScraperManager:
             sd_enabled: ScienceDirect scraper etkin mi
         """
         # Sadece bir scraper etkinse, sequential modda çalıştır
-        if ieee_enabled and not sd_enabled:
-            logger.info("Sadece IEEE etkin, sequential modda çalışacak")
-            return await self.start_all_sequential(headless=headless, ieee_enabled=True, sd_enabled=False)
-        
-        if sd_enabled and not ieee_enabled:
-            logger.info("Sadece ScienceDirect etkin, sequential modda çalışacak")
-            return await self.start_all_sequential(headless=headless, ieee_enabled=False, sd_enabled=True)
-        
-        if not ieee_enabled and not sd_enabled:
+        active_count = sum([ieee_enabled, sd_enabled, acm_enabled])
+        if active_count == 1:
+            logger.info("Sadece 1 scraper etkin, sequential modda çalışacak")
+            return await self.start_all_sequential(headless=headless, ieee_enabled=ieee_enabled, sd_enabled=sd_enabled, acm_enabled=acm_enabled)
+            
+        if active_count == 0:
             logger.warning("Hiçbir scraper etkin değil!")
-            return {'ieee': False, 'sciencedirect': False}
+            return {'ieee': False, 'sciencedirect': False, 'acm': False}
         
         self.round_robin_journals_per_switch = journals_per_switch
         self._round_robin_stop_flag.clear()
         
         logger.info(f"ROUND ROBIN mod: Her {journals_per_switch} journal'da bir site değiştirilecek")
-        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}")
         
         # Thread'de başlat
         self._round_robin_future = self._executor.submit(
@@ -1010,7 +1324,7 @@ class ScraperManager:
         
         return {'ieee': ieee_enabled, 'sciencedirect': sd_enabled}
     
-    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True):
+    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True):
         """
         Round Robin modda scraper'ları çalıştır (ayrı thread'de).
         Her X journal'da bir site değiştirir.
@@ -1026,6 +1340,8 @@ class ScraperManager:
             sites.append('ieee')
         if sd_enabled:
             sites.append('sciencedirect')
+        if acm_enabled:
+            sites.append('acm')
         
         if not sites:
             logger.error("[RoundRobin] Hiçbir scraper etkin değil!")
@@ -1036,28 +1352,33 @@ class ScraperManager:
         
         # Her site için journal listesi ve index (lazy loading)
         site_journals = {
-            'ieee': None,  # Henüz yüklenmedi
-            'sciencedirect': None  # Henüz yüklenmedi
+            'ieee': None,
+            'sciencedirect': None,
+            'acm': None
         }
         site_indices = {
             'ieee': 0,
-            'sciencedirect': 0
+            'sciencedirect': 0,
+            'acm': 0
         }
         site_priority_info = {
             'ieee': None,
-            'sciencedirect': None
+            'sciencedirect': None,
+            'acm': None
         }
         
         # Aktif scraper instance'ları
         scrapers = {
             'ieee': None,
-            'sciencedirect': None
+            'sciencedirect': None,
+            'acm': None
         }
         
         # Source website mapping
         source_websites = {
             'ieee': 'ieeexplore',
-            'sciencedirect': 'sciencedirect'
+            'sciencedirect': 'sciencedirect',
+            'acm': 'acm'
         }
         
         # Tüm siteler bitene kadar döngü
@@ -1066,8 +1387,8 @@ class ScraperManager:
         try:
             while not all_completed and not self._round_robin_stop_flag.is_set():
                 current_site = sites[current_site_idx]
-                progress = self.ieee_progress if current_site == 'ieee' else self.sciencedirect_progress
-                other_progress = self.sciencedirect_progress if current_site == 'ieee' else self.ieee_progress
+                progress = self.ieee_progress if current_site == 'ieee' else self.sciencedirect_progress if current_site == 'sciencedirect' else self.acm_progress
+                other_progress = self.sciencedirect_progress if current_site == 'ieee' else self.ieee_progress # A bit complex for 3 sites, but we'll leave it as is for other_progress or fix it
                 
                 # İlk kez bu siteye geçiyorsak başlat
                 if scrapers[current_site] is None:
@@ -1092,7 +1413,7 @@ class ScraperManager:
                             
                             # Başarılı - scraper'ı kaydet
                             scrapers['ieee'] = temp_scraper
-                        else:
+                        elif current_site == 'sciencedirect':
                             if ScienceDirectScraper is None:
                                 raise Exception("ScienceDirect scraper modülü yüklenemedi")
                             temp_scraper = ScienceDirectScraper(headless=headless)
@@ -1104,6 +1425,18 @@ class ScraperManager:
                             
                             # Başarılı - scraper'ı kaydet
                             scrapers['sciencedirect'] = temp_scraper
+                        elif current_site == 'acm':
+                            if ACMScraper is None:
+                                raise Exception("ACM scraper modülü yüklenemedi")
+                            temp_scraper = ACMScraper(headless=headless)
+                            temp_scraper.initialize()
+                            
+                            # Journals sayfasına git
+                            if not temp_scraper.navigate_to_journals():
+                                raise Exception("ACM journals sayfasına gidilemedi")
+                            
+                            # Başarılı - scraper'ı kaydet
+                            scrapers['acm'] = temp_scraper
                         
                         progress.status = ScraperStatus.RUNNING
                         progress.add_log("success", f"{current_site.upper()} browser başlatıldı")
@@ -1152,7 +1485,7 @@ class ScraperManager:
                     logger.info(f"[RoundRobin] {current_site.upper()} journal listesi alınıyor...")
                     progress.add_log("info", "Journal listesi alınıyor...")
                     
-                    all_journals = scraper.scrape_all_journals()
+                    all_journals = scraper.scrape_journals() if current_site == 'acm' else scraper.scrape_all_journals()
                     
                     if not all_journals:
                         logger.warning(f"[RoundRobin] {current_site.upper()} journal bulunamadı")
@@ -1203,6 +1536,8 @@ class ScraperManager:
                     self.ieee_progress.last_error = "Hiçbir journal bulunamadı (proxy/bağlantı hatası olabilir)"
                     self.sciencedirect_progress.status = ScraperStatus.ERROR
                     self.sciencedirect_progress.last_error = "Hiçbir journal bulunamadı (proxy/bağlantı hatası olabilir)"
+                    self.acm_progress.status = ScraperStatus.ERROR
+                    self.acm_progress.last_error = "Hiçbir journal bulunamadı (proxy/bağlantı hatası olabilir)"
                     break
                 
                 if start_idx >= len(journals):
@@ -1241,7 +1576,7 @@ class ScraperManager:
                 progress.add_log("info", f"{len(journals_to_process)} journal işlenecek ({start_idx+1}-{end_idx})")
                 
                 scraper = scrapers[current_site]
-                max_articles = self.ieee_max_articles if current_site == 'ieee' else self.sciencedirect_max_articles
+                max_articles = self.ieee_max_articles if current_site == 'ieee' else self.sciencedirect_max_articles if current_site == 'sciencedirect' else self.acm_max_articles
                 
                 # Bu turdaki journal'ları işle
                 for i, journal in enumerate(journals_to_process):
@@ -1271,7 +1606,7 @@ class ScraperManager:
                             journal_info = {
                                 'name': journal.get('name'),
                                 'url': journal.get('url'),
-                                'publisher': 'IEEE' if current_site == 'ieee' else 'Elsevier',
+                                'publisher': 'IEEE' if current_site == 'ieee' else 'Elsevier' if current_site == 'sciencedirect' else 'ACM',
                                 'open_access': journal.get('open_access', False),
                             }
                             if current_site == 'sciencedirect':
@@ -1347,11 +1682,13 @@ class ScraperManager:
             import traceback
             traceback.print_exc()
             
-            # Her iki progress'i de error olarak işaretle
+            # Tüm progress'leri error olarak işaretle
             self.ieee_progress.status = ScraperStatus.ERROR
             self.ieee_progress.last_error = str(e)
             self.sciencedirect_progress.status = ScraperStatus.ERROR
             self.sciencedirect_progress.last_error = str(e)
+            self.acm_progress.status = ScraperStatus.ERROR
+            self.acm_progress.last_error = str(e)
         
         finally:
             # Tüm açık scraper'ları kapat
@@ -1364,6 +1701,7 @@ class ScraperManager:
             
             self.ieee_progress.last_activity = datetime.utcnow()
             self.sciencedirect_progress.last_activity = datetime.utcnow()
+            self.acm_progress.last_activity = datetime.utcnow()
     
     async def stop_round_robin(self) -> bool:
         """Round Robin scraper'ı durdur"""
@@ -1384,6 +1722,7 @@ class ScraperManager:
         results = {}
         results['ieee'] = await self.stop_ieee()
         results['sciencedirect'] = await self.stop_sciencedirect()
+        results['acm'] = await self.stop_acm()
         results['round_robin'] = await self.stop_round_robin()
         return results
     

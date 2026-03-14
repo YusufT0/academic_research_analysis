@@ -7,14 +7,14 @@ import re
 import pickle
 import numpy as np
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING
 from beanie import PydanticObjectId
 from collections import Counter
 
-from sentence_transformers import SentenceTransformer
-import umap
-import hdbscan
-from sklearn.metrics.pairwise import cosine_similarity
+if TYPE_CHECKING:
+    from sentence_transformers import SentenceTransformer
+    import umap
+    import hdbscan
 
 import sys
 from pathlib import Path
@@ -60,8 +60,8 @@ class NLPService:
         self.analysis_repo = AnalysisRunRepository()
         
         # Models (lazy loading)
-        self._embedder: Optional[SentenceTransformer] = None
-        self._reducer: Optional[umap.UMAP] = None
+        self._embedder: Optional["SentenceTransformer"] = None
+        self._reducer: Optional["umap.UMAP"] = None
         
         # Cached data for fast search
         self._cached_version: Optional[str] = None
@@ -70,19 +70,33 @@ class NLPService:
         
         # Legacy PKL model cache
         self._pkl_loaded: bool = False
-        self._pkl_reducer: Optional[umap.UMAP] = None
+        self._pkl_reducer: Optional["umap.UMAP"] = None
         self._pkl_clusters: Optional[np.ndarray] = None
         self._pkl_clustered_data: Optional[Dict] = None
         self._pkl_embedded: Optional[np.ndarray] = None
         
         self._initialized = True
+        
+        if not settings.nlp_lazy_init:
+            logger.info("NLP Service tam ön yükleme yapıyor (NLP_LAZY_INIT=False)")
+            # Tetikleyiciler
+            try:
+                import umap
+                import hdbscan
+                from sklearn.metrics.pairwise import cosine_similarity
+                _ = self.embedder
+                self._load_pkl_model()
+            except Exception as e:
+                logger.warning(f"NLP Service ön yükleme hatası: {e}")
+        
         logger.info("NLP Service initialized")
     
     @property
-    def embedder(self) -> SentenceTransformer:
+    def embedder(self) -> "SentenceTransformer":
         """Lazy load embedder model"""
         if self._embedder is None:
             logger.info(f"Loading embedder: {settings.nlp_embedder_model}")
+            from sentence_transformers import SentenceTransformer
             self._embedder = SentenceTransformer(settings.nlp_embedder_model)
         return self._embedder
     
@@ -110,6 +124,9 @@ class NLPService:
         
         try:
             logger.info(f"Loading legacy PKL model: {pkl_path}")
+            # UMAP pickle deserialize için import edilmeli
+            import umap
+            
             with open(pkl_path, "rb") as f:
                 state = pickle.load(f)
             
@@ -157,6 +174,8 @@ class NLPService:
             indices = np.where(self._pkl_clusters == label)[0]
             cluster_vectors = self._pkl_embedded[indices]
             centroid = np.mean(cluster_vectors, axis=0).reshape(1, -1)
+            
+            from sklearn.metrics.pairwise import cosine_similarity
             similarity = cosine_similarity(query_reduced, centroid)[0][0]
             
             if similarity > max_sim:
@@ -335,6 +354,7 @@ class NLPService:
             
             # 3. UMAP ile boyut indirgeme
             logger.info("Reducing dimensions with UMAP...")
+            import umap
             reducer = umap.UMAP(
                 n_neighbors=settings.nlp_umap_n_neighbors,
                 n_components=settings.nlp_umap_n_components,
@@ -346,6 +366,7 @@ class NLPService:
             
             # 4. HDBSCAN ile clustering
             logger.info("Clustering with HDBSCAN...")
+            import hdbscan
             clusterer = hdbscan.HDBSCAN(
                 min_cluster_size=settings.nlp_min_cluster_size,
                 min_samples=settings.nlp_min_samples
@@ -556,6 +577,8 @@ class NLPService:
         
         best_cluster = None
         max_similarity = -1
+        
+        from sklearn.metrics.pairwise import cosine_similarity
         
         for cluster in clusters:
             centroid = np.array(cluster.centroid_full).reshape(1, -1)

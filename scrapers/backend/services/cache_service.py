@@ -413,6 +413,11 @@ class CacheService:
             await self.delete_pattern(f"{self.prefix}:cluster:{model_version}:*")
         else:
             await self.delete_pattern(f"{self.prefix}:cluster:*")
+            
+    async def invalidate_pattern(self, pattern: str) -> int:
+        """Prefix ekleyerek pattern'e uyan tüm key'leri sil"""
+        full_pattern = f"{self.prefix}:{pattern}"
+        return await self.delete_pattern(full_pattern)
     
     async def invalidate_search_cache(self):
         """Tüm search cache'lerini temizle"""

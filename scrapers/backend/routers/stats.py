@@ -48,6 +48,7 @@ async def get_general_stats():
         "scrapers": {
             "ieee_status": scraper_status["ieee"]["status"],
             "sciencedirect_status": scraper_status["sciencedirect"]["status"],
+            "acm_status": scraper_status["acm"]["status"],
             "any_running": scraper_status["any_running"],
         },
         "cache": await cache_service.get_cache_stats()
@@ -198,6 +199,7 @@ async def get_scraper_stats():
     
     ieee = manager.get_ieee_status()
     sd = manager.get_sciencedirect_status()
+    acm = manager.get_acm_status()
     
     return {
         "ieee": {
@@ -222,11 +224,22 @@ async def get_scraper_stats():
             "elapsed_seconds": sd["elapsed_seconds"],
             "current_journal": sd["current_journal"],
         },
+        "acm": {
+            "status": acm["status"],
+            "progress_percent": acm["progress_percent"],
+            "journals_scraped": acm["journals_scraped"],
+            "issues_scraped": acm["issues_scraped"],
+            "articles_scraped": acm["articles_scraped"],
+            "articles_updated": acm["articles_updated"],
+            "errors_count": acm["errors_count"],
+            "elapsed_seconds": acm["elapsed_seconds"],
+            "current_journal": acm["current_journal"],
+        },
         "totals": {
-            "journals_scraped": ieee["journals_scraped"] + sd["journals_scraped"],
-            "issues_scraped": ieee["issues_scraped"] + sd["issues_scraped"],
-            "articles_scraped": ieee["articles_scraped"] + sd["articles_scraped"],
-            "errors_count": ieee["errors_count"] + sd["errors_count"],
+            "journals_scraped": ieee["journals_scraped"] + sd["journals_scraped"] + acm["journals_scraped"],
+            "issues_scraped": ieee["issues_scraped"] + sd["issues_scraped"] + acm["issues_scraped"],
+            "articles_scraped": ieee["articles_scraped"] + sd["articles_scraped"] + acm["articles_scraped"],
+            "errors_count": ieee["errors_count"] + sd["errors_count"] + acm["errors_count"],
         }
     }
 

@@ -5,3 +5,7 @@ __pycache__
 *.json
 *.log
 *.png
+downloaded_files
+coverage
+.coverage
+.pytest_cache

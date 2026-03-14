@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     scraper_headless: bool = Field(default=True, alias="SCRAPER_HEADLESS", description="Browser headless modda çalışsın mı")
     ieee_max_articles: int = Field(default=100, alias="IEEE_MAX_ARTICLES", description="IEEE scraper maksimum makale sayısı")
     sciencedirect_max_articles: int = Field(default=100, alias="SCIENCEDIRECT_MAX_ARTICLES", description="ScienceDirect scraper maksimum makale sayısı")
-    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect")
+    acm_max_articles: int = Field(default=100, alias="ACM_MAX_ARTICLES", description="ACM scraper maksimum makale sayısı")
+    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm")
     scraper_run_mode: str = Field(default="parallel", alias="SCRAPER_RUN_MODE", description="Scraper çalışma modu: 'parallel', 'sequential' veya 'round_robin'")
     round_robin_journals_per_switch: int = Field(default=3, alias="ROUND_ROBIN_JOURNALS_PER_SWITCH", description="Round robin modunda kaç journalda bir site değiştirileceği")
     
@@ -56,6 +57,11 @@ class Settings(BaseSettings):
         """ScienceDirect scraper etkin mi?"""
         return 'sciencedirect' in self.enabled_scrapers.lower()
     
+    @property
+    def acm_enabled(self) -> bool:
+        """ACM scraper etkin mi?"""
+        return 'acm' in self.enabled_scrapers.lower()
+    
     # Scraper Timeouts & Delays
     ieee_min_wait: int = Field(default=4, alias="IEEE_MIN_WAIT", description="IEEE scraper minimum bekleme süresi (sn)")
     ieee_max_wait: int = Field(default=10, alias="IEEE_MAX_WAIT", description="IEEE scraper maksimum bekleme süresi (sn)")
@@ -63,6 +69,12 @@ class Settings(BaseSettings):
     
     sd_timeout: int = Field(default=90, alias="SD_TIMEOUT", description="Science Direct sayfa yükleme timeout (sn)")
     sd_implicit_wait: int = Field(default=90, alias="SD_IMPLICIT_WAIT", description="Science Direct implicit wait (sn)")
+    
+    # ACM Timeouts & Delays
+    acm_base_url: str = Field(default="https://dl.acm.org/journals", alias="ACM_BASE_URL", description="ACM Digital Library base URL")
+    acm_min_wait: int = Field(default=4, alias="ACM_MIN_WAIT", description="ACM scraper minimum bekleme süresi (sn)")
+    acm_max_wait: int = Field(default=10, alias="ACM_MAX_WAIT", description="ACM scraper maksimum bekleme süresi (sn)")
+    acm_page_load_timeout: int = Field(default=90, alias="ACM_PAGE_LOAD_TIMEOUT", description="ACM sayfa yükleme timeout (sn)")
     
     # PDF Settings
     pdf_download_timeout: int = Field(default=60, alias="PDF_DOWNLOAD_TIMEOUT", description="PDF indirme timeout süresi (sn)")
@@ -108,6 +120,11 @@ class Settings(BaseSettings):
         default=1, 
         alias="NLP_MIN_SAMPLES",
         description="HDBSCAN min_samples"
+    )
+    nlp_lazy_init: bool = Field(
+        default=True,
+        alias="NLP_LAZY_INIT",
+        description="NLP modelleri başlangıçta değil ilk kullanımda yüklensin mi"
     )
     
     # Redis Cache Settings

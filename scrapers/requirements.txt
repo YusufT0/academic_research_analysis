@@ -1,5 +1,6 @@
+# SeleniumBase (local patched version — rsplit fix for @ in proxy username)
+./libs/seleniumbase
 selenium>=4.28.0
-selenium-wire>=5.1.0
 undetected-chromedriver>=3.5.0
 python-dotenv>=1.0.0
 beautifulsoup4>=4.12.0
