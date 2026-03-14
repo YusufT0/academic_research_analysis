@@ -10,6 +10,11 @@ import {
   Wifi,
   WifiOff,
   Radio,
+  ChevronDown,
+  CheckCircle2,
+  Clock,
+  Loader2,
+  FileText,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -24,6 +29,10 @@ import {
   stopScienceDirectScraper,
   pauseScienceDirectScraper,
   resumeScienceDirectScraper,
+  startAcmScraper,
+  stopAcmScraper,
+  pauseAcmScraper,
+  resumeAcmScraper,
   getScraperLogs
 } from '@/lib/api';
 import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
@@ -67,6 +76,171 @@ function ConnectionBadge({ status }: { status: ConnectionStatus }) {
       <WifiOff className="h-3 w-3" />
       Çevrimdışı
     </Badge>
+  );
+}
+
+// ==================== Journal Queue ====================
+
+function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Makale başlıklarını aktif dergi bazında biriktirir (state ile → React render tetiklenir)
+  const [articlesByJournal, setArticlesByJournal] = useState<Record<string, string[]>>({});
+
+  // current_article değiştiğinde aktif dergiye ekle
+  useEffect(() => {
+    if (!scraper.current_journal || !scraper.current_article) return;
+    const key = scraper.current_journal;
+    const title = scraper.current_article;
+    setArticlesByJournal(prev => {
+      const list = prev[key] ?? [];
+      if (list.includes(title)) return prev;           // zaten var, render tetikleme
+      return { ...prev, [key]: [...list, title] };
+    });
+  }, [scraper.current_article, scraper.current_journal]);
+
+  const toggleExpand = (name: string) =>
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+
+  const completed = scraper.completed_journals ?? [];
+  const pending   = scraper.pending_journals ?? [];
+  const isActive  = !!scraper.current_journal && ['running', 'paused'].includes(scraper.status);
+  const totalVisible = completed.length + (isActive ? 1 : 0) + pending.length;
+
+  if (totalVisible === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-slate-200 overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Dergi Kuyruğu</span>
+        <span className="text-xs text-slate-400">{scraper.current_journal_index}/{scraper.total_journals}</span>
+      </div>
+
+      {/* Scrollable list */}
+      <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+
+        {/* Tamamlananlar */}
+        {completed.map((j, i) => {
+          const isOpen = expanded.has(j.name);
+          const localArticles = articlesByJournal[j.name] ?? [];
+          return (
+            <div key={`done-${i}`} className="bg-white">
+              <button
+                onClick={() => toggleExpand(j.name)}
+                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-slate-50 transition-colors duration-150 text-left"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-shrink-0" />
+                <span className="flex-1 text-xs text-slate-600 truncate" title={j.name}>{j.name}</span>
+                {j.articles_count > 0 && (
+                  <span className="text-xs text-emerald-600 font-medium flex-shrink-0 flex items-center gap-1">
+                    <FileText className="h-3 w-3" />{j.articles_count}
+                  </span>
+                )}
+                <ChevronDown
+                  className={`h-3.5 w-3.5 text-slate-400 flex-shrink-0 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {/* Accordion — CSS grid trick for smooth expand */}
+              <div className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                <div className="overflow-hidden">
+                  {localArticles.length > 0 ? (
+                    <ul className="px-4 pb-2 pt-1 space-y-1 bg-slate-50">
+                      {localArticles.map((title, ti) => (
+                        <li key={ti} className="flex items-start gap-1.5 text-xs text-slate-500">
+                          <span className="text-slate-300 flex-shrink-0 mt-0.5">›</span>
+                          <span className="line-clamp-2">{title}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="px-4 pb-2 pt-1 text-xs text-slate-400 bg-slate-50">Makale başlığı kaydedilmedi</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Aktif dergi */}
+        {isActive && scraper.current_journal && (
+          <div className="bg-blue-50">
+            {/* Journal header */}
+            <div className="flex items-center gap-2 px-4 py-2.5">
+              <Loader2 className="h-3.5 w-3.5 text-blue-500 flex-shrink-0 animate-spin" />
+              <span className="flex-1 text-xs font-semibold text-blue-800 truncate" title={scraper.current_journal}>
+                {scraper.current_journal}
+              </span>
+              {scraper.total_articles > 0 && (
+                <span className="text-xs text-blue-400 flex-shrink-0">
+                  {scraper.current_article_index}/{scraper.total_articles}
+                </span>
+              )}
+            </div>
+
+            {/* Article list accordion — shown as soon as article_list arrives */}
+            {(() => {
+              const artList = scraper.article_list ?? [];
+              const curIdx = scraper.current_article_index; // 1-based
+              if (artList.length === 0 && scraper.total_articles === 0) return null;
+
+              const displayList = artList.length > 0
+                ? artList
+                : Array.from({ length: scraper.total_articles }, (_, i) => `Makale ${i + 1}`);
+
+              return (
+                <ul className="pb-2 space-y-0.5 max-h-48 overflow-y-auto">
+                  {displayList.map((title, i) => {
+                    const oneBasedIdx = i + 1;
+                    const isDone    = oneBasedIdx < curIdx;
+                    const isLoading = oneBasedIdx === curIdx;
+                    const displayTitle = isLoading && scraper.current_article
+                      ? scraper.current_article
+                      : (title || `Makale ${oneBasedIdx}`);
+
+                    return (
+                      <li
+                        key={i}
+                        className={`flex items-start gap-2 px-4 py-1 text-xs transition-colors duration-300 ${
+                          isLoading ? 'bg-blue-100' : isDone ? 'opacity-60' : 'opacity-40'
+                        }`}
+                      >
+                        {isDone ? (
+                          <CheckCircle2 className="h-3 w-3 text-emerald-400 flex-shrink-0 mt-0.5" />
+                        ) : isLoading ? (
+                          <Loader2 className="h-3 w-3 text-blue-500 flex-shrink-0 mt-0.5 animate-spin" />
+                        ) : (
+                          <Clock className="h-3 w-3 text-slate-300 flex-shrink-0 mt-0.5" />
+                        )}
+                        <span className={`line-clamp-2 ${isLoading ? 'text-blue-700 font-medium' : isDone ? 'text-slate-500' : 'text-slate-400'}`}>
+                          {displayTitle}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Bekleyenler */}
+        {pending.map((name, i) => (
+          <div
+            key={`pending-${i}`}
+            className="flex items-center gap-2 px-4 py-2 bg-white"
+            style={{ animationDelay: `${i * 30}ms` }}
+          >
+            <Clock className="h-3 w-3 text-slate-300 flex-shrink-0" />
+            <span className="text-xs text-slate-400 truncate flex-1" title={name}>{name}</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -174,15 +348,9 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           </div>
         </div>
 
-        {/* Current Journal */}
-        {scraper.current_journal && (
-          <div className="bg-blue-50 rounded-lg p-4">
-            <p className="text-xs text-blue-600 font-medium mb-1">Şu an işleniyor</p>
-            <p className="text-sm font-semibold text-blue-900">{scraper.current_journal}</p>
-            <p className="text-xs text-blue-600 mt-1">
-              {scraper.current_journal_index} / {scraper.total_journals}
-            </p>
-          </div>
+        {/* Journal Queue */}
+        {(scraper.current_journal || (scraper.completed_journals?.length ?? 0) > 0) && (
+          <JournalQueue scraper={scraper} />
         )}
 
         {/* Last Error */}
@@ -362,8 +530,11 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
                 <span className="text-xs text-slate-400 w-16 flex-shrink-0">
                   {new Date(log.timestamp).toLocaleTimeString('tr-TR')}
                 </span>
-                <Badge variant={log.scraper_type === 'ieee' ? 'info' : 'success'} className="text-xs">
-                  {log.scraper_type === 'ieee' ? 'IEEE' : 'SD'}
+                <Badge
+                  variant={log.scraper_type === 'ieee' ? 'info' : log.scraper_type === 'acm' ? 'warning' : 'success'}
+                  className="text-xs"
+                >
+                  {log.scraper_type === 'ieee' ? 'IEEE' : log.scraper_type === 'acm' ? 'ACM' : 'SD'}
                 </Badge>
                 <span className={`px-2 py-0.5 rounded text-xs ${getLevelColor(log.level)}`}>
                   {log.level}
@@ -398,7 +569,7 @@ export default function ScrapersPage() {
             const newState = { ...prev };
             const sType = event.scraper_type;
 
-            if (sType === 'ieee' || sType === 'sciencedirect') {
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
               newState[sType] = {
                 ...newState[sType],
                 ...event.data
@@ -442,8 +613,8 @@ export default function ScrapersPage() {
           <h1 className="text-3xl font-bold text-slate-900">Scraper Kontrol</h1>
           <p className="mt-1 text-slate-500">Web scraper yönetimi ve izleme</p>
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[...Array(2)].map((_, i) => (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {[...Array(3)].map((_, i) => (
             <Card key={i}>
               <CardContent className="pt-6">
                 <div className="animate-pulse space-y-4">
@@ -482,7 +653,7 @@ export default function ScrapersPage() {
       </div>
 
       {/* Scraper Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {status && (
           <>
             <ScraperControl
@@ -502,6 +673,15 @@ export default function ScrapersPage() {
               onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
+            />
+            <ScraperControl
+              scraper={status.acm}
+              title="ACM Digital Library Scraper"
+              description="ACM akademik makalelerini toplar"
+              onStart={async (limit) => { await startAcmScraper(false, limit); await fetchStatus(); }}
+              onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
+              onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
+              onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
             />
           </>
         )}

@@ -75,6 +75,12 @@ export interface ScraperStatus {
   current_journal: string | null;
   current_journal_index: number;
   total_journals: number;
+  pending_journals: string[];
+  completed_journals: Array<{ name: string; articles_count: number }>;
+  article_list: string[];
+  current_article: string | null;
+  current_article_index: number;
+  total_articles: number;
   journals_scraped: number;
   issues_scraped: number;
   articles_scraped: number;
@@ -90,6 +96,7 @@ export interface ScraperStatus {
 export interface AllScrapersStatus {
   ieee: ScraperStatus;
   sciencedirect: ScraperStatus;
+  acm: ScraperStatus;
   any_running: boolean;
   all_completed: boolean;
 }
@@ -105,6 +112,7 @@ export interface GeneralStats {
   scrapers: {
     ieee_status: string;
     sciencedirect_status: string;
+    acm_status: string;
     any_running: boolean;
   };
 }

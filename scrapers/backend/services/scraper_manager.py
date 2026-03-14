@@ -72,7 +72,15 @@ class ScraperProgress:
         self.current_journal: Optional[str] = None
         self.current_journal_index: int = 0
         self.total_journals: int = 0
-        
+        self.pending_journals: List[str] = []   # Kalan tüm dergiler
+        self.completed_journals: List[Dict[str, Any]] = []  # [{name, articles_count}]
+
+        # Makale ilerleme
+        self.article_list: List[str] = []           # Mevcut journal'ın makale başlıkları (ön bilgi)
+        self.current_article: Optional[str] = None
+        self.current_article_index: int = 0
+        self.total_articles: int = 0
+
         # İstatistikler
         self.journals_scraped: int = 0
         self.issues_scraped: int = 0
@@ -174,6 +182,12 @@ class ScraperProgress:
             "current_journal": self.current_journal,
             "current_journal_index": self.current_journal_index,
             "total_journals": self.total_journals,
+            "pending_journals": self.pending_journals,
+            "completed_journals": self.completed_journals,
+            "article_list": self.article_list,
+            "current_article": self.current_article,
+            "current_article_index": self.current_article_index,
+            "total_articles": self.total_articles,
             "journals_scraped": self.journals_scraped,
             "issues_scraped": self.issues_scraped,
             "articles_scraped": self.articles_scraped,
@@ -191,6 +205,12 @@ class ScraperProgress:
         self.status = ScraperStatus.IDLE
         self.current_journal = None
         self.current_journal_index = 0
+        self.pending_journals = []
+        self.completed_journals = []
+        self.article_list = []
+        self.current_article = None
+        self.current_article_index = 0
+        self.total_articles = 0
         self.total_journals = 0
         self.journals_scraped = 0
         self.issues_scraped = 0
@@ -221,7 +241,7 @@ class ScraperProgress:
                 pass
         
         # Track UI-facing metric changes to keep the frontend progress bar fluid
-        if name in ('current_journal_index', 'journals_scraped', 'articles_scraped', 'articles_updated', 'errors_count'):
+        if name in ('current_journal_index', 'current_article_index', 'article_list', 'journals_scraped', 'articles_scraped', 'articles_updated', 'errors_count'):
             # Sadece koşuyorken ilerlemeyi fırlat (başlangıçtaki resetleri yoksaymak için)
             if getattr(self, '_status', None) == ScraperStatus.RUNNING:
                 try:
@@ -496,15 +516,28 @@ class ScraperManager:
                 journal_name = journal.get('name', 'Unknown')
                 progress.current_journal = journal_name
                 progress.current_journal_index = idx + 1
+                progress.pending_journals = [j.get('name', '') for j in all_journals[idx + 1:]]
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
                 progress.last_activity = datetime.utcnow()
-                
+
                 logger.info(f"[IEEE Thread] [{idx+1}/{len(all_journals)}] {journal_name} işleniyor...")
-                
+
+                def _ieee_article_list_cb(titles: List[str]):
+                    progress.article_list = titles
+
+                def _ieee_article_cb(art_idx: int, art_total: int, art_title: Optional[str]):
+                    progress.total_articles = art_total
+                    progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
+                    progress.current_article_index = art_idx
+
                 try:
                     import time
                     scrape_start_t = time.time()
                     # Scrape articles
-                    articles = scraper.scrape_journal_articles(journal, max_articles=self.ieee_max_articles)
+                    articles = scraper.scrape_journal_articles(journal, max_articles=self.ieee_max_articles, article_progress_callback=_ieee_article_cb, article_list_callback=_ieee_article_list_cb)
                     
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
@@ -540,16 +573,21 @@ class ScraperManager:
                             self._loop
                         )
                         result = future.result(timeout=30)  # 30 saniye timeout
-                        
+
+                        articles_created = result.get('articles_created', 0)
+                        progress.completed_journals.append({
+                            'name': journal_name,
+                            'articles_count': articles_created,
+                        })
                         progress.journals_scraped += 1
                         if result.get('issue_created'):
                             progress.issues_scraped += 1
-                        progress.articles_scraped += result.get('articles_created', 0)
+                        progress.articles_scraped += articles_created
                         progress.articles_updated += result.get('articles_updated', 0)
-                        
+
                         if articles:
-                            progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
-                            logger.success(f"[IEEE Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                            progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
+                            logger.success(f"[IEEE Thread] {journal_name}: {articles_created} makale eklendi")
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[IEEE Thread] {journal_name}: Makale yok, journal kaydedildi")
@@ -764,15 +802,28 @@ class ScraperManager:
                 journal_name = journal.get('name', 'Unknown')
                 progress.current_journal = journal_name
                 progress.current_journal_index = idx + 1
+                progress.pending_journals = [j.get('name', '') for j in all_journals[idx + 1:]]
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
                 progress.last_activity = datetime.utcnow()
-                
+
                 logger.info(f"[SD Thread] [{idx+1}/{len(all_journals)}] {journal_name} işleniyor...")
-                
+
+                def _sd_article_list_cb(titles: List[str]):
+                    progress.article_list = titles
+
+                def _sd_article_cb(art_idx: int, art_total: int, art_title: Optional[str]):
+                    progress.total_articles = art_total
+                    progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
+                    progress.current_article_index = art_idx
+
                 try:
                     import time
                     scrape_start_t = time.time()
                     # Scrape articles
-                    articles = scraper.scrape_journal_articles(journal, max_articles=self.sciencedirect_max_articles)
+                    articles = scraper.scrape_journal_articles(journal, max_articles=self.sciencedirect_max_articles, article_progress_callback=_sd_article_cb, article_list_callback=_sd_article_list_cb)
                     
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
@@ -809,16 +860,21 @@ class ScraperManager:
                             self._loop
                         )
                         result = future.result(timeout=30)  # 30 saniye timeout
-                        
+
+                        articles_created = result.get('articles_created', 0)
+                        progress.completed_journals.append({
+                            'name': journal_name,
+                            'articles_count': articles_created,
+                        })
                         progress.journals_scraped += 1
                         if result.get('issue_created'):
                             progress.issues_scraped += 1
-                        progress.articles_scraped += result.get('articles_created', 0)
+                        progress.articles_scraped += articles_created
                         progress.articles_updated += result.get('articles_updated', 0)
-                        
+
                         if articles:
-                            progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
-                            logger.success(f"[SD Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                            progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
+                            logger.success(f"[SD Thread] {journal_name}: {articles_created} makale eklendi")
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[SD Thread] {journal_name}: Makale yok, journal kaydedildi")
@@ -1034,15 +1090,28 @@ class ScraperManager:
                 journal_name = journal.get('name', 'Unknown')
                 progress.current_journal = journal_name
                 progress.current_journal_index = idx + 1
+                progress.pending_journals = [j.get('name', '') for j in all_journals[idx + 1:]]
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
                 progress.last_activity = datetime.utcnow()
-                
+
                 logger.info(f"[ACM Thread] [{idx+1}/{len(all_journals)}] {journal_name} işleniyor...")
-                
+
+                def _acm_article_list_cb(titles: List[str]):
+                    progress.article_list = titles
+
+                def _acm_article_cb(art_idx: int, art_total: int, art_title: Optional[str]):
+                    progress.total_articles = art_total
+                    progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
+                    progress.current_article_index = art_idx
+
                 try:
                     import time
                     scrape_start_t = time.time()
                     # Scrape articles
-                    articles = scraper.scrape_journal_articles(journal, max_articles=self.acm_max_articles)
+                    articles = scraper.scrape_journal_articles(journal, max_articles=self.acm_max_articles, article_progress_callback=_acm_article_cb, article_list_callback=_acm_article_list_cb)
                     
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
@@ -1078,16 +1147,21 @@ class ScraperManager:
                             self._loop
                         )
                         result = future.result(timeout=30)  # 30 saniye timeout
-                        
+
+                        articles_created = result.get('articles_created', 0)
+                        progress.completed_journals.append({
+                            'name': journal_name,
+                            'articles_count': articles_created,
+                        })
                         progress.journals_scraped += 1
                         if result.get('issue_created'):
                             progress.issues_scraped += 1
-                        progress.articles_scraped += result.get('articles_created', 0)
+                        progress.articles_scraped += articles_created
                         progress.articles_updated += result.get('articles_updated', 0)
-                        
+
                         if articles:
-                            progress.add_log("success", f"{journal.get('name')}: {result.get('articles_created', 0)} makale eklendi")
-                            logger.success(f"[ACM Thread] {journal_name}: {result.get('articles_created', 0)} makale eklendi")
+                            progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
+                            logger.success(f"[ACM Thread] {journal_name}: {articles_created} makale eklendi")
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[ACM Thread] {journal_name}: Makale yok, journal kaydedildi")

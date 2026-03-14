@@ -62,11 +62,15 @@ class Settings(BaseSettings):
         """ACM scraper etkin mi?"""
         return 'acm' in self.enabled_scrapers.lower()
     
+    # Scraper Base URLs
+    ieeexplore_base_url: str = Field(default="https://ieeexplore.ieee.org", alias="IEEEXPLORE_BASE_URL", description="IEEE Xplore base URL")
+    sciencedirect_base_url: str = Field(default="https://www.sciencedirect.com", alias="SCIENCEDIRECT_BASE_URL", description="ScienceDirect base URL")
+
     # Scraper Timeouts & Delays
     ieee_min_wait: int = Field(default=4, alias="IEEE_MIN_WAIT", description="IEEE scraper minimum bekleme süresi (sn)")
     ieee_max_wait: int = Field(default=10, alias="IEEE_MAX_WAIT", description="IEEE scraper maksimum bekleme süresi (sn)")
     ieee_page_load_timeout: int = Field(default=90, alias="IEEE_PAGE_LOAD_TIMEOUT", description="IEEE sayfa yükleme timeout (sn)")
-    
+
     sd_timeout: int = Field(default=90, alias="SD_TIMEOUT", description="Science Direct sayfa yükleme timeout (sn)")
     sd_implicit_wait: int = Field(default=90, alias="SD_IMPLICIT_WAIT", description="Science Direct implicit wait (sn)")
     

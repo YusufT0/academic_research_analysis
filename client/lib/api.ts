@@ -221,6 +221,25 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
+export async function startAcmScraper(headless = true, maxArticles = 10) {
+  return fetchApi('/scrapers/acm/start', {
+    method: 'POST',
+    body: JSON.stringify({ headless, max_articles: maxArticles }),
+  });
+}
+
+export async function stopAcmScraper() {
+  return fetchApi('/scrapers/acm/stop', { method: 'POST' });
+}
+
+export async function pauseAcmScraper() {
+  return fetchApi('/scrapers/acm/pause', { method: 'POST' });
+}
+
+export async function resumeAcmScraper() {
+  return fetchApi('/scrapers/acm/resume', { method: 'POST' });
+}
+
 export async function startAllScrapers(headless = true) {
   return fetchApi('/scrapers/start-all', {
     method: 'POST',

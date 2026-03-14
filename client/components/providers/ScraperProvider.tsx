@@ -4,7 +4,6 @@ import React, { createContext, useContext, useEffect, useRef, useState, useCallb
 import type { ScraperEvent } from '@/lib/types';
 import type { ConnectionStatus } from '@/lib/useScraperEvents';
 
-// Orijinal useScraperEvents hook'unun içeriğini taşıyoruz
 // Tüm sayfalarda tek bir websocket bağlantısı kullanılması için Context yapıldı
 
 interface ScraperContextType {
@@ -20,37 +19,64 @@ interface ScraperContextType {
 
 const ScraperContext = createContext<ScraperContextType | null>(null);
 
-export function ScraperProvider({ children, url }: { children: React.ReactNode, url?: string }) {
-    const autoReconnect = true;
-    const reconnectInterval = 3000;
-    const maxReconnectAttempts = 10;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_INTERVAL = 3000;
+const MAX_RECONNECT_INTERVAL = 30000;
+const PING_INTERVAL = 15000;
+const GHOST_TIMEOUT = 45000; // must match server-side (45s)
 
+function getBackoffDelay(attempt: number): number {
+    return Math.min(BASE_RECONNECT_INTERVAL * Math.pow(1.5, attempt), MAX_RECONNECT_INTERVAL);
+}
+
+export function ScraperProvider({ children, url }: { children: React.ReactNode; url?: string }) {
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
     const [lastEvent, setLastEvent] = useState<ScraperEvent | null>(null);
     const [events, setEvents] = useState<ScraperEvent[]>([]);
+    // Only for display — not used in reconnect logic to avoid stale closures
     const [reconnectCount, setReconnectCount] = useState(0);
 
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
     const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+    // Ref-based counter avoids stale closure in ws.onclose without recreating connect()
+    const reconnectCountRef = useRef(0);
+    // Prevent reconnect after intentional disconnect()
+    const intentionalCloseRef = useRef(false);
 
-    // Build WS URL
     const wsUrl = useMemo(() => {
         if (url) return url;
         if (typeof window === 'undefined') return '';
         const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
-        const baseUrl = apiUrl.replace('/api/v1', '').replace('http://', 'ws://').replace('https://', 'wss://');
+        const baseUrl = apiUrl
+            .replace('/api/v1', '')
+            .replace('http://', 'ws://')
+            .replace('https://', 'wss://');
         return `${baseUrl}/ws/scrapers/events`;
     }, [url]);
 
     const connect = useCallback(() => {
         if (!wsUrl || typeof window === 'undefined') return;
 
-        // Close existing connection
-        if (wsRef.current) {
+        // Clear any pending reconnect timer
+        if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+        }
+
+        // Clear any existing ping interval before creating a new one
+        if (pingIntervalRef.current) {
+            clearInterval(pingIntervalRef.current);
+            pingIntervalRef.current = null;
+        }
+
+        // Close existing socket gracefully
+        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+            wsRef.current.onclose = null; // prevent onclose from triggering reconnect
             wsRef.current.close();
         }
 
+        intentionalCloseRef.current = false;
         setConnectionStatus('connecting');
 
         try {
@@ -59,28 +85,23 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode, 
 
             ws.onopen = () => {
                 setConnectionStatus('connected');
+                reconnectCountRef.current = 0;
                 setReconnectCount(0);
 
-                // Heartbeat başlat: Her 15 saniyede bir ping gönder
+                // Heartbeat: keeps the server ghost-connection pruner from closing us
                 pingIntervalRef.current = setInterval(() => {
                     if (ws.readyState === WebSocket.OPEN) {
                         ws.send('ping');
                     }
-                }, 15000);
+                }, PING_INTERVAL);
             };
 
             ws.onmessage = (e) => {
                 try {
                     const event: ScraperEvent = JSON.parse(e.data);
-
-                    // Ignore pong responses silenty
-                    if (event.type === 'pong') return;
-
+                    if (event.type === 'pong') return; // heartbeat ack — ignore
                     setLastEvent(event);
-                    setEvents((prev) => {
-                        const next = [event, ...prev];
-                        return next.slice(0, 100); // Son 100 event
-                    });
+                    setEvents((prev) => [event, ...prev].slice(0, 100));
                 } catch {
                     // Invalid JSON — ignore
                 }
@@ -90,52 +111,58 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode, 
                 setConnectionStatus('disconnected');
                 wsRef.current = null;
 
-                if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+                if (pingIntervalRef.current) {
+                    clearInterval(pingIntervalRef.current);
+                    pingIntervalRef.current = null;
+                }
 
-                // Auto-reconnect
-                if (autoReconnect && reconnectCount < maxReconnectAttempts) {
+                if (intentionalCloseRef.current) return;
+
+                const attempt = reconnectCountRef.current;
+                if (attempt < MAX_RECONNECT_ATTEMPTS) {
                     setConnectionStatus('reconnecting');
+                    const delay = getBackoffDelay(attempt);
                     reconnectTimerRef.current = setTimeout(() => {
-                        setReconnectCount((c) => c + 1);
+                        reconnectCountRef.current += 1;
+                        setReconnectCount(reconnectCountRef.current);
                         connect();
-                    }, reconnectInterval);
+                    }, delay);
                 }
             };
 
             ws.onerror = () => {
-                // onclose will fire after this
+                // onclose fires after onerror — reconnect handled there
             };
         } catch {
             setConnectionStatus('disconnected');
         }
-    }, [wsUrl, autoReconnect, reconnectInterval, maxReconnectAttempts, reconnectCount]);
+        // wsUrl is the only external dep; reconnect logic uses refs to avoid stale closures
+    }, [wsUrl]);
 
-    // Connect on mount
+    // Connect on mount, cleanup on unmount
     useEffect(() => {
         connect();
-
         return () => {
-            if (reconnectTimerRef.current) {
-                clearTimeout(reconnectTimerRef.current);
-            }
-            if (pingIntervalRef.current) {
-                clearInterval(pingIntervalRef.current);
-            }
-            if (wsRef.current) {
-                wsRef.current.close();
-            }
+            intentionalCloseRef.current = true;
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+            if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+            if (wsRef.current) wsRef.current.close();
         };
     }, [connect]);
 
     const disconnect = useCallback(() => {
+        intentionalCloseRef.current = true;
         if (reconnectTimerRef.current) {
             clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
         }
         if (pingIntervalRef.current) {
             clearInterval(pingIntervalRef.current);
+            pingIntervalRef.current = null;
         }
         if (wsRef.current) {
             wsRef.current.close();
+            wsRef.current = null;
         }
         setConnectionStatus('disconnected');
     }, []);
@@ -145,7 +172,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode, 
         setLastEvent(null);
     }, []);
 
-    const value = {
+    const value: ScraperContextType = {
         connectionStatus,
         lastEvent,
         events,
@@ -163,7 +190,6 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode, 
     );
 }
 
-// Global olarak websocket'i dinlemek için yeni hook
 export function useGlobalScraperEvents(options?: { onEvent?: (event: ScraperEvent) => void }) {
     const context = useContext(ScraperContext);
 
@@ -172,11 +198,12 @@ export function useGlobalScraperEvents(options?: { onEvent?: (event: ScraperEven
     }
 
     const { onEvent } = options || {};
+    const onEventRef = useRef(onEvent);
+    onEventRef.current = onEvent;
 
-    // Sadece componenti render eden yer son event değiştiğinde onEvent'i tetiklesin
     useEffect(() => {
-        if (onEvent && context.lastEvent) {
-            onEvent(context.lastEvent);
+        if (onEventRef.current && context.lastEvent) {
+            onEventRef.current(context.lastEvent);
         }
     }, [context.lastEvent]);
 

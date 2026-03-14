@@ -247,7 +247,9 @@ class ACMScraper:
     def scrape_journal_articles(
         self,
         journal: Dict[str, Any],
-        max_articles: int = None
+        max_articles: int = None,
+        article_progress_callback=None,
+        article_list_callback=None,
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın son sayısındaki makaleleri toplar:
@@ -330,14 +332,28 @@ class ACMScraper:
                 article_list = article_list[:max_articles]
             
             logger.info(f"{len(article_list)} makale detayı toplanacak...")
-            
+
+            # Makale listesini (başlıklarla birlikte) UI'a bildir
+            if article_list_callback:
+                try:
+                    article_list_callback([a.get('title', '') for a in article_list])
+                except Exception:
+                    pass
+
             # 4) Her makale için detay sayfasına git ve bilgileri topla
             retry_queue = []
             consecutive_failures = 0
             
             for idx, article_stub in enumerate(article_list, 1):
                 self.check_stop_flag()
-                
+
+                # Makale başlamadan önce UI'a bildir (anlık güncelleme)
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_list), None)
+                    except Exception:
+                        pass
+
                 try:
                     article_url = article_stub.get('url', '')
                     
@@ -386,6 +402,12 @@ class ACMScraper:
                         logger.warning(f"Makale başarısız oldu, kuyruğa ekleniyor: {full_url}")
                         retry_queue.append(full_url)
                         consecutive_failures += 1
+
+                    if article_progress_callback:
+                        try:
+                            article_progress_callback(idx, len(article_list), article_data.get('title') if (success and article_data) else None)
+                        except Exception:
+                            pass
                     
                     # Üst üste çok hata olursa soğuma & restart
                     if consecutive_failures >= 3:

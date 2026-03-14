@@ -17,6 +17,8 @@ function getFullUrl(url: string): string {
     return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (url.includes('/science/') || url.includes('/pii/')) {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (url.includes('/doi/') || url.includes('/toc/') || url.includes('/abs/')) {
+    return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   }
   return url;
 }
@@ -51,6 +53,7 @@ interface ActiveFilters {
 const formatSourceName = (key: string) => {
   if (key === 'ieeexplore') return 'IEEE Xplore';
   if (key === 'sciencedirect') return 'Science Direct';
+  if (key === 'acm') return 'ACM Digital Library';
   return key;
 };
 
@@ -502,8 +505,8 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
             <div className="flex flex-wrap items-center gap-2 mt-2">
               <span className="text-sm text-slate-600">{article.journal_name}</span>
               {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
-              <Badge variant={article.source_website === 'ieeexplore' ? 'info' : 'success'} className="text-xs">
-                {article.source_website === 'ieeexplore' ? 'IEEE' : 'ScienceDirect'}
+              <Badge variant={article.source_website === 'ieeexplore' ? 'info' : article.source_website === 'acm' ? 'warning' : 'success'} className="text-xs">
+                {article.source_website === 'ieeexplore' ? 'IEEE' : article.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
               </Badge>
               {article.score && (
                 <span className="text-xs text-slate-400">score: {article.score.toFixed(1)}</span>

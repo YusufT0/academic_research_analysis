@@ -23,8 +23,10 @@ function getFullUrl(url: string, sourceWebsite: string): string {
     return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (sourceWebsite === 'sciencedirect') {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'acm') {
+    return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   }
-  
+
   return url;
 }
 
@@ -95,6 +97,7 @@ export default function JournalsPage() {
                 <option value="">Tüm Kaynaklar</option>
                 <option value="ieeexplore">IEEE Xplore</option>
                 <option value="sciencedirect">ScienceDirect</option>
+                <option value="acm">ACM Digital Library</option>
               </select>
               <select
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -144,8 +147,8 @@ export default function JournalsPage() {
                   <div className="flex-1 min-w-0">
                     <h3 className="font-semibold text-slate-900 line-clamp-2">{journal.name}</h3>
                     <div className="flex items-center gap-2 mt-2">
-                      <Badge variant={journal.source_website === 'ieeexplore' ? 'info' : 'success'}>
-                        {journal.source_website === 'ieeexplore' ? 'IEEE' : 'ScienceDirect'}
+                      <Badge variant={journal.source_website === 'ieeexplore' ? 'info' : journal.source_website === 'acm' ? 'warning' : 'success'}>
+                        {journal.source_website === 'ieeexplore' ? 'IEEE' : journal.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
                       </Badge>
                       {journal.open_access && (
                         <Badge variant="success">Open Access</Badge>

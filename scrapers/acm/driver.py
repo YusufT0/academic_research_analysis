@@ -25,6 +25,25 @@ from pathlib import Path
 
 from seleniumbase import SB
 
+# ── mycdp monkey-patch ────────────────────────────────────────────────────────
+# mycdp 1.3.2 doesn't know about DOM.adoptedStyleSheetsModified (Chrome 115+).
+# Without this patch every such CDP event causes a KeyError traceback in
+# seleniumbase's listener_loop, flooding the console with noise.
+try:
+    import mycdp.util as _cdp_util
+    _orig_parse = _cdp_util.parse_json_event
+
+    def _safe_parse_json_event(json_dict):
+        try:
+            return _orig_parse(json_dict)
+        except KeyError:
+            return None  # Unknown/unregistered CDP event — silently skip
+
+    _cdp_util.parse_json_event = _safe_parse_json_event
+except Exception:
+    pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 sys.path.insert(0, str(__file__).rsplit('acm', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('acm')

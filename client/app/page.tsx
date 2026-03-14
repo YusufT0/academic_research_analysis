@@ -23,8 +23,10 @@ function getFullUrl(url: string, sourceWebsite: string): string {
     return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (sourceWebsite === 'sciencedirect') {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'acm') {
+    return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   }
-  
+
   return url;
 }
 

@@ -23,8 +23,10 @@ function getFullUrl(url: string, sourceWebsite: string): string {
     return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (sourceWebsite === 'sciencedirect') {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'acm') {
+    return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   }
-  
+
   return url;
 }
 
@@ -96,6 +98,7 @@ export default function ArticlesPage() {
                   <option value="">Tümü</option>
                   <option value="ieeexplore">IEEE Xplore</option>
                   <option value="sciencedirect">ScienceDirect</option>
+                  <option value="acm">ACM Digital Library</option>
                 </select>
               </div>
               <div>
@@ -180,8 +183,8 @@ export default function ArticlesPage() {
                       {article.publication_year && (
                         <Badge variant="default">{article.publication_year}</Badge>
                       )}
-                      <Badge variant={article.source_website === 'ieeexplore' ? 'info' : 'success'}>
-                        {article.source_website === 'ieeexplore' ? 'IEEE' : 'ScienceDirect'}
+                      <Badge variant={article.source_website === 'ieeexplore' ? 'info' : article.source_website === 'acm' ? 'warning' : 'success'}>
+                        {article.source_website === 'ieeexplore' ? 'IEEE' : article.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
                       </Badge>
                       {article.open_access && (
                         <Badge variant="success">Open Access</Badge>

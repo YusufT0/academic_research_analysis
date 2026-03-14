@@ -139,28 +139,35 @@ def _configure_structlog():
                 colors=_supports_color(),
             )
         
+        # Scrapers that should be forwarded to the frontend via WebSocket
+        _SCRAPER_LOGGERS = frozenset({
+            'ieee_xplore', 'science_direct', 'acm',
+            'scraper_manager', 'rate_limiter',
+        })
+
         def _websocket_broadcaster(logger, log_method, event_dict):
-            """Websocket üzerinden frontend'e logları canlı yayınlamak için processor"""
+            """Websocket üzerinden frontend'e scraper loglarını canlı yayınlar."""
             try:
-                # İsimlendirme ve seviye çıkarma
                 level = event_dict.get('level', 'info').lower()
                 event_name = event_dict.get('event', '')
-                logger_name = event_dict.get('logger', 'system')
-                
-                # Frontend beklentisi 'ieee' veya 'sciencedirect'
-                scraper_name = 'system'
-                if 'ieee' in logger_name.lower() or '[ieee thread]' in event_name.lower():
+                logger_name = event_dict.get('logger', '')
+
+                # Sadece bilinen scraper logger'larını ilet; kütüphane gürültüsünü atla
+                if logger_name not in _SCRAPER_LOGGERS:
+                    return event_dict
+
+                # Scraper türünü belirle
+                ln = logger_name.lower()
+                en = event_name.lower()
+                if 'ieee' in ln or '[ieee thread]' in en:
                     scraper_name = 'ieee'
-                elif 'science' in logger_name.lower() or 'sd' in logger_name.lower() or '[sd thread]' in event_name.lower():
+                elif 'science' in ln or 'sd' in ln or '[sd thread]' in en:
                     scraper_name = 'sciencedirect'
+                elif 'acm' in ln or '[acm thread]' in en:
+                    scraper_name = 'acm'
                 else:
                     scraper_name = logger_name
-                
-                # Websocket router modülünü gecikmeli import ediyoruz (circular error olmaması için)
-                from backend.routers.websocket import ws_manager
-                
-                # Sadece scraper kaynaklı veya system mesajlarını atalım
-                # Diğer kütüphanelerden (noisy loggers) gelmemesi için
+
                 payload = {
                     "type": "log",
                     "scraper_type": scraper_name,
@@ -168,11 +175,14 @@ def _configure_structlog():
                     "data": {
                         "level": level,
                         "message": event_name,
-                        **{k: v for k, v in event_dict.items() if k not in ('level', 'event', 'timestamp', 'logger')}
+                        **{k: v for k, v in event_dict.items()
+                           if k not in ('level', 'event', 'timestamp', 'logger')}
                     }
                 }
-                
-                ws_manager.broadcast_from_thread(payload)
+
+                # Redis Pub/Sub üzerinden ilet (broadcast_from_thread'e gerek yok)
+                from backend.utils.redis_pubsub import redis_pubsub, SCRAPER_EVENTS_CHANNEL
+                redis_pubsub.publish_event_sync(SCRAPER_EVENTS_CHANNEL, payload)
             except Exception:
                 pass
             return event_dict

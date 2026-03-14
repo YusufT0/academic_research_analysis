@@ -18,12 +18,18 @@ interface UseScraperEventsOptions {
     url?: string;
     /** Auto-reconnect on disconnect (default: true) */
     autoReconnect?: boolean;
-    /** Reconnect interval in ms (default: 3000) */
+    /** Base reconnect interval in ms, doubles with each attempt (default: 3000) */
     reconnectInterval?: number;
     /** Max reconnect attempts (default: 10) */
     maxReconnectAttempts?: number;
     /** Event callback */
     onEvent?: (event: ScraperEvent) => void;
+}
+
+const MAX_RECONNECT_INTERVAL = 30000;
+
+function getBackoffDelay(base: number, attempt: number): number {
+    return Math.min(base * Math.pow(1.5, attempt), MAX_RECONNECT_INTERVAL);
 }
 
 // ==================== Hook ====================
@@ -46,6 +52,9 @@ export function useScraperEvents(options: UseScraperEventsOptions = {}) {
     const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
     const onEventRef = useRef(onEvent);
     onEventRef.current = onEvent;
+    // Ref-based counter avoids stale closure without recreating connect()
+    const reconnectCountRef = useRef(0);
+    const intentionalCloseRef = useRef(false);
 
     // Build WS URL
     const wsUrl = useMemo(() => {
@@ -59,11 +68,17 @@ export function useScraperEvents(options: UseScraperEventsOptions = {}) {
     const connect = useCallback(() => {
         if (!wsUrl || typeof window === 'undefined') return;
 
-        // Close existing connection
-        if (wsRef.current) {
+        if (reconnectTimerRef.current) {
+            clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+        }
+
+        if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+            wsRef.current.onclose = null;
             wsRef.current.close();
         }
 
+        intentionalCloseRef.current = false;
         setConnectionStatus('connecting');
 
         try {
@@ -72,6 +87,7 @@ export function useScraperEvents(options: UseScraperEventsOptions = {}) {
 
             ws.onopen = () => {
                 setConnectionStatus('connected');
+                reconnectCountRef.current = 0;
                 setReconnectCount(0);
             };
 
@@ -79,10 +95,7 @@ export function useScraperEvents(options: UseScraperEventsOptions = {}) {
                 try {
                     const event: ScraperEvent = JSON.parse(e.data);
                     setLastEvent(event);
-                    setEvents((prev) => {
-                        const next = [event, ...prev];
-                        return next.slice(0, 100); // Son 100 event
-                    });
+                    setEvents((prev) => [event, ...prev].slice(0, 100));
                     onEventRef.current?.(event);
                 } catch {
                     // Invalid JSON — ignore
@@ -93,44 +106,47 @@ export function useScraperEvents(options: UseScraperEventsOptions = {}) {
                 setConnectionStatus('disconnected');
                 wsRef.current = null;
 
-                // Auto-reconnect
-                if (autoReconnect && reconnectCount < maxReconnectAttempts) {
+                if (intentionalCloseRef.current) return;
+
+                const attempt = reconnectCountRef.current;
+                if (autoReconnect && attempt < maxReconnectAttempts) {
                     setConnectionStatus('reconnecting');
+                    const delay = getBackoffDelay(reconnectInterval, attempt);
                     reconnectTimerRef.current = setTimeout(() => {
-                        setReconnectCount((c) => c + 1);
+                        reconnectCountRef.current += 1;
+                        setReconnectCount(reconnectCountRef.current);
                         connect();
-                    }, reconnectInterval);
+                    }, delay);
                 }
             };
 
             ws.onerror = () => {
-                // onclose will fire after this
+                // onclose fires after onerror
             };
         } catch {
             setConnectionStatus('disconnected');
         }
-    }, [wsUrl, autoReconnect, reconnectInterval, maxReconnectAttempts, reconnectCount]);
+    }, [wsUrl, autoReconnect, reconnectInterval, maxReconnectAttempts]);
 
     // Connect on mount
     useEffect(() => {
         connect();
-
         return () => {
-            if (reconnectTimerRef.current) {
-                clearTimeout(reconnectTimerRef.current);
-            }
-            if (wsRef.current) {
-                wsRef.current.close();
-            }
+            intentionalCloseRef.current = true;
+            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+            if (wsRef.current) wsRef.current.close();
         };
     }, [connect]);
 
     const disconnect = useCallback(() => {
+        intentionalCloseRef.current = true;
         if (reconnectTimerRef.current) {
             clearTimeout(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
         }
         if (wsRef.current) {
             wsRef.current.close();
+            wsRef.current = null;
         }
         setConnectionStatus('disconnected');
     }, []);
