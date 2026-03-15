@@ -128,7 +128,7 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
         {/* Tamamlananlar */}
         {completed.map((j, i) => {
           const isOpen = expanded.has(j.name);
-          const localArticles = articlesByJournal[j.name] ?? [];
+          const localArticles = articlesByJournal[j.name] ?? j.article_list ?? [];
           return (
             <div key={`done-${i}`} className="bg-white">
               <button

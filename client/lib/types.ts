@@ -51,6 +51,7 @@ export interface Article {
   url: string;
   doi: string | null;
   abstract: string | null;
+  introduction: string | null;
   keywords: string[];
   authors: string[];
   publication_date: string | null;
@@ -87,7 +88,7 @@ export interface ScraperStatus {
   current_journal_index: number;
   total_journals: number;
   pending_journals: string[];
-  completed_journals: Array<{ name: string; articles_count: number }>;
+  completed_journals: Array<{ name: string; articles_count: number; article_list?: string[] }>;
   article_list: string[];
   current_article: string | null;
   current_article_index: number;

@@ -47,6 +47,7 @@ class ArticleResponse(BaseModel):
     doi: Optional[str] = None
     
     abstract: Optional[str] = None
+    introduction: Optional[str] = None
     keywords: List[str] = Field(default_factory=list)
     authors: List[str] = Field(default_factory=list)
     

@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from typing import List, Dict, Any, Optional
 import httpx
 from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
@@ -81,8 +82,8 @@ class OpenAlexClient:
         """
         all_results = []
         
-        # Clean DOIs
-        clean_dois = [doi.replace("https://doi.org/", "").strip() for doi in dois if doi]
+        # Clean DOIs — strip any number of doi.org URL prefixes (handles double-prefix like https://doi.org/https://doi.org/10.xxx)
+        clean_dois = [re.sub(r'^(https?://doi\.org/)+', '', doi.strip()) for doi in dois if doi]
         
         for i in range(0, len(clean_dois), self.chunk_size):
             chunk = clean_dois[i:i + self.chunk_size]

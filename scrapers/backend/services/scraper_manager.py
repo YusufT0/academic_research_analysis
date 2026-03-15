@@ -578,6 +578,7 @@ class ScraperManager:
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
+                            'article_list': progress.article_list.copy(),
                         })
                         progress.journals_scraped += 1
                         if result.get('issue_created'):
@@ -865,6 +866,7 @@ class ScraperManager:
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
+                            'article_list': progress.article_list.copy(),
                         })
                         progress.journals_scraped += 1
                         if result.get('issue_created'):
@@ -1152,6 +1154,7 @@ class ScraperManager:
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
+                            'article_list': progress.article_list.copy(),
                         })
                         progress.journals_scraped += 1
                         if result.get('issue_created'):

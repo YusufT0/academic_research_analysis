@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import List, Dict, Any
 from datetime import datetime
 
@@ -6,6 +7,10 @@ from backend.services.openalex.client import openalex_client
 from database.models import Article, Journal
 
 logger = logging.getLogger(__name__)
+
+def _normalize_doi(doi: str) -> str:
+    """Herhangi bir DOI formatını temiz formata indirger (prefix'leri soyar, küçük harf yapar)."""
+    return re.sub(r'^(https?://doi\.org/)+', '', doi.strip()).lower()
 
 class CitationService:
     """
@@ -42,7 +47,9 @@ class CitationService:
             return 0
 
         # Filtreleme: Yalnızca DOI'ye sahip makaleler
-        doi_mapping = {a.doi: a for a in articles if a.doi}
+        # Anahtar olarak normalize edilmiş DOI kullan (prefix'siz, küçük harf)
+        # Böylece DB'de "https://doi.org/10.xxx" formatında saklanan DOI'ler de eşleşir
+        doi_mapping = {_normalize_doi(a.doi): a for a in articles if a.doi}
         dois_to_fetch = list(doi_mapping.keys())
         
         if not dois_to_fetch:
@@ -53,12 +60,12 @@ class CitationService:
 
         for work in works_data:
             doi_url = work.get("doi", "")
-            # OpenAlex formatıyla (https://doi.org/10.xxxx) eşleştirme
-            raw_doi = doi_url.replace("https://doi.org/", "")
-            
-            # Bazı DOI'ler eşleşmeyebilir, case-insensitive mapping kontrolü yapalım
-            target_article = doi_mapping.get(raw_doi)
-            
+            if not doi_url:
+                continue
+            # OpenAlex "https://doi.org/10.xxxx" formatında döndürür → normalize et
+            normalized = _normalize_doi(doi_url)
+            target_article = doi_mapping.get(normalized)
+
             if not target_article:
                 continue
 

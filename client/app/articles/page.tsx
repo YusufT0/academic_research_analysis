@@ -2,32 +2,465 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { Search, Filter, ExternalLink, ChevronLeft, ChevronRight, Unlock, Star, TrendingUp, Target } from 'lucide-react';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
+import {
+  Filter, ExternalLink, ChevronLeft, ChevronRight, Unlock, Star, TrendingUp, Target,
+  ChevronDown, Users, FileText, Calendar, Tag, Hash, Building2, Link2, BookOpen, Info,
+} from 'lucide-react';
+import { Card, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
-import { getArticles, type ArticleFilters } from '@/lib/api';
+import { getArticles, getArticle, type ArticleFilters } from '@/lib/api';
 import type { Article, PaginatedResponse } from '@/lib/types';
 
 function getFullUrl(url: string, sourceWebsite: string): string {
   if (!url) return '';
-  
-  // Zaten tam URL ise direkt döndür
-  if (url.startsWith('http://') || url.startsWith('https://')) {
-    return url;
-  }
-  
-  // Relative URL'yi kaynak siteye göre tam URL'ye çevir
-  if (sourceWebsite === 'ieeexplore') {
-    return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
-  } else if (sourceWebsite === 'sciencedirect') {
-    return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
-  } else if (sourceWebsite === 'acm') {
-    return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  return url;
+}
+
+function MetaItem({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: React.ReactNode;
+}) {
+  if (value === null || value === undefined || value === '') return null;
+  return (
+    <div className="flex items-start gap-2.5 py-2.5 border-b border-slate-100 last:border-0">
+      <div className="mt-0.5 text-slate-400 flex-shrink-0">{icon}</div>
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-widest mb-0.5">{label}</div>
+        <div className="text-sm text-slate-800 break-words">{value}</div>
+      </div>
+    </div>
+  );
+}
+
+function SectionHeading({
+  icon,
+  title,
+  count,
+  color,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  count?: number;
+  color: string;
+}) {
+  return (
+    <div className="flex items-center gap-2.5 mb-3">
+      <div className={`p-1.5 rounded-lg ${color}`}>{icon}</div>
+      <h4 className="text-xs font-bold text-slate-600 uppercase tracking-widest">
+        {title}
+        {count !== undefined && (
+          <span className="ml-1.5 font-normal normal-case text-slate-400">({count})</span>
+        )}
+      </h4>
+    </div>
+  );
+}
+
+function ArticleCard({ article }: { article: Article }) {
+  const [expanded, setExpanded] = useState(false);
+  const [fullArticle, setFullArticle] = useState<Article | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  async function handleExpand() {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && !fullArticle) {
+      setDetailLoading(true);
+      try {
+        const data = await getArticle(article.id);
+        setFullArticle(data);
+      } catch {
+        // fallback: liste verisini kullan
+      } finally {
+        setDetailLoading(false);
+      }
+    }
   }
 
-  return url;
+  const detail = fullArticle ?? article;
+
+  const sourceLabel =
+    article.source_website === 'ieeexplore' ? 'IEEE' :
+    article.source_website === 'acm' ? 'ACM' : 'ScienceDirect';
+  const sourceBadgeVariant =
+    article.source_website === 'ieeexplore' ? 'info' :
+    article.source_website === 'acm' ? 'warning' : 'success';
+
+  return (
+    <Card
+      className={`transition-all duration-300 ${
+        expanded
+          ? 'shadow-lg border-indigo-200 ring-1 ring-indigo-100'
+          : 'hover:shadow-md hover:border-indigo-100'
+      } group`}
+    >
+      <CardContent className="pt-6">
+        {/* ── Clickable header ── */}
+        <div className="cursor-pointer select-none" onClick={handleExpand}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <h3
+                className={`font-semibold text-lg leading-tight transition-colors ${
+                  expanded ? 'text-indigo-700' : 'text-slate-900 group-hover:text-indigo-700'
+                }`}
+              >
+                {article.title}
+              </h3>
+
+              <div className="flex flex-wrap items-center gap-2 mt-2">
+                <span className="text-sm text-slate-600 font-medium">{article.journal_name}</span>
+                {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
+                <Badge variant={sourceBadgeVariant}>{sourceLabel}</Badge>
+                {article.article_type && (
+                  <span className="text-xs text-slate-400 italic">{article.article_type}</span>
+                )}
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 mt-3">
+                {article.open_access && (
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 shadow-sm">
+                    <Unlock className="h-3.5 w-3.5" />
+                    <span>Açık Erişim</span>
+                  </div>
+                )}
+                {article.citation_count > 0 && (
+                  <div className="flex items-center gap-4 text-xs font-medium bg-gradient-to-r from-purple-50 to-indigo-50 text-indigo-900 px-3 py-1 rounded-md border border-indigo-100 shadow-sm">
+                    <div className="flex items-center gap-1.5 font-bold">
+                      <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500" />
+                      <span>{article.citation_count} Atıf</span>
+                    </div>
+                    {article.citation_percentile && (
+                      <div
+                        className="flex items-center gap-1.5 border-l border-indigo-200 pl-4"
+                        title="Kendi alanında ve aynı yılda yayınlananlar arasındaki atıf yüzdeliği (100 en iyi)"
+                      >
+                        <TrendingUp className="h-3.5 w-3.5 text-indigo-500" />
+                        <span>%{article.citation_percentile} Dilim</span>
+                      </div>
+                    )}
+                    {article.fwci != null && (
+                      <div
+                        className="flex items-center gap-1.5 border-l border-indigo-200 pl-4"
+                        title="Field-Weighted Citation Impact: 1.0 dünya ortalamasıdır."
+                      >
+                        <Target className="h-3.5 w-3.5 text-indigo-500" />
+                        <span>FWCI: {article.fwci.toFixed(2)}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {article.authors.length > 0 && (
+                <p className="text-sm text-slate-500 mt-2">
+                  {article.authors.slice(0, 3).join(', ')}
+                  {article.authors.length > 3 && (
+                    <span className="text-slate-400"> ve {article.authors.length - 3} diğer</span>
+                  )}
+                </p>
+              )}
+
+              {!expanded && article.abstract && (
+                <p className="text-sm text-slate-600 mt-3 line-clamp-3">{article.abstract}</p>
+              )}
+
+              {!expanded && article.keywords.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {article.keywords.slice(0, 5).map((kw) => (
+                    <span
+                      key={kw}
+                      className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 text-xs rounded"
+                    >
+                      {kw}
+                    </span>
+                  ))}
+                  {article.keywords.length > 5 && (
+                    <span className="text-xs text-slate-400">+{article.keywords.length - 5} daha</span>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Right controls */}
+            <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
+              <a
+                href={getFullUrl(article.url, article.source_website)}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="p-2 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all"
+                title="Makaleyi aç"
+              >
+                <ExternalLink className="h-4.5 w-4.5" />
+              </a>
+              <div
+                className={`p-2 rounded-lg transition-all duration-300 ${
+                  expanded
+                    ? 'bg-indigo-100 text-indigo-600'
+                    : 'text-slate-400 group-hover:text-indigo-500 group-hover:bg-indigo-50'
+                }`}
+              >
+                <ChevronDown
+                  className={`h-4.5 w-4.5 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Expandable detail panel ── */}
+        <div
+          className={`grid transition-all duration-500 ease-in-out ${
+            expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+          }`}
+        >
+          <div className="overflow-hidden">
+            <div className="mt-5 border-t border-slate-100 pt-6 space-y-7">
+
+              {/* Loading skeleton */}
+              {detailLoading && (
+                <div className="animate-pulse space-y-4">
+                  <div className="h-3 bg-slate-200 rounded w-1/4" />
+                  <div className="space-y-2">
+                    <div className="h-3 bg-slate-100 rounded w-full" />
+                    <div className="h-3 bg-slate-100 rounded w-5/6" />
+                    <div className="h-3 bg-slate-100 rounded w-4/6" />
+                  </div>
+                </div>
+              )}
+
+              {/* Abstract */}
+              {!detailLoading && detail.abstract && (
+                <section>
+                  <SectionHeading
+                    icon={<FileText className="h-4 w-4 text-blue-600" />}
+                    title="Abstract"
+                    color="bg-blue-50"
+                  />
+                  <div className="relative">
+                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-blue-400 to-blue-200 rounded-full" />
+                    <p className="pl-4 text-sm text-slate-700 leading-relaxed">{detail.abstract}</p>
+                  </div>
+                </section>
+              )}
+
+              {/* Introduction */}
+              {!detailLoading && detail.introduction && (
+                <section>
+                  <SectionHeading
+                    icon={<BookOpen className="h-4 w-4 text-violet-600" />}
+                    title="Giriş"
+                    color="bg-violet-50"
+                  />
+                  <div className="relative">
+                    <div className="absolute left-0 top-0 bottom-0 w-1 bg-gradient-to-b from-violet-400 to-violet-200 rounded-full" />
+                    <p className="pl-4 text-sm text-slate-700 leading-relaxed">{detail.introduction}</p>
+                  </div>
+                </section>
+              )}
+
+              {/* Authors full list */}
+              {!detailLoading && detail.authors.length > 0 && (
+                <section>
+                  <SectionHeading
+                    icon={<Users className="h-4 w-4 text-amber-600" />}
+                    title="Yazarlar"
+                    count={detail.authors.length}
+                    color="bg-amber-50"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {detail.authors.map((author, i) => (
+                      <span
+                        key={i}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm rounded-full shadow-sm hover:border-amber-300 hover:text-amber-800 hover:bg-amber-50 transition-all"
+                      >
+                        <span className="text-[10px] text-slate-400 font-mono">{i + 1}</span>
+                        {author}
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Keywords full list */}
+              {!detailLoading && detail.keywords.length > 0 && (
+                <section>
+                  <SectionHeading
+                    icon={<Tag className="h-4 w-4 text-teal-600" />}
+                    title="Anahtar Kelimeler"
+                    count={detail.keywords.length}
+                    color="bg-teal-50"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    {detail.keywords.map((kw, i) => (
+                      <span
+                        key={i}
+                        className="inline-block px-3 py-1 bg-teal-50 text-teal-800 text-xs font-medium rounded-full border border-teal-200 hover:bg-teal-100 transition-colors"
+                      >
+                        {kw}
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* Metadata */}
+              {!detailLoading && (
+              <section>
+                <SectionHeading
+                  icon={<Hash className="h-4 w-4 text-slate-500" />}
+                  title="Metadata"
+                  color="bg-slate-100"
+                />
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 bg-slate-50 rounded-xl border border-slate-100 px-5 py-1">
+                  <MetaItem
+                    icon={<Hash className="h-3.5 w-3.5" />}
+                    label="DOI"
+                    value={
+                      detail.doi ? (
+                        <a
+                          href={`https://doi.org/${detail.doi}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-indigo-600 hover:text-indigo-800 underline underline-offset-2 font-mono text-xs break-all"
+                        >
+                          {detail.doi}
+                        </a>
+                      ) : null
+                    }
+                  />
+                  <MetaItem
+                    icon={<Calendar className="h-3.5 w-3.5" />}
+                    label="Yayın Tarihi"
+                    value={detail.publication_date}
+                  />
+                  <MetaItem
+                    icon={<BookOpen className="h-3.5 w-3.5" />}
+                    label="Dergi"
+                    value={detail.journal_name}
+                  />
+                  <MetaItem
+                    icon={<FileText className="h-3.5 w-3.5" />}
+                    label="Sayfalar"
+                    value={detail.pages}
+                  />
+                  <MetaItem
+                    icon={<Building2 className="h-3.5 w-3.5" />}
+                    label="Yayıncı"
+                    value={detail.publisher}
+                  />
+                  <MetaItem
+                    icon={<Info className="h-3.5 w-3.5" />}
+                    label="Makale Türü"
+                    value={detail.article_type}
+                  />
+                  <MetaItem
+                    icon={<Hash className="h-3.5 w-3.5" />}
+                    label="Sayı No"
+                    value={detail.issue_number}
+                  />
+                  <MetaItem
+                    icon={<Unlock className="h-3.5 w-3.5" />}
+                    label="Açık Erişim"
+                    value={
+                      detail.open_access ? (
+                        <span className="text-emerald-600 font-semibold">Evet</span>
+                      ) : (
+                        <span className="text-slate-500">Hayır</span>
+                      )
+                    }
+                  />
+                  <MetaItem
+                    icon={<Star className="h-3.5 w-3.5" />}
+                    label="Atıf Sayısı"
+                    value={detail.citation_count > 0 ? detail.citation_count.toLocaleString() : null}
+                  />
+                  <MetaItem
+                    icon={<TrendingUp className="h-3.5 w-3.5" />}
+                    label="Atıf Yüzdeliği"
+                    value={detail.citation_percentile ? `%${detail.citation_percentile}` : null}
+                  />
+                  <MetaItem
+                    icon={<Target className="h-3.5 w-3.5" />}
+                    label="FWCI"
+                    value={detail.fwci != null ? detail.fwci.toFixed(3) : null}
+                  />
+                  <MetaItem
+                    icon={<Calendar className="h-3.5 w-3.5" />}
+                    label="Son Atıf Güncelleme"
+                    value={
+                      detail.last_citation_update_date
+                        ? new Date(detail.last_citation_update_date).toLocaleDateString('tr-TR', {
+                            day: '2-digit', month: 'long', year: 'numeric',
+                          })
+                        : null
+                    }
+                  />
+                  <MetaItem
+                    icon={<Link2 className="h-3.5 w-3.5" />}
+                    label="OpenAlex ID"
+                    value={
+                      detail.openalex_id ? (
+                        <span className="font-mono text-xs text-slate-600">{detail.openalex_id}</span>
+                      ) : null
+                    }
+                  />
+                  <MetaItem
+                    icon={<Info className="h-3.5 w-3.5" />}
+                    label="OpenAlex İndeksli"
+                    value={
+                      detail.is_openalex_indexed !== undefined ? (
+                        detail.is_openalex_indexed ? (
+                          <span className="text-emerald-600 font-semibold">Evet</span>
+                        ) : (
+                          <span className="text-slate-400">Hayır</span>
+                        )
+                      ) : null
+                    }
+                  />
+                  <MetaItem
+                    icon={<Calendar className="h-3.5 w-3.5" />}
+                    label="Sisteme Eklenme"
+                    value={
+                      detail.created_at
+                        ? new Date(detail.created_at).toLocaleDateString('tr-TR', {
+                            day: '2-digit', month: 'long', year: 'numeric',
+                          })
+                        : null
+                    }
+                  />
+                  <MetaItem
+                    icon={<Calendar className="h-3.5 w-3.5" />}
+                    label="Son Güncelleme"
+                    value={
+                      detail.updated_at
+                        ? new Date(detail.updated_at).toLocaleDateString('tr-TR', {
+                            day: '2-digit', month: 'long', year: 'numeric',
+                          })
+                        : null
+                    }
+                  />
+                </div>
+              </section>
+              )}
+
+            </div>
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
 
 function ArticlesContent() {
@@ -45,15 +478,14 @@ function ArticlesContent() {
   });
   const [showFilters, setShowFilters] = useState(false);
 
-  // URL'den article_id geliyorsa veya değişiyorsa güncelle
   useEffect(() => {
     if (articleId) {
-      setFilters(prev => ({ ...prev, id: articleId, page: 1 }));
+      setFilters((prev) => ({ ...prev, id: articleId, page: 1 }));
     } else {
-      setFilters(prev => {
-        const newFilters = { ...prev };
-        delete newFilters.id;
-        return newFilters;
+      setFilters((prev) => {
+        const next = { ...prev };
+        delete next.id;
+        return next;
       });
     }
   }, [articleId]);
@@ -77,7 +509,10 @@ function ArticlesContent() {
     setFilters((prev) => ({ ...prev, page: newPage }));
   };
 
-  const handleFilterChange = (key: keyof ArticleFilters, value: string | number | boolean | undefined) => {
+  const handleFilterChange = (
+    key: keyof ArticleFilters,
+    value: string | number | boolean | undefined,
+  ) => {
     setFilters((prev) => ({ ...prev, [key]: value, page: 1 }));
   };
 
@@ -91,10 +526,7 @@ function ArticlesContent() {
             Toplam {data?.total.toLocaleString() || 0} makale
           </p>
         </div>
-        <Button
-          variant="secondary"
-          onClick={() => setShowFilters(!showFilters)}
-        >
+        <Button variant="secondary" onClick={() => setShowFilters(!showFilters)}>
           <Filter className="h-4 w-4 mr-2" />
           Filtreler
         </Button>
@@ -123,11 +555,18 @@ function ArticlesContent() {
                 <select
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                   value={filters.publication_year || ''}
-                  onChange={(e) => handleFilterChange('publication_year', e.target.value ? Number(e.target.value) : undefined)}
+                  onChange={(e) =>
+                    handleFilterChange(
+                      'publication_year',
+                      e.target.value ? Number(e.target.value) : undefined,
+                    )
+                  }
                 >
                   <option value="">Tümü</option>
                   {[2025, 2024, 2023, 2022, 2021, 2020].map((year) => (
-                    <option key={year} value={year}>{year}</option>
+                    <option key={year} value={year}>
+                      {year}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -136,7 +575,12 @@ function ArticlesContent() {
                 <select
                   className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                   value={filters.open_access === undefined ? '' : String(filters.open_access)}
-                  onChange={(e) => handleFilterChange('open_access', e.target.value === '' ? undefined : e.target.value === 'true')}
+                  onChange={(e) =>
+                    handleFilterChange(
+                      'open_access',
+                      e.target.value === '' ? undefined : e.target.value === 'true',
+                    )
+                  }
                 >
                   <option value="">Tümü</option>
                   <option value="true">Evet</option>
@@ -150,7 +594,11 @@ function ArticlesContent() {
                   value={`${filters.sort_by}-${filters.sort_order}`}
                   onChange={(e) => {
                     const [sortBy, sortOrder] = e.target.value.split('-');
-                    setFilters((prev) => ({ ...prev, sort_by: sortBy, sort_order: sortOrder as 'asc' | 'desc' }));
+                    setFilters((prev) => ({
+                      ...prev,
+                      sort_by: sortBy,
+                      sort_order: sortOrder as 'asc' | 'desc',
+                    }));
                   }}
                 >
                   <option value="publication_year-desc">Yıl (Yeni → Eski)</option>
@@ -174,9 +622,9 @@ function ArticlesContent() {
             <Card key={i}>
               <CardContent className="pt-6">
                 <div className="animate-pulse space-y-3">
-                  <div className="h-5 bg-slate-200 rounded w-3/4"></div>
-                  <div className="h-4 bg-slate-100 rounded w-1/2"></div>
-                  <div className="h-20 bg-slate-50 rounded"></div>
+                  <div className="h-5 bg-slate-200 rounded w-3/4" />
+                  <div className="h-4 bg-slate-100 rounded w-1/2" />
+                  <div className="h-20 bg-slate-50 rounded" />
                 </div>
               </CardContent>
             </Card>
@@ -188,100 +636,7 @@ function ArticlesContent() {
             </CardContent>
           </Card>
         ) : (
-          data?.items.map((article) => (
-            <Card key={article.id} className="hover:shadow-md transition-shadow">
-              <CardContent className="pt-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-slate-900 text-lg leading-tight">
-                      {article.title}
-                    </h3>
-                    
-                    <div className="flex flex-wrap items-center gap-2 mt-2">
-                      <span className="text-sm text-slate-600">{article.journal_name}</span>
-                      {article.publication_year && (
-                        <Badge variant="default">{article.publication_year}</Badge>
-                      )}
-                      <Badge variant={article.source_website === 'ieeexplore' ? 'info' : article.source_website === 'acm' ? 'warning' : 'success'}>
-                        {article.source_website === 'ieeexplore' ? 'IEEE' : article.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
-                      </Badge>
-                    </div>
-
-                    {/* Stats and Open Access */}
-                    <div className="flex flex-wrap items-center gap-3 mt-3">
-                      {article.open_access && (
-                        <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200 shadow-sm" title="Tam metin ücretsiz erişime açıktır">
-                          <Unlock className="h-3.5 w-3.5" />
-                          <span>Açık Erişim</span>
-                        </div>
-                      )}
-                      
-                      {article.citation_count > 0 && (
-                        <div className="flex items-center gap-4 text-xs font-medium bg-gradient-to-r from-purple-50 to-indigo-50 text-indigo-900 px-3 py-1 rounded-md border border-indigo-100 shadow-sm">
-                           <div className="flex items-center gap-1.5 font-bold">
-                              <Star className="h-3.5 w-3.5 text-yellow-500 fill-yellow-500" />
-                              <span>{article.citation_count} Atıf</span>
-                           </div>
-                           
-                           {article.citation_percentile && (
-                             <div className="flex items-center gap-1.5 border-l border-indigo-200 pl-4" title="Kendi alanında ve aynı yılda yayınlananlar arasındaki atıf yüzdeliği (100 en iyi)">
-                               <TrendingUp className="h-3.5 w-3.5 text-indigo-500" />
-                               <span>%{article.citation_percentile} Dilim</span>
-                             </div>
-                           )}
-
-                           {article.fwci != null && (
-                             <div className="flex items-center gap-1.5 border-l border-indigo-200 pl-4" title="Field-Weighted Citation Impact: 1.0 dünya ortalamasıdır. (Örn: 1.5 demek ortalamadan %50 daha fazla atıf alıyor demektir)">
-                               <Target className="h-3.5 w-3.5 text-indigo-500" />
-                               <span>FWCI: {article.fwci.toFixed(2)}</span>
-                             </div>
-                           )}
-                        </div>
-                      )}
-                    </div>
-                    
-                    {article.authors.length > 0 && (
-                      <p className="text-sm text-slate-500 mt-2">
-                        {article.authors.slice(0, 3).join(', ')}
-                        {article.authors.length > 3 && ` ve ${article.authors.length - 3} diğer`}
-                      </p>
-                    )}
-                    
-                    {article.abstract && (
-                      <p className="text-sm text-slate-600 mt-3 line-clamp-3">
-                        {article.abstract}
-                      </p>
-                    )}
-                    
-                    {article.keywords.length > 0 && (
-                      <div className="flex flex-wrap gap-1.5 mt-3">
-                        {article.keywords.slice(0, 5).map((keyword) => (
-                          <span
-                            key={keyword}
-                            className="inline-block px-2 py-0.5 bg-slate-100 text-slate-600 text-xs rounded"
-                          >
-                            {keyword}
-                          </span>
-                        ))}
-                        {article.keywords.length > 5 && (
-                          <span className="text-xs text-slate-400">+{article.keywords.length - 5}</span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  
-                  <a
-                    href={getFullUrl(article.url, article.source_website)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="flex-shrink-0 p-2 text-slate-400 hover:text-emerald-600 transition-colors"
-                  >
-                    <ExternalLink className="h-5 w-5" />
-                  </a>
-                </div>
-              </CardContent>
-            </Card>
-          ))
+          data?.items.map((article) => <ArticleCard key={article.id} article={article} />)
         )}
       </div>
 
@@ -317,10 +672,9 @@ function ArticlesContent() {
   );
 }
 
-
 export default function ArticlesPage() {
   return (
-    <Suspense fallback={<div className='p-8 text-center'>Yükleniyor...</div>}>
+    <Suspense fallback={<div className="p-8 text-center">Yükleniyor...</div>}>
       <ArticlesContent />
     </Suspense>
   );

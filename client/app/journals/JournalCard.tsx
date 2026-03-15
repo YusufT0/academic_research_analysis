@@ -86,10 +86,6 @@ export function JournalCard({ journal, getFullUrl }: JournalCardProps) {
           )}
         </div>
         
-        {journal.publisher && (
-          <p className="text-sm text-slate-500 mt-2">{journal.publisher}</p>
-        )}
-        
         <div className="flex flex-col gap-3 mt-4 pt-4 border-t border-slate-100">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
