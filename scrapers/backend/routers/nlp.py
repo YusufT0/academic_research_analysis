@@ -57,6 +57,7 @@ class ClusterSummary(BaseModel):
     id: str
     cluster_id: int
     label: Optional[str]
+    centroid: float
     article_count: int
     top_keywords: List[str]
     sample_titles: List[str]
@@ -144,7 +145,35 @@ async def train_clustering(
     except Exception as e:
         logger.error(f"Training error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@router.get("/get_bar_chart_input")
+async def get_bar_chart_input():
+    try:        
+        return await nlp_service.get_date_graph_input()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph error: {e}")
+        raise HTTPException(status_code = 500, detail= str(e))    
 
+@router.get("/get_pie_chart_input")
+async def get_pie_chart_input():
+    try:        
+        return await nlp_service.word_finding_pipeline()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph error: {e}")
+        raise HTTPException(status_code = 500, detail= str(e))    
+
+@router.get("/scatter_chart_input")
+async def get_pie_chart_input():
+    try:        
+        return await nlp_service.word_finding_pipeline()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph error: {e}")
+        raise HTTPException(status_code = 500, detail= str(e))    
 
 @router.get("/search", response_model=SearchResponse, summary="Benzer makaleleri ara")
 async def search_similar_articles(

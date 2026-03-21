@@ -31,6 +31,17 @@ class EmbeddingRepository(BaseRepository[ArticleEmbedding]):
             query["model_version"] = model_version
         return await ArticleEmbedding.find_one(query)
     
+    async def find_many_by_article_ids(
+    self, 
+    article_ids: List[PydanticObjectId],
+    model_version: Optional[str] = None
+    ) -> List[ArticleEmbedding]:
+        query = {"article_id": {"$in": article_ids}}
+        
+        if model_version:
+            query["model_version"] = model_version
+        return await ArticleEmbedding.find(query).to_list()
+    
     async def find_by_model_version(
         self, 
         model_version: str,
