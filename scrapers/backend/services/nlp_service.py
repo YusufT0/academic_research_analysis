@@ -62,19 +62,10 @@ class NLPService:
         
         # Models (lazy loading)
         self._embedder: Optional[SentenceTransformer] = None
-        self.clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=settings.nlp_min_cluster_size,
-                min_samples=settings.nlp_min_samples
-            )
         self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
-        self.reducer = umap.UMAP(
-                n_neighbors=settings.nlp_umap_n_neighbors,
-                n_components=settings.nlp_umap_n_components,
-                metric='cosine',
-                random_state=42
-            )
         self.encoded_query = None
         self.query = None
+        self.relevant_keywords = None
         self.cleaner_guy = spacy.load("en_core_web_sm")
         self.kw_model = KeyBERT(model=settings.nlp_embedder_model)
         # Cached data for fast search
@@ -211,12 +202,22 @@ class NLPService:
             
             # 3. UMAP ile boyut indirgeme
             logger.info("Reducing dimensions with UMAP...")
-            embeddings_reduced = self.reducer.fit_transform(embeddings_full)
+            reducer = umap.UMAP(
+                n_neighbors=settings.nlp_umap_n_neighbors,
+                n_components=settings.nlp_umap_n_components,
+                metric='cosine',
+                random_state=42
+            )
+            embeddings_reduced = reducer.fit_transform(embeddings_full)
             logger.success(f"Reduced to {embeddings_reduced.shape[1]} dimensions")
             
             # 4. HDBSCAN ile clustering
             logger.info("Clustering with HDBSCAN...")
-            cluster_labels = self.clusterer.fit_predict(embeddings_reduced)
+            clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=settings.nlp_min_cluster_size,
+                min_samples=settings.nlp_min_samples
+            )
+            cluster_labels = clusterer.fit_predict(embeddings_reduced)
             
             n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
             noise_count = (cluster_labels == -1).sum()
@@ -409,14 +410,22 @@ class NLPService:
                     
         return result
     
-    async def get_scatter_graph_input():
+    async def get_scatter_graph_input(self):
+        visualization_reducer = umap.UMAP(n_neighbors=5, n_components=2, metric='cosine', random_state=42)
+        embedded_words = [self.embedder.encode(word[0]) for word in self.relevant_keywords]
+        coords = visualization_reducer.fit_transform(embedded_words)
+
+        scatter_data = []
+        for idx, word_tuple in enumerate(self.relevant_keywords):
+            scatter_data.append({
+                "x": float(coords[idx][0]),
+                "y": float(coords[idx][1]),
+            })
+
+        return scatter_data
         
         pass
 
-    async def get_pie_chart_input():
-        
-        pass
-    
     async def _extract_relevance_of_articles(self):
         scores = []
         article_ids = self.best_cluster.article_ids
@@ -491,9 +500,19 @@ class NLPService:
         '''
 
         embedded_words = [self.embedder.encode(word[0]) for word in words]
-        embeddings_reduced = self.reducer.fit_transform(embedded_words)
-        self.clusterer.set_params(min_cluster_size=3)
-        cluster_labels = self.clusterer.fit_predict(embeddings_reduced)
+        reducer = umap.UMAP(
+                n_neighbors=settings.nlp_umap_n_neighbors,
+                n_components=settings.nlp_umap_n_components,
+                metric='cosine',
+                random_state=42
+            )
+        embeddings_reduced = reducer.fit_transform(embedded_words)
+        
+        clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=5,
+                min_samples=settings.nlp_min_samples
+            )
+        cluster_labels = clusterer.fit_predict(embeddings_reduced)
 
         clusters = {}
         
@@ -541,6 +560,11 @@ class NLPService:
 
 
     async def _extract_cluster_keywords(self):
+
+        '''
+        Fonksiyon, makalelerin abstractlarının içinden en önemli kelimeleri fetch ederek bizim sorgumuzla kıyaslar.
+        Sonuçta da bizim sorgumuza en çok benzeyen ve en önemli olan çıktılara ait bir liste verir.
+        '''
         abstracts = [self._preprocess_scientific_text(art.abstract) for art in self.articles]
         
         all_keywords_per_abstract = []
@@ -584,8 +608,8 @@ class NLPService:
                 score_idx += 1
             
             final_max_keywords.append((best_kw, max_score))
-        
-        return final_max_keywords
+        self.relevant_keywords = final_max_keywords
+        return self.relevant_keywords
 
     async def word_finding_pipeline(self):
         '''

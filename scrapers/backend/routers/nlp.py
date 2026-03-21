@@ -165,10 +165,10 @@ async def get_pie_chart_input():
         logger.error(f"Graph error: {e}")
         raise HTTPException(status_code = 500, detail= str(e))    
 
-@router.get("/scatter_chart_input")
+@router.get("/get_scatter_chart_input")
 async def get_pie_chart_input():
     try:        
-        return await nlp_service.word_finding_pipeline()
+        return await nlp_service.get_scatter_graph_input()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
