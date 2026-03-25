@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Play,
   Pause,
@@ -11,10 +11,13 @@ import {
   WifiOff,
   Radio,
   ChevronDown,
+  ChevronUp,
   CheckCircle2,
   Clock,
   Loader2,
   FileText,
+  Columns2,
+  AlignJustify,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -39,7 +42,6 @@ import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
 import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
 import { OpenAlexScanner } from '@/components/dashboard/OpenAlexScanner';
-import { ChevronUp } from 'lucide-react';
 
 // ==================== Status Config ====================
 
@@ -439,7 +441,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
   );
 }
 
-// ==================== Live Event Log ====================
+// ==================== Log Types & Helpers ====================
 
 interface LogEntry {
   timestamp: string;
@@ -448,101 +450,354 @@ interface LogEntry {
   scraper_type: string;
 }
 
+const SCRAPER_OPTIONS = [
+  { value: 'ieee', label: 'IEEE Xplore', variant: 'info' as const },
+  { value: 'sciencedirect', label: 'ScienceDirect', variant: 'success' as const },
+  { value: 'acm', label: 'ACM Digital Library', variant: 'warning' as const },
+];
+
+function scraperLabel(type: string) {
+  if (type === 'ieee') return 'IEEE';
+  if (type === 'acm') return 'ACM';
+  return 'SD';
+}
+
+function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' {
+  if (type === 'ieee') return 'info';
+  if (type === 'acm') return 'warning';
+  return 'success';
+}
+
+function getLevelColor(level: string) {
+  switch (level) {
+    case 'error': return 'text-red-600 bg-red-50';
+    case 'warning': return 'text-amber-600 bg-amber-50';
+    case 'success': return 'text-emerald-600 bg-emerald-50';
+    default: return 'text-blue-600 bg-blue-50';
+  }
+}
+
+function wsEventToLogEntry(e: ScraperEvent): LogEntry {
+  return {
+    timestamp: e.timestamp,
+    level: e.type === 'error' ? 'error' : (e.data?.level as string) || 'info',
+    message: (e.data?.message as string) || JSON.stringify(e.data),
+    scraper_type: e.scraper_type,
+  };
+}
+
+// ==================== Multi-Select Dropdown ====================
+
+interface ScraperMultiSelectProps {
+  selected: string[];
+  onChange: (selected: string[]) => void;
+}
+
+function ScraperMultiSelect({ selected, onChange }: ScraperMultiSelectProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const toggle = (value: string) => {
+    if (selected.includes(value)) {
+      if (selected.length === 1) return; // en az 1 seçili kalmalı
+      onChange(selected.filter((v) => v !== value));
+    } else {
+      onChange([...selected, value]);
+    }
+  };
+
+  const allSelected = selected.length === SCRAPER_OPTIONS.length;
+
+  const toggleAll = () => {
+    onChange(allSelected ? [SCRAPER_OPTIONS[0].value] : SCRAPER_OPTIONS.map((o) => o.value));
+  };
+
+  const displayLabel = allSelected
+    ? 'Tüm Scraperlar'
+    : selected.map((v) => scraperLabel(v)).join(', ');
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2 px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors min-w-[160px] justify-between"
+      >
+        <span className="text-slate-700 truncate">{displayLabel}</span>
+        <ChevronDown className={`h-4 w-4 text-slate-400 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-200 rounded-lg shadow-lg z-20 py-1">
+          {/* Tümünü seç / kaldır */}
+          <button
+            onClick={toggleAll}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 transition-colors text-slate-600"
+          >
+            <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${allSelected ? 'bg-slate-700 border-slate-700' : 'border-slate-300'}`}>
+              {allSelected && <CheckCircle2 className="h-3 w-3 text-white" />}
+            </span>
+            Tümü
+          </button>
+          <div className="border-t border-slate-100 my-1" />
+          {SCRAPER_OPTIONS.map((opt) => {
+            const isChecked = selected.includes(opt.value);
+            return (
+              <button
+                key={opt.value}
+                onClick={() => toggle(opt.value)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 transition-colors"
+              >
+                <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isChecked ? 'bg-slate-700 border-slate-700' : 'border-slate-300'}`}>
+                  {isChecked && <CheckCircle2 className="h-3 w-3 text-white" />}
+                </span>
+                <Badge variant={opt.variant} className="text-xs">{opt.label}</Badge>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== Single Log Row ====================
+
+function LogRow({ log }: { log: LogEntry }) {
+  return (
+    <div className="flex items-start gap-2 text-sm py-0.5">
+      <span className="text-xs text-slate-400 w-16 flex-shrink-0 pt-0.5">
+        {new Date(log.timestamp).toLocaleTimeString('tr-TR')}
+      </span>
+      <Badge variant={scraperBadgeVariant(log.scraper_type)} className="text-xs flex-shrink-0">
+        {scraperLabel(log.scraper_type)}
+      </Badge>
+      <span className={`px-1.5 py-0.5 rounded text-xs flex-shrink-0 ${getLevelColor(log.level)}`}>
+        {log.level}
+      </span>
+      <span className="text-slate-700 flex-1 break-words">{log.message}</span>
+    </div>
+  );
+}
+
+// ==================== Split Panel (kendi WS bağlantısı) ====================
+
+function useSplitLogPanel(scraperType: string) {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [connected, setConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pingRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+    const baseUrl = apiUrl
+      .replace('/api/v1', '')
+      .replace('http://', 'ws://')
+      .replace('https://', 'wss://');
+    const wsUrl = `${baseUrl}/ws/scrapers/events?scrapers=${scraperType}`;
+
+    let ws: WebSocket;
+    let destroyed = false;
+
+    const connect = () => {
+      if (destroyed) return;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (destroyed) { ws.close(); return; }
+        setConnected(true);
+        pingRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+        }, 15000);
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const event: ScraperEvent = JSON.parse(e.data);
+          if (event.type === 'pong' || event.type === 'connected' || event.type === 'subscribed') return;
+          if (event.type === 'log' || event.type === 'error') {
+            setLogs((prev) => [wsEventToLogEntry(event), ...prev].slice(0, 100));
+          }
+        } catch { /* ignore */ }
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null; }
+        if (!destroyed) setTimeout(connect, 5000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      destroyed = true;
+      if (pingRef.current) clearInterval(pingRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [scraperType]);
+
+  return { logs, connected };
+}
+
+function SplitPanel({ scraperType, label }: { scraperType: string; label: string }) {
+  const { logs, connected } = useSplitLogPanel(scraperType);
+
+  return (
+    <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden bg-white min-h-[300px]">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Badge variant={scraperBadgeVariant(scraperType)} className="text-xs">{label}</Badge>
+          <span className="text-xs text-slate-500">Loglar</span>
+        </div>
+        <span className={`flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
+          {connected ? 'Canlı' : 'Bağlanıyor...'}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-1 max-h-80">
+        {logs.length === 0 ? (
+          <p className="text-slate-400 text-xs text-center py-6">Henüz log yok</p>
+        ) : (
+          logs.map((log, i) => <LogRow key={i} log={log} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ==================== Live Event Log ====================
+
 function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; isWsConnected: boolean }) {
+  const { subscribe, subscribedScrapers } = useGlobalScraperEvents();
+  const [viewMode, setViewMode] = useState<'combined' | 'split'>('combined');
   const [polledLogs, setPolledLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchLogs = useCallback(async () => {
     try {
-      const data = await getScraperLogs('all', 30);
+      const scraperParam = subscribedScrapers.length === 3 ? 'all' : subscribedScrapers[0] ?? 'all';
+      const data = await getScraperLogs(scraperParam, 30);
       setPolledLogs(data.logs || []);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [subscribedScrapers]);
 
-  // Sadece ilk yüklemede ve fetchLogs değiştiğinde (asla değişmez) bir kere çalışır
   useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
+    if (viewMode === 'combined') fetchLogs();
+  }, [fetchLogs, viewMode]);
 
-  // Polled logs (fallback + initial)
   useEffect(() => {
-    // WS bağlıysa poll yapma (event'lere güven, gerçek zamanlı akar), değilse 5 saniyede bir poll yap
-    if (!isWsConnected) {
+    if (!isWsConnected && viewMode === 'combined') {
       const interval = setInterval(fetchLogs, 5000);
       return () => clearInterval(interval);
     }
-  }, [isWsConnected, fetchLogs]);
+  }, [isWsConnected, fetchLogs, viewMode]);
 
-  // Merge: WS events + polled logs
-  const wsLogEntries: LogEntry[] = wsEvents
-    .filter((e) => e.type === 'log' || e.type === 'error')
-    .map((e) => ({
-      timestamp: e.timestamp,
-      level: e.type === 'error' ? 'error' : (e.data?.level as string) || 'info',
-      message: (e.data?.message as string) || JSON.stringify(e.data),
-      scraper_type: e.scraper_type,
-    }));
+  // Subscription değişince backend'e bildir (combined modda)
+  const handleSelectionChange = useCallback((selected: string[]) => {
+    subscribe(selected);
+  }, [subscribe]);
 
-  const allLogs = [...wsLogEntries, ...polledLogs].slice(0, 50);
-
-  const getLevelColor = (level: string) => {
-    switch (level) {
-      case 'error': return 'text-red-600 bg-red-50';
-      case 'warning': return 'text-amber-600 bg-amber-50';
-      case 'success': return 'text-emerald-600 bg-emerald-50';
-      default: return 'text-blue-600 bg-blue-50';
+  // Mod değişince subscription'ı sıfırla
+  const handleModeChange = useCallback((mode: 'combined' | 'split') => {
+    setViewMode(mode);
+    if (mode === 'split') {
+      // Split modda global WS tüm scraper'ları alır (status/progress için)
+      subscribe(['ieee', 'sciencedirect', 'acm']);
     }
-  };
+  }, [subscribe]);
+
+  // Combined mod: WS events + polled logs merge
+  const wsLogEntries: LogEntry[] = wsEvents
+    .filter((e) => (e.type === 'log' || e.type === 'error') && subscribedScrapers.includes(e.scraper_type))
+    .map(wsEventToLogEntry);
+
+  const combinedLogs = [...wsLogEntries, ...polledLogs].slice(0, 50);
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <CardTitle>Son Loglar</CardTitle>
             <CardDescription>
               {isWsConnected ? 'Canlı takip (WebSocket)' : 'Scraper aktivite logları (polling)'}
             </CardDescription>
           </div>
-          {isWsConnected && (
-            <span className="flex items-center gap-1.5 text-xs text-emerald-600">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-              Canlı
-            </span>
-          )}
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Mod toggle */}
+            <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden">
+              <button
+                onClick={() => handleModeChange('combined')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${viewMode === 'combined' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              >
+                <AlignJustify className="h-3.5 w-3.5" />
+                Birleşik
+              </button>
+              <button
+                onClick={() => handleModeChange('split')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${viewMode === 'split' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              >
+                <Columns2 className="h-3.5 w-3.5" />
+                Bölünmüş
+              </button>
+            </div>
+
+            {/* Multi-select (yalnızca combined modda) */}
+            {viewMode === 'combined' && (
+              <ScraperMultiSelect
+                selected={subscribedScrapers}
+                onChange={handleSelectionChange}
+              />
+            )}
+
+            {/* Canlı indikatör */}
+            {isWsConnected && (
+              <span className="flex items-center gap-1.5 text-xs text-emerald-600">
+                <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                Canlı
+              </span>
+            )}
+          </div>
         </div>
       </CardHeader>
+
       <CardContent>
-        {loading ? (
+        {viewMode === 'split' ? (
+          // ── SPLIT MOD ──
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <SplitPanel scraperType="ieee" label="IEEE Xplore" />
+            <SplitPanel scraperType="sciencedirect" label="ScienceDirect" />
+            <SplitPanel scraperType="acm" label="ACM Digital Library" />
+          </div>
+        ) : loading ? (
+          // ── COMBINED MOD yükleniyor ──
           <div className="animate-pulse space-y-2">
             {[...Array(5)].map((_, i) => (
               <div key={i} className="h-8 bg-slate-100 rounded" />
             ))}
           </div>
-        ) : allLogs.length === 0 ? (
+        ) : combinedLogs.length === 0 ? (
           <p className="text-slate-500 text-sm text-center py-4">Henüz log yok</p>
         ) : (
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {allLogs.map((log, idx) => (
-              <div key={idx} className="flex items-start gap-2 text-sm">
-                <span className="text-xs text-slate-400 w-16 flex-shrink-0">
-                  {new Date(log.timestamp).toLocaleTimeString('tr-TR')}
-                </span>
-                <Badge
-                  variant={log.scraper_type === 'ieee' ? 'info' : log.scraper_type === 'acm' ? 'warning' : 'success'}
-                  className="text-xs"
-                >
-                  {log.scraper_type === 'ieee' ? 'IEEE' : log.scraper_type === 'acm' ? 'ACM' : 'SD'}
-                </Badge>
-                <span className={`px-2 py-0.5 rounded text-xs ${getLevelColor(log.level)}`}>
-                  {log.level}
-                </span>
-                <span className="text-slate-700 flex-1">{log.message}</span>
-              </div>
+          // ── COMBINED MOD loglar ──
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {combinedLogs.map((log, idx) => (
+              <LogRow key={idx} log={log} />
             ))}
           </div>
         )}

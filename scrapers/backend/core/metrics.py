@@ -48,6 +48,16 @@ DB_OPERATION_DURATION = Histogram(
     buckets=[0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0],
 )
 
+MONGODB_POOL_MAX_SIZE = Gauge(
+    "mongodb_pool_max_size",
+    "Configured MongoDB connection pool max size",
+)
+
+MONGODB_POOL_MIN_SIZE = Gauge(
+    "mongodb_pool_min_size",
+    "Configured MongoDB connection pool min size",
+)
+
 # ==================== Circuit Breaker Metrics ====================
 
 CIRCUIT_BREAKER_STATE = Gauge(
@@ -63,7 +73,26 @@ WS_CONNECTIONS = Gauge(
     "Active WebSocket connections",
 )
 
-# ==================== Redis Streams Metrics (Faz 6 hazırlık) ====================
+# ==================== Cache Metrics ====================
+
+CACHE_HITS = Counter(
+    "cache_hits_total",
+    "Total cache hits",
+    ["entity_type"],
+)
+
+CACHE_MISSES = Counter(
+    "cache_misses_total",
+    "Total cache misses",
+    ["entity_type"],
+)
+
+CACHE_MEMORY_USED_BYTES = Gauge(
+    "cache_memory_used_bytes",
+    "Redis memory used in bytes",
+)
+
+# ==================== Redis Streams Metrics ====================
 
 STREAM_MESSAGES_PUBLISHED = Counter(
     "stream_messages_published_total",

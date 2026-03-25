@@ -272,21 +272,32 @@ class ArticleRepository(BaseRepository[Article]):
         article.parse_publication_year()
         await article.insert()
         
-        # OpenAlex tetiklemesi (Redis Stream üzerinden)
-        if hasattr(article, "doi") and article.doi:
-            try:
-                from backend.services.stream_service import stream_service
-                if stream_service.is_connected:
-                    import asyncio
+        # ES indexleme + OpenAlex tetiklemesi (Redis Streams üzerinden)
+        try:
+            from backend.services.stream_service import stream_service
+            if stream_service.is_connected:
+                import asyncio
+                # ES write-through: her yeni/güncellenen makaleyi hemen indexle
+                article_dict = article.model_dump()
+                article_dict["id"] = str(article.id)
+                if article.journal_id:
+                    article_dict["journal_id"] = str(article.journal_id)
+                if article.issue_id:
+                    article_dict["issue_id"] = str(article.issue_id)
+                asyncio.create_task(
+                    stream_service.publish("article:scraped", article_dict)
+                )
+                # OpenAlex citation güncelleme
+                if hasattr(article, "doi") and article.doi:
                     asyncio.create_task(
                         stream_service.publish(
-                            "article:citation_needed", 
+                            "article:citation_needed",
                             {"article_id": str(article.id), "doi": article.doi}
                         )
                     )
-            except Exception as e:
-                logger.error(f"Failed to publish article:citation_needed for {article.id}: {e}")
-                
+        except Exception as e:
+            logger.error(f"Failed to publish stream events for {article.id}: {e}")
+
         return article, True
     
     async def bulk_create(self, articles_data: List[dict]) -> int:

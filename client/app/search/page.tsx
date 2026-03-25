@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import Link from 'next/link';
 import { Search, ExternalLink, FileText, User, Tag, Filter, X, BookOpen, Sparkles } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -419,7 +420,9 @@ export default function SearchPage() {
                     <CardContent className="pt-6">
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex-1 min-w-0">
-                          <h3 className="font-semibold text-slate-900 text-lg leading-tight">{article.title}</h3>
+                          <Link href={`/articles?article_id=${article.id}`}>
+                            <h3 className="font-semibold text-slate-900 text-lg leading-tight hover:text-emerald-700 transition-colors cursor-pointer">{article.title}</h3>
+                          </Link>
                           <div className="flex flex-wrap items-center gap-2 mt-2">
                             <span className="text-sm text-slate-600">{article.journal_name}</span>
                             {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
@@ -495,11 +498,13 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1 min-w-0">
             {/* Title with highlight */}
-            <h3 className="font-semibold text-slate-900 text-lg leading-tight">
-              {highlights?.title?.[0]
-                ? <HighlightedText html={highlights.title[0]} />
-                : article.title}
-            </h3>
+            <Link href={`/articles?article_id=${article.id}`}>
+              <h3 className="font-semibold text-slate-900 text-lg leading-tight hover:text-emerald-700 transition-colors cursor-pointer">
+                {highlights?.title?.[0]
+                  ? <HighlightedText html={highlights.title[0]} />
+                  : article.title}
+              </h3>
+            </Link>
 
             {/* Meta */}
             <div className="flex flex-wrap items-center gap-2 mt-2">

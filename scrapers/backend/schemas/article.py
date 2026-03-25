@@ -87,6 +87,7 @@ class ArticleListResponse(BaseModel):
     total_pages: int
     has_next: bool
     has_prev: bool
+    next_cursor: Optional[str] = None
 
 
 class ArticleStatsResponse(BaseModel):

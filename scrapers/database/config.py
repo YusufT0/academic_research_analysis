@@ -29,14 +29,14 @@ class DatabaseSettings:
         return os.getenv("MONGODB_PASSWORD")
 
     
-    # Connection Pool
+    # Connection Pool — env override olarak MONGODB_MIN_POOL_SIZE / MONGODB_MAX_POOL_SIZE ayarlayın
     @property
     def mongodb_min_pool_size(self) -> int:
-        return 1
-        
+        return int(os.getenv("MONGODB_MIN_POOL_SIZE", "5"))
+
     @property
     def mongodb_max_pool_size(self) -> int:
-        return 10
+        return int(os.getenv("MONGODB_MAX_POOL_SIZE", "50"))
     
     # Timeouts (ms)
     @property

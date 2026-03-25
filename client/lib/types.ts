@@ -239,7 +239,7 @@ export interface SearchSuggestion {
 // ==================== WebSocket Types ====================
 
 export interface ScraperEvent {
-  type: 'status_update' | 'progress' | 'log' | 'error' | 'completed' | 'started' | 'stopped' | 'pong';
+  type: 'status_update' | 'progress' | 'log' | 'error' | 'completed' | 'started' | 'stopped' | 'pong' | 'connected' | 'subscribed';
   scraper_type: string;
   timestamp: string;
   data: Record<string, unknown>;

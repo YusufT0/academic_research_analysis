@@ -253,7 +253,7 @@ class ElasticsearchService:
                 item["_id"] = hit["_id"]
                 item["_score"] = hit["_score"]
                 if "highlight" in hit:
-                    item["_highlight"] = hit["highlight"]
+                    item["highlights"] = hit["highlight"]
                 items.append(item)
             
             total = hits["total"]["value"] if isinstance(hits["total"], dict) else hits["total"]

@@ -15,6 +15,8 @@ interface ScraperContextType {
     disconnect: () => void;
     clearEvents: () => void;
     isConnected: boolean;
+    subscribedScrapers: string[];
+    subscribe: (scrapers: string[]) => void;
 }
 
 const ScraperContext = createContext<ScraperContextType | null>(null);
@@ -33,8 +35,8 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
     const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('disconnected');
     const [lastEvent, setLastEvent] = useState<ScraperEvent | null>(null);
     const [events, setEvents] = useState<ScraperEvent[]>([]);
-    // Only for display — not used in reconnect logic to avoid stale closures
     const [reconnectCount, setReconnectCount] = useState(0);
+    const [subscribedScrapers, setSubscribedScrapers] = useState<string[]>(['ieee', 'sciencedirect', 'acm']);
 
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -172,6 +174,15 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
         setLastEvent(null);
     }, []);
 
+    const subscribe = useCallback((scrapers: string[]) => {
+        const normalized = scrapers.length === 0 ? ['ieee', 'sciencedirect', 'acm'] : scrapers;
+        setSubscribedScrapers(normalized);
+        const ws = wsRef.current;
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'subscribe', scrapers: normalized }));
+        }
+    }, []);
+
     const value: ScraperContextType = {
         connectionStatus,
         lastEvent,
@@ -181,6 +192,8 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
         disconnect,
         clearEvents,
         isConnected: connectionStatus === 'connected',
+        subscribedScrapers,
+        subscribe,
     };
 
     return (

@@ -147,17 +147,34 @@ class CacheService:
     
     # ==================== Core Cache Operations ====================
     
+    @staticmethod
+    def _entity_type_from_key(key: str) -> str:
+        """Key'den entity type çıkar: academic:article:xxx -> article"""
+        parts = key.split(":")
+        return parts[1] if len(parts) > 1 else "unknown"
+
     async def get(self, key: str) -> Optional[Any]:
         """Cache'den değer al"""
         if not self.is_connected:
             return None
-        
+
         try:
             value = await self._client.get(key)
+            entity = self._entity_type_from_key(key)
             if value:
                 self._stats.hits += 1
+                try:
+                    from backend.core.metrics import CACHE_HITS
+                    CACHE_HITS.labels(entity_type=entity).inc()
+                except Exception:
+                    pass
                 return self._deserialize(value)
             self._stats.misses += 1
+            try:
+                from backend.core.metrics import CACHE_MISSES
+                CACHE_MISSES.labels(entity_type=entity).inc()
+            except Exception:
+                pass
             return None
         except Exception as e:
             logger.error(f"Cache get error [{key}]: {e}")
@@ -578,9 +595,16 @@ class CacheService:
             try:
                 redis_info = await self._client.info("memory")
                 redis_keys = await self._client.dbsize()
+                used_bytes = redis_info.get("used_memory", 0)
                 info["redis_memory_used"] = redis_info.get("used_memory_human", "N/A")
                 info["redis_memory_peak"] = redis_info.get("used_memory_peak_human", "N/A")
                 info["total_keys"] = redis_keys
+                # Prometheus gauge güncelle
+                try:
+                    from backend.core.metrics import CACHE_MEMORY_USED_BYTES
+                    CACHE_MEMORY_USED_BYTES.set(used_bytes)
+                except Exception:
+                    pass
             except Exception:
                 pass
         

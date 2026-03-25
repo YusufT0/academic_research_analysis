@@ -28,6 +28,7 @@ sys.path.insert(0, str(scrapers_path))
 from database import init_database_service, close_database, DatabaseService
 from database.repositories import JournalRepository
 from utils.logger import get_logger
+from backend.core.distributed_lock import DistributedScraperLock
 
 logger = get_logger('scraper_manager')
 
@@ -396,18 +397,23 @@ class ScraperManager:
         if self.ieee_progress.status == ScraperStatus.RUNNING:
             logger.warning("IEEE scraper already running")
             return False
-        
+
+        # Distributed lock — başka bir instance zaten çalıştırıyorsa engelle
+        if not await DistributedScraperLock.acquire("ieee"):
+            logger.warning("IEEE scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+            return False
+
         self.ieee_headless = headless
         self.ieee_max_articles = max_articles
-        
+
         # Reset flags
         self._ieee_stop_flag.clear()
         self._ieee_pause_flag.clear()
-        
+
         # Thread'de başlat - event loop'u bloklamaz
         self._ieee_future = self._executor.submit(self._run_ieee_scraper_sync)
         logger.info("IEEE scraper thread'de başlatıldı")
-        
+
         return True
     
     def _run_ieee_scraper_sync(self):
@@ -635,7 +641,12 @@ class ScraperManager:
                 except:
                     pass
             progress.last_activity = datetime.utcnow()
-    
+            # Distributed lock'u bırak
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    DistributedScraperLock.release("ieee"), self._loop
+                )
+
     async def stop_ieee(self) -> bool:
         """IEEE scraper'ı durdur"""
         if self.ieee_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
@@ -683,18 +694,23 @@ class ScraperManager:
         if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
             logger.warning("ScienceDirect scraper already running")
             return False
-        
+
+        # Distributed lock
+        if not await DistributedScraperLock.acquire("sciencedirect"):
+            logger.warning("ScienceDirect scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+            return False
+
         self.sciencedirect_headless = headless
         self.sciencedirect_max_articles = max_articles
-        
+
         # Reset flags
         self._sciencedirect_stop_flag.clear()
         self._sciencedirect_pause_flag.clear()
-        
+
         # Thread'de başlat - event loop'u bloklamaz
         self._sciencedirect_future = self._executor.submit(self._run_sciencedirect_scraper_sync)
         logger.info("ScienceDirect scraper thread'de başlatıldı")
-        
+
         return True
     
     def _run_sciencedirect_scraper_sync(self):
@@ -923,7 +939,12 @@ class ScraperManager:
                 except:
                     pass
             progress.last_activity = datetime.utcnow()
-    
+            # Distributed lock'u bırak
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    DistributedScraperLock.release("sciencedirect"), self._loop
+                )
+
     async def stop_sciencedirect(self) -> bool:
         """ScienceDirect scraper'ı durdur"""
         if self.sciencedirect_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
@@ -972,18 +993,23 @@ class ScraperManager:
         if self.acm_progress.status == ScraperStatus.RUNNING:
             logger.warning("ACM scraper already running")
             return False
-        
+
+        # Distributed lock
+        if not await DistributedScraperLock.acquire("acm"):
+            logger.warning("ACM scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+            return False
+
         self.acm_headless = headless
         self.acm_max_articles = max_articles
-        
+
         # Reset flags
         self._acm_stop_flag.clear()
         self._acm_pause_flag.clear()
-        
+
         # Thread'de başlat - event loop'u bloklamaz
         self._acm_future = self._executor.submit(self._run_acm_scraper_sync)
         logger.info("ACM scraper thread'de başlatıldı")
-        
+
         return True
     
     def _run_acm_scraper_sync(self):
@@ -1211,7 +1237,12 @@ class ScraperManager:
                 except:
                     pass
             progress.last_activity = datetime.utcnow()
-    
+            # Distributed lock'u bırak
+            if self._loop:
+                asyncio.run_coroutine_threadsafe(
+                    DistributedScraperLock.release("acm"), self._loop
+                )
+
     async def stop_acm(self) -> bool:
         """ACM scraper'ı durdur"""
         if self.acm_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:

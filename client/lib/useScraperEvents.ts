@@ -5,7 +5,7 @@ import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 // ==================== Types ====================
 
 export interface ScraperEvent {
-    type: 'status_update' | 'progress' | 'log' | 'error' | 'completed' | 'started' | 'stopped' | 'pong';
+    type: 'status_update' | 'progress' | 'log' | 'error' | 'completed' | 'started' | 'stopped' | 'pong' | 'connected' | 'subscribed';
     scraper_type: string;
     timestamp: string;
     data: Record<string, unknown>;

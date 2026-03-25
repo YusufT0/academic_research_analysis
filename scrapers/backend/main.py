@@ -33,7 +33,7 @@ from .routers import (
     nlp_router,
     websocket_router,
     search_router,
-    openalex_router
+    openalex_router,
 )
 
 from database import init_database, close_database
@@ -117,8 +117,20 @@ async def sync_es_on_startup():
             es_count = 0
             
         logger.info(f"Startup ES Sync Check: Mongo ({mongo_count}) vs ES ({es_count})")
-        
-        if mongo_count > 0 and mongo_count != es_count:
+
+        if mongo_count > 0 and es_count == 0:
+            # İlk kurulum: ES tamamen boşsa bulk sync yap
+            logger.info("ES boş — ilk kurulum bulk sync başlatılıyor...")
+        elif mongo_count > 0 and mongo_count != es_count:
+            # Sayı uyuşmazlığı: sadece ufak fark varsa sync, büyük farkta uyar
+            diff = abs(mongo_count - es_count)
+            if diff > mongo_count * 0.1:  # %10'dan fazla fark varsa sync
+                logger.info(f"ES desync fazla ({diff} döküman) — bulk sync başlatılıyor...")
+            else:
+                logger.info(f"ES küçük uyuşmazlık ({diff} döküman) — event-driven sync devrede, atlanıyor")
+                return
+
+        if mongo_count > 0 and (es_count == 0 or abs(mongo_count - es_count) > mongo_count * 0.1):
             logger.info("MongoDB -> ES senkronizasyonu başlatılıyor...")
             articles = await Article.find_all().to_list()
             
@@ -205,13 +217,27 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Elasticsearch başlatılamadı: {e}")
     
-    # Redis Streams Worker: Citation Updates
+    # Redis Streams Workers: ES indexleme + Citation Updates
     try:
+        from backend.services.stream_service import stream_service
+        from backend.services.es_stream_handler import es_stream_handler
         from backend.services.openalex.worker import citation_worker
+
+        await stream_service.connect()
+        es_stream_handler.register()
         citation_worker.register_workers()
-        logger.info("OpenAlex Citation worker kaydedildi.")
+        await stream_service.start_consumers()
+        logger.info("Stream service consumers başlatıldı (ES indexer + Citation worker).")
     except Exception as e:
-        logger.error(f"Citation worker kayıt edilemedi: {e}")
+        logger.error(f"Stream service başlatılamadı: {e}")
+
+    # Start WebSocket Redis Pub/Sub subscription (before first client connects)
+    try:
+        from backend.routers.websocket import ws_manager
+        await ws_manager.startup()
+        logger.success("WebSocket Redis Pub/Sub consumer başlatıldı")
+    except Exception as e:
+        logger.warning(f"WebSocket startup hatası: {e}")
 
     # Initialize scraper manager
     logger.info("Scraper manager başlatılıyor...")

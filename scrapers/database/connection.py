@@ -105,6 +105,15 @@ class DatabaseConnection:
                         raise beanie_error
                 
                 self._initialized = True
+
+                # Pool size'ı Prometheus'a kaydet
+                try:
+                    from backend.core.metrics import MONGODB_POOL_MAX_SIZE, MONGODB_POOL_MIN_SIZE
+                    MONGODB_POOL_MAX_SIZE.set(self.settings.mongodb_max_pool_size)
+                    MONGODB_POOL_MIN_SIZE.set(self.settings.mongodb_min_pool_size)
+                except Exception:
+                    pass
+
                 return True
                 
             except Exception as e:
