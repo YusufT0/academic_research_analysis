@@ -9,3 +9,4 @@ downloaded_files
 coverage
 .coverage
 .pytest_cache
+my-env/

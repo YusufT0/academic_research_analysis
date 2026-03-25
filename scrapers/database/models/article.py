@@ -10,7 +10,6 @@ from pydantic import Field
 
 from .base import TimestampMixin
 
-
 class Article(Document, TimestampMixin):
     """
     Akademik Makale Modeli

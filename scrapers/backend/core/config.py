@@ -85,23 +85,24 @@ class Settings(BaseSettings):
     pdf_download_chunk_size: int = Field(default=8192, alias="PDF_DOWNLOAD_CHUNK_SIZE", description="PDF dosya yazma parça boyutu (byte)")
     
     # NLP/Clustering Settings
-    nlp_prefer_pkl: bool = Field(
-        default=True,
-        alias="NLP_PREFER_PKL",
-        description="True: Önce PKL kullan, False: Önce DB kullan"
-    )
-    nlp_model_path: str = Field(
-        default="analyzer/clustering_model_.pkl", 
-        alias="NLP_MODEL_PATH",
-        description="Clustering model dosya yolu"
-    )
+    # nlp_prefer_pkl: bool = Field(
+    #     default=True,
+    #     alias="NLP_PREFER_PKL",
+    #     description="True: Önce PKL kullan, False: Önce DB kullan"
+    # )
+    # nlp_model_path: str = Field(
+    #     default="analyzer/clustering_model_.pkl", 
+    #     alias="NLP_MODEL_PATH",
+    #     description="Clustering model dosya yolu"
+    # )
     nlp_model_version: str = Field(
         default="v1.0", 
         alias="NLP_MODEL_VERSION",
         description="Model versiyonu"
     )
     nlp_embedder_model: str = Field(
-        default="all-MiniLM-L6-v2", 
+        # default="all-MiniLM-L6-v2", 
+        default= "allenai/aspire-sentence-embedder",
         alias="NLP_EMBEDDER_MODEL",
         description="SentenceTransformer model adı"
     )
@@ -111,7 +112,7 @@ class Settings(BaseSettings):
         description="UMAP n_neighbors parametresi"
     )
     nlp_umap_n_components: int = Field(
-        default=10, 
+        default=15, 
         alias="NLP_UMAP_N_COMPONENTS",
         description="UMAP çıktı boyutu"
     )

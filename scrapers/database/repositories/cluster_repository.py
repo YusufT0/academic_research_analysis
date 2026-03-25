@@ -40,6 +40,7 @@ class ClusterRepository(BaseRepository[Cluster]):
         query = {"model_version": model_version}
         if not include_noise:
             query["cluster_id"] = {"$ne": -1}
+        print("TRYING TO FIND")
         return await Cluster.find(query).to_list()
     
     async def find_cluster_by_article(
