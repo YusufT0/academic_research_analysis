@@ -41,6 +41,13 @@ class CitationWorker:
                 logger.info(f"Successfully updated citation data for Article (DOI: {doi})")
                 # İstenirse ES Indexleme stream'ine event atılabilir:
                 await stream_service.publish("article:indexed", {"article_id": str(article.id)})
+
+                # Depth-1 atıf grafiği oluştur (non-fatal)
+                try:
+                    from backend.services.openalex.citation_graph_service import citation_graph_service
+                    await citation_graph_service.build_graph(str(article.id), max_depth=1)
+                except Exception as graph_err:
+                    logger.warning(f"Graph build skipped for {article_id}: {graph_err}")
             else:
                 logger.info(f"OpenAlex did not find data for DOI: {doi}")
                 

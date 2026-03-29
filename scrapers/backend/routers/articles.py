@@ -230,6 +230,9 @@ async def search_articles(
                 "url": a.url,
                 "abstract": a.abstract[:200] + "..." if a.abstract and len(a.abstract) > 200 else a.abstract,
                 "keywords": a.keywords,
+                "citation_count": a.citation_count,
+                "openalex_id": a.openalex_id,
+                "is_openalex_indexed": a.is_openalex_indexed,
             }
             for a in items
         ],

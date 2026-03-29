@@ -29,25 +29,42 @@ from database import init_database_service, close_database, DatabaseService
 from database.repositories import JournalRepository
 from utils.logger import get_logger
 from backend.core.distributed_lock import DistributedScraperLock
+from backend.core.config import settings
 
 logger = get_logger('scraper_manager')
 
-# Pre-import scraper modules to avoid GIL deadlock in threads
-# Bu import'lar thread başlamadan önce yapılır
-logger.info("Scraper modülleri yükleniyor...")
-try:
-    from ieee_xplore.scraper import IEEEXploreScraper, ScraperStoppedException as IEEEScraperStoppedException
-    from science_direct.scraper import ScienceDirectScraper, ScraperStoppedException as SDScraperStoppedException
-    from acm.scraper import ACMScraper, ScraperStoppedException as ACMScraperStoppedException
-    # Birleşik exception - her scraper için de kullanılabilir
-    ScraperStoppedException = (IEEEScraperStoppedException, SDScraperStoppedException, ACMScraperStoppedException)
-    logger.success("Scraper modülleri yüklendi")
-except Exception as e:
-    logger.error(f"Scraper modülleri yüklenemedi: {e}")
-    IEEEXploreScraper = None
-    ScienceDirectScraper = None
-    ACMScraper = None
-    ScraperStoppedException = Exception  # Fallback
+# Scraper module references (lazy or eager based on SCRAPER_LAZY_LOAD)
+IEEEXploreScraper = None
+ScienceDirectScraper = None
+ACMScraper = None
+ScraperStoppedException = Exception  # Fallback
+
+_scraper_modules_loaded = False
+
+
+def _load_scraper_modules():
+    """Scraper modüllerini yükle (thread başlamadan önce çağrılmalı)"""
+    global IEEEXploreScraper, ScienceDirectScraper, ACMScraper, ScraperStoppedException, _scraper_modules_loaded
+    if _scraper_modules_loaded:
+        return
+    logger.info("Scraper modülleri yükleniyor...")
+    try:
+        from ieee_xplore.scraper import IEEEXploreScraper as _IEEE, ScraperStoppedException as IEEEScraperStoppedException
+        from science_direct.scraper import ScienceDirectScraper as _SD, ScraperStoppedException as SDScraperStoppedException
+        from acm.scraper import ACMScraper as _ACM, ScraperStoppedException as ACMScraperStoppedException
+        IEEEXploreScraper = _IEEE
+        ScienceDirectScraper = _SD
+        ACMScraper = _ACM
+        ScraperStoppedException = (IEEEScraperStoppedException, SDScraperStoppedException, ACMScraperStoppedException)
+        logger.success("Scraper modülleri yüklendi")
+    except Exception as e:
+        logger.error(f"Scraper modülleri yüklenemedi: {e}")
+    _scraper_modules_loaded = True
+
+
+# SCRAPER_LAZY_LOAD=false ise modülleri hemen yükle (eski davranış)
+if not settings.scraper_lazy_load:
+    _load_scraper_modules()
 
 
 class ScraperStatus(str, Enum):
@@ -433,10 +450,10 @@ class ScraperManager:
         scraper = None
         
         try:
-            # Scraper zaten import edildi (modül başında)
+            _load_scraper_modules()
             if IEEEXploreScraper is None:
                 raise Exception("IEEE scraper modülü yüklenemedi")
-            
+
             # Create and initialize
             logger.info("[IEEE Thread] Browser başlatılıyor...")
             print("[IEEE Thread] Browser başlatılıyor...", flush=True)
@@ -730,10 +747,10 @@ class ScraperManager:
         scraper = None
         
         try:
-            # Scraper zaten import edildi (modül başında)
+            _load_scraper_modules()
             if ScienceDirectScraper is None:
                 raise Exception("ScienceDirect scraper modülü yüklenemedi")
-            
+
             # Create and initialize
             logger.info("[SD Thread] Browser başlatılıyor...")
             print("[SD Thread] Browser başlatılıyor...", flush=True)
@@ -1029,10 +1046,10 @@ class ScraperManager:
         scraper = None
         
         try:
-            # Scraper zaten import edildi (modül başında)
+            _load_scraper_modules()
             if ACMScraper is None:
                 raise Exception("ACM scraper modülü yüklenemedi")
-            
+
             # Create and initialize
             logger.info("[ACM Thread] Browser başlatılıyor...")
             print("[ACM Thread] Browser başlatılıyor...", flush=True)
@@ -1508,7 +1525,7 @@ class ScraperManager:
                     
                     temp_scraper = None
                     try:
-                        # Scraper'ı oluştur ve başlat
+                        _load_scraper_modules()
                         if current_site == 'ieee':
                             if IEEEXploreScraper is None:
                                 raise Exception("IEEE scraper modülü yüklenemedi")

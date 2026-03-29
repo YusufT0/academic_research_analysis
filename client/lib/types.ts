@@ -236,6 +236,45 @@ export interface SearchSuggestion {
   score?: number;
 }
 
+// ==================== Citation Graph Types ====================
+
+export interface CitationGraphNode {
+  id: string;
+  title: string | null;
+  doi: string | null;
+  cited_by_count: number | null;
+  publication_year: number | null;
+  is_root: boolean;
+  is_internal: boolean;
+  internal_article_id: string | null;
+  depth: number;
+}
+
+export interface CitationGraphEdge {
+  source: string;
+  target: string;
+  depth: number;
+}
+
+export interface CitationGraphData {
+  root_article_id: string;
+  root_openalex_id: string;
+  max_depth: number;
+  node_count: number;
+  edge_count: number;
+  computed_at: string;
+  nodes: CitationGraphNode[];
+  edges: CitationGraphEdge[];
+}
+
+export interface CitationExpandData {
+  expanded_node_id: string;
+  node_count: number;
+  edge_count: number;
+  nodes: CitationGraphNode[];
+  edges: CitationGraphEdge[];
+}
+
 // ==================== WebSocket Types ====================
 
 export interface ScraperEvent {

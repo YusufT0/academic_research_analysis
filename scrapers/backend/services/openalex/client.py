@@ -108,6 +108,29 @@ class OpenAlexClient:
                 
         return all_results
 
+    async def get_citing_works(
+        self,
+        openalex_id: str,
+        per_page: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Verilen OpenAlex ID'sini cite eden çalışmaları getir.
+        GET /works?filter=cites:{openalex_id}&sort=cited_by_count:desc
+        Atıf sayısına göre azalan sırada döner (en etkili cite'lar önce).
+        """
+        params = {
+            "filter": f"cites:{openalex_id}",
+            "per-page": min(per_page, 50),
+            "select": "id,doi,title,cited_by_count,publication_year",
+            "sort": "cited_by_count:desc",
+        }
+        try:
+            data = await self._make_request("/works", params=params)
+            return data.get("results", [])
+        except Exception as e:
+            logger.error(f"get_citing_works failed for {openalex_id}: {e}")
+            return []
+
     async def get_source_by_identifier(self, issn: str = None, name: str = None) -> Optional[Dict[str, Any]]:
         """
         Fetch journal (source) data by ISSN or Name.

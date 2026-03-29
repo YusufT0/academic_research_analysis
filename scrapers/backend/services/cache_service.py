@@ -362,6 +362,28 @@ class CacheService:
         key = self._make_key("stats", "global")
         return await self.set(key, data, _get_settings().cache_ttl_stats)
     
+    # ==================== Citation Graph Cache ====================
+    
+    async def get_citation_graph(self, article_id: str, depth: int) -> Optional[Dict]:
+        """Atıf grafiği cache'den al"""
+        key = self._make_key("citation_graph", article_id, str(depth))
+        return await self.get(key)
+    
+    async def set_citation_graph(self, article_id: str, depth: int, data: Dict) -> bool:
+        """Atıf grafiği cache'e yaz"""
+        key = self._make_key("citation_graph", article_id, str(depth))
+        return await self.set(key, data, _get_settings().cache_ttl_citation_graph)
+    
+    async def invalidate_citation_graph(self, article_id: str) -> int:
+        """Belirli makaleye ait tüm atıf grafiği cache'lerini temizle"""
+        pattern = f"{self.prefix}:citation_graph:{article_id}:*"
+        return await self.delete_pattern(pattern)
+    
+    async def invalidate_all_citation_graphs(self) -> int:
+        """Tüm atıf grafiği cache'lerini temizle"""
+        pattern = f"{self.prefix}:citation_graph:*"
+        return await self.delete_pattern(pattern)
+    
     # ==================== List Cache ====================
     
     async def get_issue_articles(self, issue_id: str) -> Optional[List[Dict]]:

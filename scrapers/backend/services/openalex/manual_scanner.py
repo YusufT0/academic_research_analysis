@@ -98,7 +98,20 @@ class OpenAlexManualScanner:
                     self._emit_event("error", f"Update error: {str(e)}")
 
                 self.processed_articles += len(chunk)
-                
+
+                # Güncellenen makaleler için depth-1 atıf grafiği oluştur
+                from .citation_graph_service import citation_graph_service
+                for article in chunk:
+                    if not self.is_running:
+                        break
+                    if article.openalex_id:
+                        try:
+                            await citation_graph_service.build_graph(
+                                str(article.id), max_depth=1
+                            )
+                        except Exception as graph_err:
+                            logger.warning(f"Graph build skipped for {article.id}: {graph_err}")
+
                 # Progress raporla
                 self._emit_progress()
 

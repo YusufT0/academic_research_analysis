@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     
     # Scraper Settings
     auto_start_scrapers: bool = Field(default=False, alias="AUTO_START_SCRAPERS")
+    scraper_lazy_load: bool = Field(default=True, alias="SCRAPER_LAZY_LOAD", description="Scraper modülleri başlangıçta değil ilk kullanımda yüklensin mi")
     run_tests_on_startup: bool = Field(default=False, alias="RUN_TESTS_ON_STARTUP", description="Backend başlarken testler çalıştırılsın mı")
     scraper_headless: bool = Field(default=True, alias="SCRAPER_HEADLESS", description="Browser headless modda çalışsın mı")
     ieee_max_articles: int = Field(default=100, alias="IEEE_MAX_ARTICLES", description="IEEE scraper maksimum makale sayısı")
@@ -238,6 +239,26 @@ class Settings(BaseSettings):
         default=50,
         alias="OPENALEX_BULK_CHUNK_SIZE",
         description="Max chunk size for bulk requests"
+    )
+    citation_graph_max_depth: int = Field(
+        default=5,
+        alias="CITATION_GRAPH_MAX_DEPTH",
+        description="Maximum BFS traversal depth for citation graph collection"
+    )
+    citation_max_per_level: int = Field(
+        default=50,
+        alias="CITATION_MAX_PER_LEVEL",
+        description="Maximum citing works fetched per node per BFS level"
+    )
+    cache_ttl_citation_graph: int = Field(
+        default=3600,
+        alias="CACHE_TTL_CITATION_GRAPH",
+        description="Citation graph persistent cache TTL in seconds"
+    )
+    citation_graph_concurrency: int = Field(
+        default=8,
+        alias="CITATION_GRAPH_CONCURRENCY",
+        description="Max concurrent OpenAlex requests during citation graph BFS"
     )
 
     # ==================== Elasticsearch ====================

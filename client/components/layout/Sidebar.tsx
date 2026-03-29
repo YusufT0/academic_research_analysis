@@ -11,6 +11,7 @@ import {
   Database,
   Search,
   BarChart2,
+  Network,
 } from 'lucide-react';
 
 const navigation = [
@@ -19,6 +20,7 @@ const navigation = [
   { name: 'Dergiler', href: '/journals', icon: BookOpen },
   { name: 'Arama', href: '/search', icon: Search },
   { name: 'Trendler', href: '/trends', icon: TrendingUp },
+  { name: 'Atıf Haritası', href: '/citation-map', icon: Network },
   { name: 'Scraper', href: '/scrapers', icon: Database },
 ];
 

@@ -5,18 +5,10 @@ Clustering ve embedding iş mantığı
 
 import re
 # import pickle
-import numpy as np
-import spacy
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING
 from beanie import PydanticObjectId
 from collections import Counter
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sentence_transformers import SentenceTransformer, CrossEncoder
-import umap
-import hdbscan
-from sklearn.metrics.pairwise import cosine_similarity
-from keybert import KeyBERT
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -32,6 +24,42 @@ from backend.core.config import settings
 from utils.logger import get_logger
 
 logger = get_logger('nlp_service')
+
+# Ağır kütüphaneler lazy import edilir — modül yüklenirken değil,
+# NLPService ilk kullanıldığında yüklenir.
+np = None
+spacy = None
+SentenceTransformer = None
+CrossEncoder = None
+umap = None
+hdbscan = None
+cosine_similarity = None
+KeyBERT = None
+TfidfVectorizer = None
+
+def _ensure_nlp_imports():
+    """Ağır NLP/ML kütüphanelerini ilk ihtiyaç anında yükle."""
+    global np, spacy, SentenceTransformer, CrossEncoder, umap, hdbscan, cosine_similarity, KeyBERT, TfidfVectorizer
+    if np is not None:
+        return  # Zaten yüklendi
+    import numpy as _np
+    import spacy as _spacy
+    from sentence_transformers import SentenceTransformer as _ST, CrossEncoder as _CE
+    import umap as _umap
+    import hdbscan as _hdbscan
+    from sklearn.metrics.pairwise import cosine_similarity as _cs
+    from sklearn.feature_extraction.text import TfidfVectorizer as _tv
+    from keybert import KeyBERT as _KB
+    np = _np
+    spacy = _spacy
+    SentenceTransformer = _ST
+    CrossEncoder = _CE
+    umap = _umap
+    hdbscan = _hdbscan
+    cosine_similarity = _cs
+    KeyBERT = _KB
+    TfidfVectorizer = _tv
+    logger.info("NLP kütüphaneleri yüklendi")
 
 
 class NLPService:
@@ -53,46 +81,46 @@ class NLPService:
     def __init__(self):
         if self._initialized:
             return
-            
+
         # Repositories
         self.article_repo = ArticleRepository()
         self.embedding_repo = EmbeddingRepository()
         self.cluster_repo = ClusterRepository()
         self.analysis_repo = AnalysisRunRepository()
-        
+
         # Models (lazy loading)
-        self._embedder: Optional[SentenceTransformer] = None
-        self.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        self._embedder = None
+        self._cross_encoder = None
         self.encoded_query = None
         self.query = None
         self.relevant_keywords = None
-        self.cleaner_guy = spacy.load("en_core_web_sm")
-        self.kw_model = KeyBERT(model=settings.nlp_embedder_model)
+        self._cleaner_guy = None
+        self._kw_model = None
         # Cached data for fast search
-        self._cached_version: Optional[str] = None
-        self._cached_centroids: Optional[np.ndarray] = None
-        self._cached_cluster_ids: Optional[List[int]] = None
-        self.articles = None    
+        self._cached_version = None
+        self._cached_centroids = None
+        self._cached_cluster_ids = None
+        self.articles = None
         self._initialized = True
-        
+
         if not settings.nlp_lazy_init:
             logger.info("NLP Service tam ön yükleme yapıyor (NLP_LAZY_INIT=False)")
-            # Tetikleyiciler
+            _ensure_nlp_imports()
             try:
-                import umap
-                import hdbscan
-                from sklearn.metrics.pairwise import cosine_similarity
                 _ = self.embedder
-                self._load_pkl_model()
+                _ = self.cross_encoder
+                _ = self.cleaner_guy
+                _ = self.kw_model
             except Exception as e:
                 logger.warning(f"NLP Service ön yükleme hatası: {e}")
-        
-        logger.info("NLP Service initialized")
+        else:
+            logger.info("NLP Service initialized (lazy mode — kütüphaneler ilk kullanımda yüklenecek)")
     
     @property
     def embedder(self) -> "SentenceTransformer":
         """Lazy load embedder model"""
         if self._embedder is None:
+            _ensure_nlp_imports()
             logger.info(f"Loading embedder: {settings.nlp_embedder_model}")
             try:
                 self._embedder = SentenceTransformer(settings.nlp_embedder_model, device = "cuda")
@@ -101,7 +129,46 @@ class NLPService:
                 self._embedder = SentenceTransformer(settings.nlp_embedder_model)
                 
         return self._embedder
-    
+
+    @property
+    def cross_encoder(self) -> "CrossEncoder":
+        """Lazy load cross encoder model"""
+        if self._cross_encoder is None:
+            _ensure_nlp_imports()
+            logger.info("Loading cross encoder: cross-encoder/ms-marco-MiniLM-L-6-v2")
+            self._cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        return self._cross_encoder
+
+    @cross_encoder.setter
+    def cross_encoder(self, value):
+        self._cross_encoder = value
+
+    @property
+    def cleaner_guy(self):
+        """Lazy load spacy model"""
+        if self._cleaner_guy is None:
+            _ensure_nlp_imports()
+            logger.info("Loading spacy model: en_core_web_sm")
+            self._cleaner_guy = spacy.load("en_core_web_sm")
+        return self._cleaner_guy
+
+    @cleaner_guy.setter
+    def cleaner_guy(self, value):
+        self._cleaner_guy = value
+
+    @property
+    def kw_model(self):
+        """Lazy load KeyBERT model"""
+        if self._kw_model is None:
+            _ensure_nlp_imports()
+            logger.info(f"Loading KeyBERT model: {settings.nlp_embedder_model}")
+            self._kw_model = KeyBERT(model=settings.nlp_embedder_model)
+        return self._kw_model
+
+    @kw_model.setter
+    def kw_model(self, value):
+        self._kw_model = value
+
     def _clean_text(self, text: str) -> str:
         """Metni NLP için temizle"""
         text = str(text).lower()
@@ -156,6 +223,7 @@ class NLPService:
             Eğitim sonuç istatistikleri
         """
         # Version oluştur
+        _ensure_nlp_imports()
         if not model_version:
             model_version = f"v{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         
@@ -302,9 +370,9 @@ class NLPService:
     
     async def _create_cluster_documents(
         self,
-        cluster_labels: np.ndarray,
-        embeddings_full: np.ndarray,
-        embeddings_reduced: np.ndarray,
+        cluster_labels: "np.ndarray",
+        embeddings_full: "np.ndarray",
+        embeddings_reduced: "np.ndarray",
         article_ids: List[PydanticObjectId],
         valid_articles: List[Article],
         model_version: str
@@ -654,6 +722,7 @@ class NLPService:
             auto_train: bool = False
         ):
 
+        _ensure_nlp_imports()
         if not model_version:
             model_version = await self._resolve_model_db_first(auto_train)
 

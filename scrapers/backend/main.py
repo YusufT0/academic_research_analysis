@@ -34,6 +34,7 @@ from .routers import (
     websocket_router,
     search_router,
     openalex_router,
+    citation_graph_router,
 )
 
 from database import init_database, close_database
@@ -317,6 +318,7 @@ app.include_router(nlp_router, prefix="/api/v1")
 app.include_router(websocket_router)  # WebSocket — prefix yok, /ws/scrapers/events
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(openalex_router, prefix="/api/v1")
+app.include_router(citation_graph_router, prefix="/api/v1")
 
 # Register global error handlers
 register_error_handlers(app)

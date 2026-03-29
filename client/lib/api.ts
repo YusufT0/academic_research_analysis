@@ -325,3 +325,29 @@ export async function getSearchSuggestions(prefix: string, limit = 5): Promise<S
 export async function getSearchFacets(): Promise<SearchFacets> {
   return fetchApi<SearchFacets>('/search/facets');
 }
+
+// ==================== Citation Graph ====================
+
+export async function getCitationGraph(
+  articleId: string,
+  depth = 2,
+  forceRefresh = false,
+): Promise<import('./types').CitationGraphData> {
+  const params = new URLSearchParams({
+    article_id: articleId,
+    depth: String(depth),
+    force_refresh: String(forceRefresh),
+  });
+  return fetchApi<import('./types').CitationGraphData>(`/citation-graph?${params.toString()}`);
+}
+
+export async function expandCitationNode(
+  openalexId: string,
+  depth = 1,
+): Promise<import('./types').CitationExpandData> {
+  const params = new URLSearchParams({
+    openalex_id: openalexId,
+    depth: String(depth),
+  });
+  return fetchApi<import('./types').CitationExpandData>(`/citation-graph/expand?${params.toString()}`);
+}
