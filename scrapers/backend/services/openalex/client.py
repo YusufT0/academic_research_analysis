@@ -154,5 +154,59 @@ class OpenAlexClient:
             
         return None
 
+    async def search_author_by_name(self, name: str) -> Optional[Dict[str, Any]]:
+        """
+        Search for an author by name and return their OpenAlex profile including
+        summary_stats (h-index, i10-index, works_count, cited_by_count), affiliations, and topics.
+        """
+        params = {
+            "search": name,
+            "per-page": 1, # We take the most relevant match for now
+        }
+        try:
+            data = await self._make_request("/authors", params=params)
+            results = data.get("results", [])
+            if results:
+                return results[0]
+        except Exception as e:
+            logger.error(f"Failed to fetch OpenAlex author (name={name}): {e}")
+            
+        return None
+
+    async def get_work_by_doi(self, doi: str) -> Optional[Dict[str, Any]]:
+        """
+        DOI ile tek bir makale (work) getirir. Yazar ID çıkarımı için kullanılır.
+        """
+        clean_doi = re.sub(r'^(https?://doi\.org/)+', '', doi.strip())
+        if not clean_doi:
+            return None
+            
+        params = {
+            "filter": f"doi:{clean_doi}",
+            "per-page": 1,
+        }
+        try:
+            data = await self._make_request("/works", params=params)
+            results = data.get("results", [])
+            if results:
+                return results[0]
+        except Exception as e:
+            logger.error(f"Failed to fetch OpenAlex work by doi ({clean_doi}): {e}")
+            
+        return None
+
+    async def get_author_by_id(self, author_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Author ID'si (Örn: A12345678) ile yazar detaylarını çeker.
+        """
+        clean_id = author_id.split("/")[-1] if "/" in author_id else author_id
+        try:
+            data = await self._make_request(f"/authors/{clean_id}")
+            return data
+        except Exception as e:
+            logger.error(f"Failed to fetch OpenAlex author by id ({clean_id}): {e}")
+            
+        return None
+
 # Provide a singleton instance
 openalex_client = OpenAlexClient()

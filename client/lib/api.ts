@@ -351,3 +351,35 @@ export async function expandCitationNode(
   });
   return fetchApi<import('./types').CitationExpandData>(`/citation-graph/expand?${params.toString()}`);
 }
+
+// ==================== Authors ====================
+
+export interface AuthorFilters {
+  page?: number;
+  page_size?: number;
+  sort_by?: string;
+  search?: string;
+  min_articles?: number;
+}
+
+export async function getAuthors(filters: AuthorFilters = {}) {
+  const params = new URLSearchParams();
+  if (filters.page) params.set('page', filters.page.toString());
+  if (filters.page_size) params.set('page_size', filters.page_size.toString());
+  if (filters.sort_by) params.set('sort_by', filters.sort_by);
+  if (filters.search) params.set('search', filters.search);
+  if (filters.min_articles) params.set('min_articles', filters.min_articles.toString());
+
+  return fetchApi<any>(`/authors?${params.toString()}`);
+}
+
+export async function getAuthorProfile(name: string) {
+  return fetchApi<any>(`/authors/${encodeURIComponent(name)}`);
+}
+
+export async function getAuthorArticles(name: string, page: number = 1, page_size: number = 15) {
+  const params = new URLSearchParams();
+  params.set('page', page.toString());
+  params.set('page_size', page_size.toString());
+  return fetchApi<any>(`/authors/${encodeURIComponent(name)}/articles?${params.toString()}`);
+}

@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import {
   Filter, ExternalLink, ChevronLeft, ChevronRight, Unlock, Star, TrendingUp, Target,
-  ChevronDown, Users, FileText, Calendar, Tag, Hash, Building2, Link2, BookOpen, Info,
+  ChevronDown, Users, FileText, Calendar, Tag, Hash, Building2, Link2, BookOpen, Info, Network
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -164,7 +164,18 @@ function ArticleCard({ article }: { article: Article }) {
 
               {article.authors.length > 0 && (
                 <p className="text-sm text-slate-500 mt-2">
-                  {article.authors.slice(0, 3).join(', ')}
+                  {article.authors.slice(0, 3).map((author, i) => (
+                    <span key={i}>
+                      <Link 
+                        href={`/authors/${encodeURIComponent(author)}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="hover:text-indigo-600 hover:underline transition-colors"
+                      >
+                        {author}
+                      </Link>
+                      {i < Math.min(article.authors.length, 3) - 1 ? ', ' : ''}
+                    </span>
+                  ))}
                   {article.authors.length > 3 && (
                     <span className="text-slate-400"> ve {article.authors.length - 3} diğer</span>
                   )}
@@ -240,6 +251,45 @@ function ArticleCard({ article }: { article: Article }) {
                 </div>
               )}
 
+              {/* Actions Box */}
+              {!detailLoading && (
+                <div className="flex flex-wrap items-center gap-3">
+                  {(() => {
+                    const isNotIndexed = detail.is_openalex_indexed === false;
+                    const hasNoCitations = !detail.citation_count || detail.citation_count === 0;
+                    const isDisabled = isNotIndexed || hasNoCitations;
+                    
+                    const tooltip = isNotIndexed 
+                      ? "Bu makale OpenAlex veritabanında bulunamadı" 
+                      : hasNoCitations 
+                      ? "Bu makalenin henüz atıfı bulunmamaktadır" 
+                      : "";
+
+                    return (
+                      <Link
+                        href={isDisabled ? '#' : `/citation-map?article_id=${detail.id}&title=${encodeURIComponent(detail.title)}`}
+                        onClick={(e) => { if (isDisabled) e.preventDefault(); }}
+                        className={isDisabled ? 'pointer-events-none cursor-not-allowed opacity-80' : ''}
+                        title={tooltip}
+                      >
+                        <Button 
+                          type="button"
+                          variant="secondary"
+                          disabled={isDisabled}
+                          className={`flex items-center gap-2 border ${
+                            isNotIndexed 
+                              ? 'bg-red-50 border-red-200 text-red-600 disabled:opacity-100 disabled:bg-red-50 disabled:text-red-600 disabled:border-red-200'
+                              : 'border-indigo-200 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50'
+                          }`}
+                        >
+                          <Network className="w-4 h-4" /> Atıf Haritası Üzerinde İncele
+                        </Button>
+                      </Link>
+                    );
+                  })()}
+                </div>
+              )}
+
               {/* Journal Context Box */}
               {!detailLoading && detail.journal_id && detail.issue_id && (
                 <div className="bg-indigo-50 p-4 rounded-xl border border-indigo-100 flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -303,13 +353,14 @@ function ArticleCard({ article }: { article: Article }) {
                   />
                   <div className="flex flex-wrap gap-2">
                     {detail.authors.map((author, i) => (
-                      <span
+                      <Link
                         key={i}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm rounded-full shadow-sm hover:border-amber-300 hover:text-amber-800 hover:bg-amber-50 transition-all"
+                        href={`/authors/${encodeURIComponent(author)}`}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm rounded-full shadow-sm hover:border-amber-300 hover:text-amber-800 hover:bg-amber-50 transition-all cursor-pointer"
                       >
                         <span className="text-[10px] text-slate-400 font-mono">{i + 1}</span>
                         {author}
-                      </span>
+                      </Link>
                     ))}
                   </div>
                 </section>

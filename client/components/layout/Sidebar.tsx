@@ -12,12 +12,14 @@ import {
   Search,
   BarChart2,
   Network,
+  Users,
 } from 'lucide-react';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Makaleler', href: '/articles', icon: FileText },
   { name: 'Dergiler', href: '/journals', icon: BookOpen },
+  { name: 'Yazarlar', href: '/authors', icon: Users },
   { name: 'Arama', href: '/search', icon: Search },
   { name: 'Trendler', href: '/trends', icon: TrendingUp },
   { name: 'Atıf Haritası', href: '/citation-map', icon: Network },

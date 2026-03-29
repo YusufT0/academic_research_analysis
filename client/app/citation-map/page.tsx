@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { forceCollide } from 'd3-force';
 import {
@@ -15,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
-import { getCitationGraph, expandCitationNode } from '@/lib/api';
+import { getCitationGraph, expandCitationNode, getArticle } from '@/lib/api';
 import type { CitationGraphData, CitationGraphNode, CitationExpandData, Article } from '@/lib/types';
 
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
@@ -41,8 +42,8 @@ function nodeColor(node: CitationGraphNode, maxCount: number): string {
 
 // ─── ArticleSelector ─────────────────────────────────────────────────────────
 
-function ArticleSelector({ onSelect }: { onSelect: (article: Article) => void }) {
-  const [query, setQuery] = useState('');
+function ArticleSelector({ onSelect, defaultQuery = '' }: { onSelect: (article: Article) => void, defaultQuery?: string }) {
+  const [query, setQuery] = useState(defaultQuery);
   const [results, setResults] = useState<Article[]>([]);
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -359,7 +360,11 @@ function NodeDetailPanel({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
-export default function CitationMapPage() {
+function CitationMapContent() {
+  const searchParams = useSearchParams();
+  const articleId = searchParams.get('article_id');
+  const initialTitle = searchParams.get('title') || '';
+
   const [selectedArticle, setSelectedArticle] = useState<Article | null>(null);
   const [graphData, setGraphData] = useState<CitationGraphData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -458,11 +463,26 @@ export default function CitationMapPage() {
     if (selectedArticle) loadGraph(selectedArticle, d);
   }, [selectedArticle, loadGraph]);
 
-  const handleNavigate = useCallback((articleId: string) => {
-    getCitationGraph(articleId, depth)
+  const handleNavigate = useCallback((navParamsId: string) => {
+    getCitationGraph(navParamsId, depth)
       .then(data => { setGraphData(data); setSelectedNode(null); selectedNodeIdRef.current = null; })
       .catch(() => setError('Makale grafiği yüklenemedi.'));
   }, [depth]);
+
+  // Execute on Mount to auto-load Map
+  useEffect(() => {
+    if (articleId) {
+      getArticle(articleId)
+        .then(data => {
+          handleArticleSelect(data);
+        })
+        .catch(err => {
+          console.error("Failed to autoselect article:", err);
+          setError("Makale bilgileri yüklenemedi.");
+        });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [articleId]);
 
   const handleHoverRelation = useCallback((nodeId: string | null) => {
     hoveredRelNodeIdRef.current = nodeId;
@@ -528,8 +548,8 @@ export default function CitationMapPage() {
         </p>
       </div>
 
-      <div className="flex flex-wrap items-end gap-4">
-        <ArticleSelector onSelect={handleArticleSelect} />
+      <div className="flex flex-wrap items-center gap-4">
+        <ArticleSelector onSelect={handleArticleSelect} defaultQuery={initialTitle} />
         <GraphControls
           depth={depth}
           onDepthChange={handleDepthChange}
@@ -670,5 +690,13 @@ export default function CitationMapPage() {
         )}
       </Card>
     </div>
+  );
+}
+
+export default function CitationMapPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center animate-pulse">Atıf haritası yükleniyor...</div>}>
+      <CitationMapContent />
+    </Suspense>
   );
 }

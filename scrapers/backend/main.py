@@ -23,7 +23,8 @@ from .core.error_handlers import register_error_handlers
 from .services.scraper_manager import ScraperManager
 from .services.cache_service import cache_service
 from .middleware import RequestIdMiddleware, TimingMiddleware, RequestLoggingMiddleware
-from prometheus_fastapi_instrumentator import Instrumentator
+from .routers import __all__ as index_all
+# Let's just import it cleanly below
 from .routers import (
     journals_router,
     issues_router,
@@ -35,7 +36,9 @@ from .routers import (
     search_router,
     openalex_router,
     citation_graph_router,
+    authors_router,
 )
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from database import init_database, close_database
 from utils.logger import get_logger
@@ -319,6 +322,7 @@ app.include_router(websocket_router)  # WebSocket — prefix yok, /ws/scrapers/e
 app.include_router(search_router, prefix="/api/v1")
 app.include_router(openalex_router, prefix="/api/v1")
 app.include_router(citation_graph_router, prefix="/api/v1")
+app.include_router(authors_router, prefix="/api/v1")
 
 # Register global error handlers
 register_error_handlers(app)

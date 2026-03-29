@@ -12,6 +12,7 @@ from .websocket import router as websocket_router
 from .search import router as search_router
 from .openalex import router as openalex_router
 from .citation_graph import router as citation_graph_router
+from .authors import router as authors_router
 
 __all__ = [
     "journals_router",
@@ -24,4 +25,5 @@ __all__ = [
     "search_router",
     "openalex_router",
     "citation_graph_router",
+    "authors_router",
 ]
