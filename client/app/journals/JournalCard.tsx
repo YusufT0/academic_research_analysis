@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ExternalLink, BookOpen, FileText, ChevronDown, ChevronUp, Unlock, Star, Presentation, Activity } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -10,15 +10,61 @@ import Link from 'next/link';
 interface JournalCardProps {
   journal: Journal;
   getFullUrl: (url: string, source: string) => string;
+  defaultExpandedIssueId?: string | null;
+  highlightArticleId?: string | null;
 }
 
-export function JournalCard({ journal, getFullUrl }: JournalCardProps) {
+export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highlightArticleId }: JournalCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
   const [articles, setArticles] = useState<Record<string, Article[]>>({});
   const [loadingArticles, setLoadingArticles] = useState<Record<string, boolean>>({});
+  const processedIssueId = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!defaultExpandedIssueId) return;
+    const issueId = defaultExpandedIssueId as string;
+
+    if (processedIssueId.current === issueId) return;
+
+    processedIssueId.current = issueId;
+
+    async function initAutoExpand() {
+      setExpanded(true);
+      setLoadingIssues(true);
+      try {
+        const data = await getJournalIssues(journal.id, 1, 100) as any;
+        const loadedIssues = Array.isArray(data) ? data : data?.items || [];
+        setIssues(loadedIssues);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoadingIssues(false);
+      }
+
+      setExpandedIssueId(issueId);
+      setLoadingArticles(prev => ({ ...prev, [issueId]: true }));
+      try {
+        const articlesData = await getArticles({ issue_id: issueId, page: 1, page_size: 100 });
+        setArticles(prev => ({ ...prev, [issueId]: articlesData.items || [] }));
+
+        if (highlightArticleId) {
+          setTimeout(() => {
+            const el = document.getElementById(`article-${highlightArticleId}`);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 800);
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoadingArticles(prev => ({ ...prev, [issueId]: false }));
+      }
+    }
+
+    initAutoExpand();
+  }, [defaultExpandedIssueId, highlightArticleId, journal.id]);
 
   const handleExpand = async () => {
     if (!expanded && issues.length === 0) {
@@ -187,7 +233,11 @@ export function JournalCard({ journal, getFullUrl }: JournalCardProps) {
                           ) : articles[issue.id]?.length > 0 ? (
                             <ul className="space-y-2">
                               {articles[issue.id].map(article => (
-                                <li key={article.id} className="bg-white p-3 rounded border border-slate-100 shadow-sm flex items-start gap-3 hover:border-purple-200 transition-colors">
+                                <li 
+                                  key={article.id} 
+                                  id={`article-${article.id}`} 
+                                  className={`bg-white p-3 rounded border ${article.id === highlightArticleId ? 'border-indigo-400 shadow-md ring-1 ring-indigo-400' : 'border-slate-100 shadow-sm hover:border-purple-200'} flex items-start gap-3 transition-colors`}
+                                >
                                   <FileText className="h-4 w-4 text-purple-400 mt-1 flex-shrink-0" />
                                   <div className="flex-1 min-w-0">
                                     <Link 

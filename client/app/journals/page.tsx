@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { Search, Filter, ExternalLink, ChevronLeft, ChevronRight, BookOpen, FileText, Unlock, Star, Presentation, Activity } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { getJournals, type JournalFilters } from '@/lib/api';
+import { getJournals, getJournal, type JournalFilters } from '@/lib/api';
 import type { Journal, PaginatedResponse } from '@/lib/types';
 import { JournalCard } from './JournalCard';
 
@@ -31,10 +32,18 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   return url;
 }
 
-export default function JournalsPage() {
+function JournalsContent() {
+  const searchParams = useSearchParams();
+  const journalIdParam = searchParams.get('journal_id');
+  const issueIdParam = searchParams.get('issue_id');
+  const articleIdParam = searchParams.get('article_id');
+
   const [data, setData] = useState<PaginatedResponse<Journal> | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const initializedUrlParam = useRef(false);
+  const skipSearchTrigger = useRef(false);
+
   const [filters, setFilters] = useState<JournalFilters>({
     page: 1,
     page_size: 12,
@@ -46,18 +55,36 @@ export default function JournalsPage() {
     async function fetchJournals() {
       setLoading(true);
       try {
+        if (journalIdParam && !initializedUrlParam.current) {
+          initializedUrlParam.current = true;
+          const journal = await getJournal(journalIdParam);
+          if (journal) {
+            skipSearchTrigger.current = true;
+            setSearchTerm(journal.name);
+            setData({ items: [journal], total: 1, page: 1, page_size: 1, total_pages: 1, has_next: false, has_prev: false });
+            return;
+          }
+        }
+
+        if (skipSearchTrigger.current) {
+          skipSearchTrigger.current = false;
+          return;
+        }
+
         const result = await getJournals({ ...filters, search: searchTerm || undefined });
         setData(result);
       } catch (err) {
         console.error(err);
       } finally {
-        setLoading(false);
+        if (!skipSearchTrigger.current) {
+          setLoading(false);
+        }
       }
     }
     
     const debounce = setTimeout(fetchJournals, 300);
     return () => clearTimeout(debounce);
-  }, [filters, searchTerm]);
+  }, [filters, searchTerm, journalIdParam]);
 
   const handlePageChange = (newPage: number) => {
     setFilters((prev) => ({ ...prev, page: newPage }));
@@ -145,7 +172,13 @@ export default function JournalsPage() {
           </div>
         ) : (
           data?.items.map((journal) => (
-            <JournalCard key={journal.id} journal={journal} getFullUrl={getFullUrl} />
+            <JournalCard 
+              key={journal.id} 
+              journal={journal} 
+              getFullUrl={getFullUrl} 
+              defaultExpandedIssueId={journal.id === journalIdParam ? issueIdParam : null}
+              highlightArticleId={journal.id === journalIdParam ? articleIdParam : null}
+            />
           ))
         )}
       </div>
@@ -182,3 +215,10 @@ export default function JournalsPage() {
   );
 }
 
+export default function JournalsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-slate-500">Yükleniyor...</div>}>
+      <JournalsContent />
+    </Suspense>
+  );
+}
