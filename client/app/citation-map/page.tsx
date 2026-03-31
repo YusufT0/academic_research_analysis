@@ -19,6 +19,8 @@ import { Button } from '@/components/ui/Button';
 import { getCitationGraph, expandCitationNode, getArticle } from '@/lib/api';
 import type { CitationGraphData, CitationGraphNode, CitationExpandData, Article } from '@/lib/types';
 
+export type HeatmapMode = 'classic' | 'citation' | 'year';
+
 const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
   ssr: false,
   loading: () => (
@@ -28,16 +30,28 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
   ),
 });
 
-// Root → turuncu/amber, diğerleri → yeşil heatmap
-function nodeColor(node: CitationGraphNode, maxCount: number): string {
-  if (node.is_root) return '#f59e0b'; // amber-400
+// Root → amber (245, 158, 11)
+function getCitationColor(node: CitationGraphNode, maxCount: number): string {
+  if (node.is_root) return 'rgb(245, 158, 11)';
   const count = node.cited_by_count ?? 0;
-  if (maxCount === 0) return '#d1fae5';
+  if (maxCount === 0) return 'rgb(209, 250, 229)';
   const t = Math.min(Math.log1p(count) / Math.log1p(maxCount), 1);
   const r = Math.round(209 - t * (209 - 6));
   const g = Math.round(250 - t * (250 - 95));
   const b = Math.round(229 - t * (229 - 70));
-  return `rgb(${r},${g},${b})`;
+  return `rgb(${r}, ${g}, ${b})`;
+}
+
+function getYearColor(node: CitationGraphNode, minYear: number, maxYear: number): string {
+  if (node.is_root) return 'rgb(245, 158, 11)';
+  const year = node.publication_year ?? minYear;
+  if (maxYear === minYear) return 'rgb(168, 85, 247)'; // purple
+  let t = (year - minYear) / (maxYear - minYear);
+  t = Math.max(0, Math.min(1, t));
+  const r = Math.round(59 + t * (239 - 59));
+  const g = Math.round(130 + t * (68 - 130));
+  const b = Math.round(246 + t * (68 - 246));
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 // ─── ArticleSelector ─────────────────────────────────────────────────────────
@@ -114,10 +128,25 @@ function ArticleSelector({ onSelect, defaultQuery = '' }: { onSelect: (article: 
 // ─── GraphControls ───────────────────────────────────────────────────────────
 
 function GraphControls({
-  depth, onDepthChange, onRefresh, disabled,
-}: { depth: number; onDepthChange: (d: number) => void; onRefresh: () => void; disabled: boolean }) {
+  depth, onDepthChange, onRefresh, disabled, heatmapMode, onHeatmapModeChange
+}: { 
+  depth: number; onDepthChange: (d: number) => void; onRefresh: () => void; disabled: boolean;
+  heatmapMode: HeatmapMode; onHeatmapModeChange: (m: HeatmapMode) => void;
+}) {
   return (
     <div className="flex items-center gap-4 flex-shrink-0">
+      <div className="flex items-center gap-2">
+        <label className="text-xs font-medium text-slate-500 whitespace-nowrap">Mod:</label>
+        <select
+          value={heatmapMode}
+          onChange={e => onHeatmapModeChange(e.target.value as HeatmapMode)}
+          className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white disabled:opacity-50 min-w-32"
+        >
+          <option value="classic">Klasik Ağ</option>
+          <option value="citation">Atıf Yoğunluğu</option>
+          <option value="year">Zaman (Yıl)</option>
+        </select>
+      </div>
       <div className="flex items-center gap-2">
         <label className="text-xs font-medium text-slate-500 whitespace-nowrap">Derinlik:</label>
         <select
@@ -139,24 +168,48 @@ function GraphControls({
 
 // ─── ColorLegend ─────────────────────────────────────────────────────────────
 
-function ColorLegend() {
+function ColorLegend({ mode, stats }: { mode: HeatmapMode, stats: { maxCitation: number, minYear: number, maxYear: number } }) {
+  if (mode === 'classic') {
+    return (
+      <div className="flex items-center gap-3 text-xs text-slate-500 flex-shrink-0">
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-3 h-3 rounded-full bg-amber-400 border border-amber-500" /> Seçili makale
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="inline-block w-3 h-3 rounded-full bg-emerald-500" /> Ağdaki makaleler
+        </span>
+      </div>
+    );
+  }
+
+  const isCitation = mode === 'citation';
+  const labelLeft = isCitation ? 'Az atıf' : String(stats.minYear);
+  const labelRight = isCitation ? 'Çok atıf' : String(stats.maxYear);
+
   return (
     <div className="flex items-center gap-3 text-xs text-slate-500 flex-shrink-0">
       <span className="flex items-center gap-1">
         <span className="inline-block w-3 h-3 rounded-full bg-amber-400 border border-amber-500" />
         Seçili makale
       </span>
-      <span>Az atıf</span>
+      <span>{labelLeft}</span>
       <div className="flex h-3 w-20 rounded overflow-hidden">
         {Array.from({ length: 12 }).map((_, i) => {
           const t = i / 11;
-          const r = Math.round(209 - t * 203);
-          const g = Math.round(250 - t * 155);
-          const b = Math.round(229 - t * 159);
+          let r, g, b;
+          if (isCitation) {
+            r = Math.round(209 - t * (209 - 6));
+            g = Math.round(250 - t * (250 - 95));
+            b = Math.round(229 - t * (229 - 70));
+          } else {
+            r = Math.round(59 + t * (239 - 59));
+            g = Math.round(130 + t * (68 - 130));
+            b = Math.round(246 + t * (68 - 246));
+          }
           return <div key={i} style={{ flex: 1, backgroundColor: `rgb(${r},${g},${b})` }} />;
         })}
       </div>
-      <span>Çok atıf</span>
+      <span>{labelRight}</span>
     </div>
   );
 }
@@ -370,6 +423,7 @@ function CitationMapContent() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [depth, setDepth] = useState(2);
+  const [heatmapMode, setHeatmapMode] = useState<HeatmapMode>('citation');
   const [selectedNode, setSelectedNode] = useState<CitationGraphNode | null>(null);
   const selectedNodeIdRef = useRef<string | null>(null);
   const hoveredRelNodeIdRef = useRef<string | null>(null);
@@ -387,25 +441,50 @@ function CitationMapContent() {
         setContainerWidth(entry.contentRect.width);
       }
     });
-    ro.observe(el);
+ro.observe(el);
     setContainerWidth(el.clientWidth);
     return () => ro.disconnect();
   }, []);
 
-  const maxCitationCount = graphData
-    ? Math.max(...graphData.nodes.map(n => n.cited_by_count ?? 0), 1)
-    : 1;
+  const graphStats = useMemo(() => {
+    if (!graphData) return { maxCitation: 1, minYear: 2000, maxYear: new Date().getFullYear() };
+    const maxCitation = Math.max(...graphData.nodes.map(n => n.cited_by_count ?? 0), 1);
+    const years = graphData.nodes.map(n => n.publication_year).filter((y): y is number => y !== undefined && y !== null);
+    const minYear = years.length > 0 ? Math.min(...years) : 2000;
+    const maxYear = years.length > 0 ? Math.max(...years) : new Date().getFullYear();
+    return { maxCitation, minYear, maxYear };
+  }, [graphData]);
 
   const fgData = useMemo(() => graphData
     ? {
-        nodes: graphData.nodes.map(n => ({
-          ...n,
-          val: Math.max(3, Math.log1p(n.cited_by_count ?? 0) * 2.5),
-          color: nodeColor(n, maxCitationCount),
-        })),
+        nodes: graphData.nodes.map(n => {
+          let color = '#10b981';
+          let intensity = 0;
+          
+          if (heatmapMode === 'classic') {
+            if (n.is_root) color = 'rgb(245, 158, 11)';
+          } else if (heatmapMode === 'citation') {
+            color = getCitationColor(n, graphStats.maxCitation);
+            intensity = graphStats.maxCitation > 0 ? Math.min(Math.log1p(n.cited_by_count ?? 0) / Math.log1p(graphStats.maxCitation), 1) : 0;
+          } else if (heatmapMode === 'year') {
+            color = getYearColor(n, graphStats.minYear, graphStats.maxYear);
+            intensity = graphStats.maxYear > graphStats.minYear ? ((n.publication_year ?? graphStats.minYear) - graphStats.minYear) / (graphStats.maxYear - graphStats.minYear) : 0;
+          }
+          
+          // Minimum glow baseline for recent/most cited nodes
+          if (heatmapMode !== 'classic' && intensity < 0.15 && intensity > 0) intensity = 0.15;
+          if (heatmapMode !== 'classic' && n.is_root) intensity = 1.0; 
+
+          return {
+            ...n,
+            val: Math.max(3, Math.log1p(n.cited_by_count ?? 0) * 2.5),
+            color,
+            intensity
+          };
+        }),
         links: graphData.edges.map(e => ({ source: e.source, target: e.target })),
       }
-    : { nodes: [], links: [] }, [graphData, maxCitationCount]);
+    : { nodes: [], links: [] }, [graphData, graphStats, heatmapMode]);
 
   // Graf yüklenince force parametrelerini ayarla (mesafe + itme + collision)
   // requestAnimationFrame ile ref hazır olana kadar dene
@@ -555,8 +634,10 @@ function CitationMapContent() {
           onDepthChange={handleDepthChange}
           onRefresh={() => selectedArticle && loadGraph(selectedArticle, depth, true)}
           disabled={!selectedArticle || loading}
+          heatmapMode={heatmapMode}
+          onHeatmapModeChange={setHeatmapMode}
         />
-        <ColorLegend />
+        <ColorLegend mode={heatmapMode} stats={graphStats} />
       </div>
 
       {graphData && !loading && (
@@ -638,10 +719,29 @@ function CitationMapContent() {
                 const y = node.y as number;
                 const val = node.val as number;
                 const color = node.color as string;
+                const intensity = node.intensity as number || 0;
                 const isRoot = node.is_root as boolean;
                 const nodeId = node.id as string;
                 const isSelected = selectedNodeIdRef.current === nodeId;
                 const isHoveredRel = hoveredRelNodeIdRef.current === nodeId;
+
+                if (!Number.isFinite(x) || !Number.isFinite(y) || typeof x !== 'number' || typeof y !== 'number') return;
+
+                // Density Aura Glow Effect
+                if (heatmapMode !== 'classic' && intensity > 0.1) {
+                  ctx.save();
+                  ctx.globalAlpha = Math.min(intensity * 0.6, 0.4);
+                  ctx.beginPath();
+                  const glowRadius = Math.max(val + (intensity * 25), 0.1);
+                  const innerRadius = Math.max(val * 0.5, 0);
+                  const gradient = ctx.createRadialGradient(x, y, innerRadius, x, y, glowRadius);
+                  gradient.addColorStop(0, color);
+                  gradient.addColorStop(1, color.includes('rgb(') ? color.replace('rgb(', 'rgba(').replace(')', ', 0)') : 'rgba(255,255,255,0)');
+                  ctx.fillStyle = gradient;
+                  ctx.arc(x, y, glowRadius, 0, 2 * Math.PI);
+                  ctx.fill();
+                  ctx.restore();
+                }
 
                 ctx.beginPath();
                 ctx.arc(x, y, val, 0, 2 * Math.PI);
