@@ -68,8 +68,9 @@ async def start_ieee(request: ScraperControlRequest = None):
     
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
-    
-    success = await manager.start_ieee(headless=headless, max_articles=max_articles)
+    depth = request.depth if request and request.depth else 1
+
+    success = await manager.start_ieee(headless=headless, max_articles=max_articles, depth=depth)
     
     if not success:
         raise HTTPException(status_code=400, detail="IEEE scraper already running")

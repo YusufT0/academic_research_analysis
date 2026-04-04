@@ -201,6 +201,28 @@ async def lifespan(app: FastAPI):
     redis_success = await cache_service.connect()
     if redis_success:
         logger.success("Redis cache bağlantısı kuruldu")
+
+        # Startup'ta scraper'a ait cache'leri temizle:
+        # 1. Distributed lock key'leri — önceki run crash olduysa lock asla release edilmemiş olabilir
+        # 2. Stats cache — eski istatistikler gösterilmesin
+        # 3. Search cache — eski arama sonuçları gösterilmesin
+        # 4. WebSocket event replay buffer — yeni bağlanan frontend eski progress/status_update
+        #    event'larını replay alıp ekranda eski Dergi Kuyruğu verilerini göstermesini önler
+        try:
+            from backend.routers.websocket import SCRAPER_LOG_BUFFER_KEY
+            prefix = cache_service._make_key("")  # "academic:"
+            lock_deleted   = await cache_service.delete_pattern(f"{prefix}lock:scraper:*")
+            stats_deleted  = await cache_service.delete_pattern(f"{prefix}stats:*")
+            search_deleted = await cache_service.delete_pattern(f"{prefix}search:*")
+            # Buffer doğrudan prefix'siz bir key olduğu için delete ile sil
+            buf_deleted = await cache_service.delete(SCRAPER_LOG_BUFFER_KEY)
+            logger.info(
+                f"Startup cache temizliği: "
+                f"{lock_deleted} lock, {stats_deleted} stats, "
+                f"{search_deleted} search, {int(buf_deleted)} event buffer silindi"
+            )
+        except Exception as e:
+            logger.warning(f"Startup cache temizliği hatası: {e}")
     else:
         logger.warning("Redis cache bağlantısı kurulamadı - cache devre dışı")
     

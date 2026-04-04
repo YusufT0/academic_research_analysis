@@ -310,14 +310,26 @@ class ScraperManager:
         # Event loop reference for async database calls from threads
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         
-        # Settings
-        self.ieee_headless = True
-        self.ieee_max_articles = 100
-        self.sciencedirect_headless = True
-        self.sciencedirect_max_articles = 100
-        self.sciencedirect_depth = 1
-        self.acm_headless = True
-        self.acm_max_articles = 100
+        # Settings — env vars'dan oku (varsa), yoksa default
+        try:
+            from backend.core.config import settings as _settings
+            self.ieee_headless = _settings.scraper_headless
+            self.ieee_max_articles = _settings.ieee_max_articles
+            self.ieee_depth = _settings.ieee_depth
+            self.sciencedirect_headless = _settings.scraper_headless
+            self.sciencedirect_max_articles = _settings.sciencedirect_max_articles
+            self.sciencedirect_depth = 1  # ScienceDirect depth is set per start_sciencedirect call
+            self.acm_headless = _settings.scraper_headless
+            self.acm_max_articles = _settings.acm_max_articles
+        except Exception:
+            self.ieee_headless = True
+            self.ieee_max_articles = 100
+            self.ieee_depth = 1
+            self.sciencedirect_headless = True
+            self.sciencedirect_max_articles = 100
+            self.sciencedirect_depth = 1
+            self.acm_headless = True
+            self.acm_max_articles = 100
         
         # Round Robin Settings
         self.round_robin_journals_per_switch = 3
@@ -410,7 +422,7 @@ class ScraperManager:
     
     # ==================== IEEE Scraper ====================
     
-    async def start_ieee(self, headless: bool = True, max_articles: int = 100) -> bool:
+    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
         """IEEE scraper'ı başlat (ayrı thread'de)"""
         if self.ieee_progress.status == ScraperStatus.RUNNING:
             logger.warning("IEEE scraper already running")
@@ -423,6 +435,7 @@ class ScraperManager:
 
         self.ieee_headless = headless
         self.ieee_max_articles = max_articles
+        self.ieee_depth = depth
 
         # Reset flags
         self._ieee_stop_flag.clear()
@@ -560,57 +573,104 @@ class ScraperManager:
                 try:
                     import time
                     scrape_start_t = time.time()
-                    # Scrape articles
-                    articles = scraper.scrape_journal_articles(journal, max_articles=self.ieee_max_articles, article_progress_callback=_ieee_article_cb, article_list_callback=_ieee_article_list_cb)
-                    
+
+                    # DB'deki mevcut issue URL'lerini al (depth sayımı için)
+                    existing_issue_urls: set = set()
+                    if self._db_service and self._loop:
+                        async def _get_ieee_existing_issue_urls():
+                            journal_doc = await self._db_service.get_journal(
+                                journal.get('name', ''), 'ieeexplore'
+                            )
+                            if not journal_doc:
+                                return set()
+                            from database import Issue
+                            issues = await Issue.find_by_journal(journal_doc.id)
+                            result = set()
+                            for iss in issues:
+                                if iss.url:
+                                    url = iss.url.replace('https://ieeexplore.ieee.org', '')
+                                    result.add(url)
+                            return result
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                _get_ieee_existing_issue_urls(), self._loop
+                            )
+                            existing_issue_urls = fut.result(timeout=15)
+                            if existing_issue_urls:
+                                logger.info(
+                                    f"[IEEE Thread] {journal_name}: "
+                                    f"{len(existing_issue_urls)} mevcut issue URL'si bulundu, atlanacak"
+                                )
+                        except Exception as e:
+                            logger.warning(f"[IEEE Thread] Mevcut issue URL'leri alınamadı: {e}")
+
+                    # Scrape issues + articles
+                    issue_results = scraper.scrape_journal_articles(
+                        journal,
+                        depth=self.ieee_depth,
+                        max_articles=self.ieee_max_articles,
+                        article_progress_callback=_ieee_article_cb,
+                        article_list_callback=_ieee_article_list_cb,
+                        existing_issue_urls=existing_issue_urls,
+                    )
+
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
                         SCRAPER_DURATION.labels(source="ieee").observe(time.time() - scrape_start_t)
                     except ImportError:
                         pass
-                    
+
                     # Makale olsun olmasın journal'ı veritabanına kaydet
-                    # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
                     if self._db_service and self._loop:
-                        # Save to database (async call from thread)
                         journal_info = {
                             'name': journal.get('name'),
                             'url': journal.get('url'),
                             'publisher': 'IEEE',
                             'open_access': journal.get('open_access', False),
+                            'aims_and_scope': journal.get('aims_and_scope'),
                         }
-                        
-                        issue_data = {
-                            'issue_number': journal.get('issue_number'),
-                            'date': journal.get('issue_date'),
-                            'url': journal.get('issue_url'),
-                        }
-                        
+
+                        async def _save_ieee_journal_issues():
+                            journal_doc, _ = await self._db_service.add_journal(
+                                source_website='ieeexplore', **journal_info
+                            )
+                            total_created = 0
+                            total_updated = 0
+                            issues_created = 0
+                            for res in issue_results:
+                                i_data = res['issue_info']
+                                issue_doc, issue_created = await self._db_service.add_issue(
+                                    journal=journal_doc,
+                                    issue_number=i_data.get('issue_number'),
+                                    date=i_data.get('date'),
+                                    url=i_data.get('url'),
+                                )
+                                created, updated = await self._db_service.add_articles_bulk(
+                                    issue_doc, res['articles']
+                                )
+                                total_created += created
+                                total_updated += updated
+                                if issue_created:
+                                    issues_created += 1
+                            return total_created, total_updated, issues_created
+
                         # Run async database call from thread
                         future = asyncio.run_coroutine_threadsafe(
-                            self._db_service.add_journal_with_issue_and_articles(
-                                journal_data=journal_info,
-                                issue_data=issue_data,
-                                articles_data=articles or [],  # Boş liste olabilir
-                                source_website='ieeexplore'
-                            ),
-                            self._loop
+                            _save_ieee_journal_issues(), self._loop
                         )
-                        result = future.result(timeout=30)  # 30 saniye timeout
+                        articles_created, articles_updated, issues_created = future.result(timeout=60)
 
-                        articles_created = result.get('articles_created', 0)
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
                             'article_list': progress.article_list.copy(),
                         })
                         progress.journals_scraped += 1
-                        if result.get('issue_created'):
-                            progress.issues_scraped += 1
+                        progress.issues_scraped += issues_created
                         progress.articles_scraped += articles_created
-                        progress.articles_updated += result.get('articles_updated', 0)
+                        progress.articles_updated += articles_updated
 
-                        if articles:
+                        if issue_results:
                             progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
                             logger.success(f"[IEEE Thread] {journal_name}: {articles_created} makale eklendi")
                         else:
@@ -1372,7 +1432,7 @@ class ScraperManager:
         
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
-            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles)
+            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles, depth=self.ieee_depth)
         else:
             results['ieee'] = False
             logger.info("IEEE scraper devre dışı, atlanıyor...")
@@ -1421,7 +1481,7 @@ class ScraperManager:
         
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
-            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles)
+            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles, depth=self.ieee_depth)
             
             # IEEE'nin bitmesini bekle
             logger.info("IEEE scraper'ın bitmesi bekleniyor...")

@@ -211,10 +211,10 @@ export async function getScrapersStatus(): Promise<AllScrapersStatus> {
   return fetchApi<AllScrapersStatus>('/scrapers/status');
 }
 
-export async function startIeeeScraper(headless = true, maxArticles = 10) {
+export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1) {
   return fetchApi('/scrapers/ieee/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
   });
 }
 

@@ -964,7 +964,8 @@ export default function ScrapersPage() {
               scraper={status.ieee}
               title="IEEE Xplore Scraper"
               description="IEEE akademik makalelerini toplar"
-              onStart={async (limit) => { await startIeeeScraper(false, limit); await fetchStatus(); }}
+              showDepth
+              onStart={async (limit, depth) => { await startIeeeScraper(false, limit, depth ?? 1); await fetchStatus(); }}
               onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}

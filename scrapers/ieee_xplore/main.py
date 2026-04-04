@@ -171,123 +171,79 @@ async def main():
         
         logger.header("MAKALE LİNKLERİ TOPLANACAK")
         logger.info(f"{len(journals_with_articles)} journal için makale linkleri toplanacak (öncelik sırasına göre)")
-        
+
+        from ieee_xplore.scraper import IEEEXploreScraper
+        scraper = IEEEXploreScraper(headless=False)
+        scraper.initialize()
+
         for idx, journal_data in enumerate(journals_with_articles, 1):
             try:
                 logger.item(idx, len(journals_with_articles), journal_data['name'])
-                
-                # Most Recent Issue sayfasına git
-                issue_url = journal_data['most_recent_issue_url']
-                full_url = f"https://ieeexplore.ieee.org{issue_url}" if not issue_url.startswith('http') else issue_url
-                
-                logger.url(full_url)
-                
-                if not driver.get(full_url, wait_after=3):
-                    logger.warning("Sayfa yüklenemedi, atlanıyor")
-                    continue
-                
-                # Sayfanın yüklenmesini bekle
-                wait_for_page_load(driver.driver)
-                time.sleep(2)
-                
-                # Sayfa kaynağını al
-                page_source = driver.driver.page_source
-                
-                # Issue bilgisini çıkar
-                issue_info = ArticleParser.extract_issue_info(page_source)
-                issue_url_full = driver.driver.current_url
-                
-                # Rate limit kontrolü (issue sayfasında)
+
+                # DB'deki mevcut issue URL'lerini al (depth sayımı için)
+                journal_doc = await db_service.get_journal(journal_data['name'], 'ieeexplore')
+                existing_issue_urls: set = set()
+                if journal_doc:
+                    from database import Issue
+                    issues_in_db = await Issue.find_by_journal(journal_doc.id)
+                    for iss in issues_in_db:
+                        if iss.url:
+                            url = iss.url.replace('https://ieeexplore.ieee.org', '')
+                            existing_issue_urls.add(url)
+                    if existing_issue_urls:
+                        logger.info(f"{len(existing_issue_urls)} mevcut issue URL'si atlanacak")
+
+                # Issue'ları ve makaleleri tara
                 try:
-                    rate_limiter.check_and_handle_rate_limit()
+                    issue_results = scraper.scrape_journal_articles(
+                        journal_data,
+                        depth=1,
+                        max_articles=100,
+                        existing_issue_urls=existing_issue_urls,
+                    )
                 except RateLimitException:
                     logger.error("Rate limit aşıldı! Science Direct'e geçiş yapılacak...")
                     switch_to_sciencedirect = True
                     break
-                
-                # Makale URL'lerini çıkar
-                article_urls = ArticleParser.extract_article_urls(page_source)
-                
-                logger.found(len(article_urls), "makale linki")
-                
-                # Makale detaylarını topla
-                articles = []
-                
-                for art_idx, art_url in enumerate(article_urls, 1):
-                    try:
-                        logger.subsection(f"Makale {art_idx}/{len(article_urls)}")
-                        
-                        # Makale sayfasına git
-                        full_article_url = f"https://ieeexplore.ieee.org{art_url}" if not art_url.startswith('http') else art_url
-                        logger.url(art_url)
-                        
-                        if not driver.get(full_article_url, wait_after=3):
-                            logger.warning("Makale sayfası yüklenemedi, atlanıyor")
-                            continue
-                        
-                        # Sayfanın yüklenmesini bekle
-                        wait_for_page_load(driver.driver)
-                        time.sleep(2)
-                        
-                        # Rate limit kontrolü (her makale sayfasında)
-                        try:
-                            rate_limiter.check_and_handle_rate_limit()
-                        except RateLimitException:
-                            logger.error("Rate limit aşıldı! Science Direct'e geçiş yapılacak...")
-                            switch_to_sciencedirect = True
-                            break
-                        
-                        # Makale detaylarını çıkar
-                        article_page_source = driver.driver.page_source
-                        article_details = ArticleParser.extract_article_details(article_page_source, art_url)
-                        
-                        if article_details and article_details.get('title'):
-                            articles.append(article_details)
-                            logger.success("Makale detayları alındı")
-                        else:
-                            logger.warning("Makale detayları alınamadı")
-                        
-                    except RateLimitException:
-                        # Rate limit exception'ı yukarı fırlat
-                        raise
-                    except Exception as e:
-                        logger.error(f"Makale detay hatası: {e}")
-                        continue
-                
+
                 # Science Direct'e geçiş gerekiyorsa döngüyü kır
                 if switch_to_sciencedirect:
                     break
-                
-                # Verileri MongoDB'ye kaydet (makale olsun olmasın journal'ı kaydet)
-                # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
-                # Journal verisi
+
+                # Verileri MongoDB'ye kaydet
                 journal_info = {
                     'name': journal_data['name'],
                     'url': journal_data.get('url'),
                     'publisher': journal_data.get('publisher', 'IEEE'),
-                    'open_access': False
+                    'open_access': False,
+                    'aims_and_scope': journal_data.get('aims_and_scope'),
                 }
-                
-                # Issue verisi
-                issue_data = {
-                    'issue_number': issue_info.get('issue_number') if issue_info else None,
-                    'date': issue_info.get('date') if issue_info else None,
-                    'url': issue_url_full
-                }
-                
-                # Database'e kaydet
-                result = await db_service.add_journal_with_issue_and_articles(
-                    journal_data=journal_info,
-                    issue_data=issue_data,
-                    articles_data=articles or [],  # Boş liste olabilir
-                    source_website='ieeexplore'
+
+                journal_doc, _ = await db_service.add_journal(
+                    source_website='ieeexplore', **journal_info
                 )
-                
-                if articles:
-                    logger.success(f"Kaydedildi: {result['articles_created']} yeni, {result['articles_updated']} güncelleme")
+
+                total_created = 0
+                total_updated = 0
+                for res in issue_results:
+                    i_data = res['issue_info']
+                    issue_doc, _ = await db_service.add_issue(
+                        journal=journal_doc,
+                        issue_number=i_data.get('issue_number'),
+                        date=i_data.get('date'),
+                        url=i_data.get('url'),
+                    )
+                    created, updated = await db_service.add_articles_bulk(
+                        issue_doc, res['articles']
+                    )
+                    total_created += created
+                    total_updated += updated
+
+                if issue_results:
+                    logger.success(f"Kaydedildi: {total_created} yeni, {total_updated} güncelleme")
                 else:
                     logger.info(f"Journal kaydedildi (makale yok): {journal_data['name']}")
-                
+
             except RateLimitException:
                 logger.error("Rate limit exception yakalandı!")
                 switch_to_sciencedirect = True
