@@ -254,16 +254,18 @@ interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: (limit: number) => Promise<void>;
+  onStart: (limit: number, depth?: number) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
+  showDepth?: boolean;
 }
 
-function ScraperControl({ scraper, title, description, onStart, onStop, onPause, onResume }: ScraperControlProps) {
+function ScraperControl({ scraper, title, description, onStart, onStop, onPause, onResume, showDepth }: ScraperControlProps) {
   const [actionLoading, setActionLoading] = useState(false);
   const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
   const [limit, setLimit] = useState<number>(25);
+  const [depth, setDepth] = useState<number>(1);
   const config = statusConfig[scraper.status] || statusConfig.idle;
 
   // Gelen scraper nesnesindeki süre güncellendiğinde local state'i senkronize et
@@ -381,7 +383,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Actions Menu */}
         <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
           {canStart && (
-            <div className="flex items-center gap-3 w-full">
+            <div className="flex flex-wrap items-center gap-3 w-full">
               <div className="flex items-center gap-2">
                 <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
                   Makale Limiti:
@@ -397,9 +399,27 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
                 />
               </div>
 
+              {showDepth && (
+                <div className="flex items-center gap-2">
+                  <label htmlFor={`depth-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                    Issue Derinliği:
+                  </label>
+                  <input
+                    id={`depth-${title}`}
+                    type="number"
+                    min="1"
+                    max="50"
+                    value={depth}
+                    onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
+                    className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
+                  />
+                </div>
+              )}
+
               <Button
                 variant="primary"
-                onClick={() => handleAction(() => onStart(limit))}
+                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined))}
                 isLoading={actionLoading}
                 className="flex-1"
               >
@@ -953,7 +973,8 @@ export default function ScrapersPage() {
               scraper={status.sciencedirect}
               title="ScienceDirect Scraper"
               description="Elsevier ScienceDirect makalelerini toplar"
-              onStart={async (limit) => { await startScienceDirectScraper(false, limit); await fetchStatus(); }}
+              showDepth
+              onStart={async (limit, depth) => { await startScienceDirectScraper(false, limit, depth ?? 1); await fetchStatus(); }}
               onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}

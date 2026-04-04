@@ -40,6 +40,9 @@ class Journal(Document, TimestampMixin, ScrapingMetaMixin):
     impact_factor: Optional[float] = Field(None, description="Impact factor")
     subjects: List[str] = Field(default_factory=list, description="Konu alanları")
     
+    # Journal detay içerikleri
+    aims_and_scope: Optional[str] = Field(None, description="Journal amaç ve kapsam içeriği (HTML)")
+
     # OpenAlex ve Denormalize Atıf Metadata
     openalex_id: Optional[str] = Field(None, description="OpenAlex üzerindeki Dergi/Source ID'si")
     h_index: Optional[int] = Field(None, description="Derginin H-index değeri")

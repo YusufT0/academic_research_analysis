@@ -230,10 +230,10 @@ export async function resumeIeeeScraper() {
   return fetchApi('/scrapers/ieee/resume', { method: 'POST' });
 }
 
-export async function startScienceDirectScraper(headless = true, maxArticles = 5) {
+export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1) {
   return fetchApi('/scrapers/sciencedirect/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
   });
 }
 

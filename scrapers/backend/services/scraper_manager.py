@@ -315,6 +315,7 @@ class ScraperManager:
         self.ieee_max_articles = 100
         self.sciencedirect_headless = True
         self.sciencedirect_max_articles = 100
+        self.sciencedirect_depth = 1
         self.acm_headless = True
         self.acm_max_articles = 100
         
@@ -706,7 +707,7 @@ class ScraperManager:
     
     # ==================== ScienceDirect Scraper ====================
     
-    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100) -> bool:
+    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
         """ScienceDirect scraper'ı başlat (ayrı thread'de)"""
         if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
             logger.warning("ScienceDirect scraper already running")
@@ -719,6 +720,7 @@ class ScraperManager:
 
         self.sciencedirect_headless = headless
         self.sciencedirect_max_articles = max_articles
+        self.sciencedirect_depth = depth
 
         # Reset flags
         self._sciencedirect_stop_flag.clear()
@@ -856,58 +858,107 @@ class ScraperManager:
                 try:
                     import time
                     scrape_start_t = time.time()
-                    # Scrape articles
-                    articles = scraper.scrape_journal_articles(journal, max_articles=self.sciencedirect_max_articles, article_progress_callback=_sd_article_cb, article_list_callback=_sd_article_list_cb)
-                    
+
+                    # DB'de bu journal için mevcut issue URL'lerini çek
+                    # (daha önce işlenmiş issue'lar depth sayımına dahil edilmez)
+                    existing_issue_urls: set = set()
+                    if self._db_service and self._loop:
+                        async def _get_existing_issue_urls():
+                            journal_doc = await self._db_service.get_journal(
+                                journal.get('name', ''), 'sciencedirect'
+                            )
+                            if not journal_doc:
+                                return set()
+                            from database import Issue
+                            issues = await Issue.find_by_journal(journal_doc.id)
+                            result = set()
+                            for iss in issues:
+                                if iss.url:
+                                    # DB'de tam URL saklanır; relative path kısmını çıkar
+                                    url = iss.url.replace('https://www.sciencedirect.com', '')
+                                    result.add(url)
+                            return result
+
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                _get_existing_issue_urls(), self._loop
+                            )
+                            existing_issue_urls = fut.result(timeout=15)
+                            if existing_issue_urls:
+                                logger.info(
+                                    f"[SD Thread] {journal_name}: "
+                                    f"{len(existing_issue_urls)} mevcut issue URL'si bulundu, atlanacak"
+                                )
+                        except Exception as e:
+                            logger.warning(f"[SD Thread] Mevcut issue URL'leri alınamadı: {e}")
+
+                    # Scrape issues + articles
+                    issue_results = scraper.scrape_journal_articles(
+                        journal,
+                        depth=self.sciencedirect_depth,
+                        max_articles=self.sciencedirect_max_articles,
+                        article_progress_callback=_sd_article_cb,
+                        article_list_callback=_sd_article_list_cb,
+                        existing_issue_urls=existing_issue_urls,
+                    )
+
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
                         SCRAPER_DURATION.labels(source="sciencedirect").observe(time.time() - scrape_start_t)
                     except ImportError:
                         pass
-                    
+
                     # Makale olsun olmasın journal'ı veritabanına kaydet
-                    # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
                     if self._db_service and self._loop:
-                        # Save to database (async call from thread)
                         journal_info = {
                             'name': journal.get('name'),
                             'url': journal.get('url'),
                             'publisher': 'Elsevier',
                             'open_access': journal.get('open_access', False),
                             'letter_group': journal.get('letter_group'),
+                            'aims_and_scope': journal.get('aims_and_scope'),
                         }
-                        
-                        issue_data = {
-                            'issue_number': journal.get('issue_number'),
-                            'date': journal.get('issue_date'),
-                            'url': journal.get('issue_url'),
-                        }
-                        
-                        # Run async database call from thread
-                        future = asyncio.run_coroutine_threadsafe(
-                            self._db_service.add_journal_with_issue_and_articles(
-                                journal_data=journal_info,
-                                issue_data=issue_data,
-                                articles_data=articles or [],  # Boş liste olabilir
-                                source_website='sciencedirect'
-                            ),
-                            self._loop
-                        )
-                        result = future.result(timeout=30)  # 30 saniye timeout
 
-                        articles_created = result.get('articles_created', 0)
+                        async def _save_journal_issues():
+                            journal_doc, _ = await self._db_service.add_journal(
+                                source_website='sciencedirect',
+                                **journal_info
+                            )
+                            total_created = 0
+                            total_updated = 0
+                            issues_created = 0
+                            for res in issue_results:
+                                i_data = res['issue_info']
+                                issue_doc, issue_created = await self._db_service.add_issue(
+                                    journal=journal_doc,
+                                    issue_number=i_data.get('issue_number'),
+                                    date=i_data.get('date'),
+                                    url=i_data.get('url'),
+                                    status=i_data.get('status'),
+                                )
+                                created, updated = await self._db_service.add_articles_bulk(
+                                    issue_doc, res['articles']
+                                )
+                                total_created += created
+                                total_updated += updated
+                                if issue_created:
+                                    issues_created += 1
+                            return total_created, total_updated, issues_created
+
+                        future = asyncio.run_coroutine_threadsafe(_save_journal_issues(), self._loop)
+                        articles_created, articles_updated, issues_created = future.result(timeout=60)
+
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
                             'article_list': progress.article_list.copy(),
                         })
                         progress.journals_scraped += 1
-                        if result.get('issue_created'):
-                            progress.issues_scraped += 1
+                        progress.issues_scraped += issues_created
                         progress.articles_scraped += articles_created
-                        progress.articles_updated += result.get('articles_updated', 0)
+                        progress.articles_updated += articles_updated
 
-                        if articles:
+                        if issue_results:
                             progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
                             logger.success(f"[SD Thread] {journal_name}: {articles_created} makale eklendi")
                         else:
@@ -1333,7 +1384,7 @@ class ScraperManager:
         
         # ScienceDirect'i başlat (etkinse)
         if sd_enabled:
-            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles)
+            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles, depth=self.sciencedirect_depth)
         else:
             results['sciencedirect'] = False
             logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
@@ -1388,7 +1439,7 @@ class ScraperManager:
         # ScienceDirect'i başlat (etkinse)
         if sd_enabled:
             logger.info("ScienceDirect scraper başlatılıyor...")
-            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles)
+            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles, depth=self.sciencedirect_depth)
         else:
             results['sciencedirect'] = False
             logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
