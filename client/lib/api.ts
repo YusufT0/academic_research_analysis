@@ -249,10 +249,10 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
-export async function startAcmScraper(headless = true, maxArticles = 10) {
+export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1) {
   return fetchApi('/scrapers/acm/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
   });
 }
 

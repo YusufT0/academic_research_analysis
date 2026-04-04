@@ -984,7 +984,8 @@ export default function ScrapersPage() {
               scraper={status.acm}
               title="ACM Digital Library Scraper"
               description="ACM akademik makalelerini toplar"
-              onStart={async (limit) => { await startAcmScraper(false, limit); await fetchStatus(); }}
+              showDepth
+              onStart={async (limit, depth) => { await startAcmScraper(false, limit, depth ?? 1); await fetchStatus(); }}
               onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}

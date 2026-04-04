@@ -321,6 +321,7 @@ class ScraperManager:
             self.sciencedirect_depth = 1  # ScienceDirect depth is set per start_sciencedirect call
             self.acm_headless = _settings.scraper_headless
             self.acm_max_articles = _settings.acm_max_articles
+            self.acm_depth = 1
         except Exception:
             self.ieee_headless = True
             self.ieee_max_articles = 100
@@ -330,6 +331,7 @@ class ScraperManager:
             self.sciencedirect_depth = 1
             self.acm_headless = True
             self.acm_max_articles = 100
+            self.acm_depth = 1
         
         # Round Robin Settings
         self.round_robin_journals_per_switch = 3
@@ -1116,7 +1118,7 @@ class ScraperManager:
 
     # ==================== ACM Scraper ====================
     
-    async def start_acm(self, headless: bool = True, max_articles: int = 100) -> bool:
+    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
         """ACM scraper'ı başlat (ayrı thread'de)"""
         if self.acm_progress.status == ScraperStatus.RUNNING:
             logger.warning("ACM scraper already running")
@@ -1129,6 +1131,7 @@ class ScraperManager:
 
         self.acm_headless = headless
         self.acm_max_articles = max_articles
+        self.acm_depth = depth
 
         # Reset flags
         self._acm_stop_flag.clear()
@@ -1266,63 +1269,110 @@ class ScraperManager:
                 try:
                     import time
                     scrape_start_t = time.time()
-                    # Scrape articles
-                    articles = scraper.scrape_journal_articles(journal, max_articles=self.acm_max_articles, article_progress_callback=_acm_article_cb, article_list_callback=_acm_article_list_cb)
-                    
+
+                    # DB'deki mevcut issue URL'lerini al (depth sayımı için)
+                    existing_issue_urls: set = set()
+                    if self._db_service and self._loop:
+                        async def _get_acm_existing_issue_urls():
+                            journal_doc = await self._db_service.get_journal(
+                                journal.get('name', ''), 'acm'
+                            )
+                            if not journal_doc:
+                                return set()
+                            from database import Issue
+                            issues = await Issue.find_by_journal(journal_doc.id)
+                            result = set()
+                            for iss in issues:
+                                if iss.url:
+                                    url = iss.url.replace('https://dl.acm.org', '')
+                                    result.add(url)
+                            return result
+                        try:
+                            fut = asyncio.run_coroutine_threadsafe(
+                                _get_acm_existing_issue_urls(), self._loop
+                            )
+                            existing_issue_urls = fut.result(timeout=15)
+                            if existing_issue_urls:
+                                logger.info(
+                                    f"[ACM Thread] {journal_name}: "
+                                    f"{len(existing_issue_urls)} mevcut issue URL'si bulundu, atlanacak"
+                                )
+                        except Exception as e:
+                            logger.warning(f"[ACM Thread] Mevcut issue URL'leri alınamadı: {e}")
+
+                    # Scrape issues + articles
+                    issue_results = scraper.scrape_journal_articles(
+                        journal,
+                        depth=self.acm_depth,
+                        max_articles=self.acm_max_articles,
+                        article_progress_callback=_acm_article_cb,
+                        article_list_callback=_acm_article_list_cb,
+                        existing_issue_urls=existing_issue_urls,
+                    )
+
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
                         SCRAPER_DURATION.labels(source="acm").observe(time.time() - scrape_start_t)
                     except ImportError:
                         pass
-                    
+
                     # Makale olsun olmasın journal'ı veritabanına kaydet
-                    # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
                     if self._db_service and self._loop:
-                        # Save to database (async call from thread)
                         journal_info = {
                             'name': journal.get('name'),
                             'url': journal.get('url'),
                             'publisher': 'ACM',
                             'open_access': journal.get('open_access', False),
+                            'aims_and_scope': journal.get('aims_and_scope'),
                         }
-                        
-                        issue_data = {
-                            'issue_number': journal.get('issue_number'),
-                            'date': journal.get('issue_date'),
-                            'url': journal.get('issue_url'),
-                        }
-                        
+
+                        async def _save_acm_journal_issues():
+                            journal_doc, _ = await self._db_service.add_journal(
+                                source_website='acm', **journal_info
+                            )
+                            total_created = 0
+                            total_updated = 0
+                            issues_created = 0
+                            for res in issue_results:
+                                i_data = res['issue_info']
+                                issue_doc, issue_created = await self._db_service.add_issue(
+                                    journal=journal_doc,
+                                    issue_number=i_data.get('issue_number'),
+                                    date=i_data.get('date'),
+                                    url=i_data.get('url'),
+                                )
+                                created, updated = await self._db_service.add_articles_bulk(
+                                    issue_doc, res['articles']
+                                )
+                                total_created += created
+                                total_updated += updated
+                                if issue_created:
+                                    issues_created += 1
+                            return total_created, total_updated, issues_created
+
                         # Run async database call from thread
                         future = asyncio.run_coroutine_threadsafe(
-                            self._db_service.add_journal_with_issue_and_articles(
-                                journal_data=journal_info,
-                                issue_data=issue_data,
-                                articles_data=articles or [],  # Boş liste olabilir
-                                source_website='acm'
-                            ),
-                            self._loop
+                            _save_acm_journal_issues(), self._loop
                         )
-                        result = future.result(timeout=30)  # 30 saniye timeout
+                        articles_created, articles_updated, issues_created = future.result(timeout=60)
 
-                        articles_created = result.get('articles_created', 0)
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
                             'article_list': progress.article_list.copy(),
                         })
                         progress.journals_scraped += 1
-                        if result.get('issue_created'):
-                            progress.issues_scraped += 1
+                        progress.issues_scraped += issues_created
                         progress.articles_scraped += articles_created
-                        progress.articles_updated += result.get('articles_updated', 0)
+                        progress.articles_updated += articles_updated
 
-                        if articles:
+                        if issue_results:
                             progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
                             logger.success(f"[ACM Thread] {journal_name}: {articles_created} makale eklendi")
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[ACM Thread] {journal_name}: Makale yok, journal kaydedildi")
-                    
+
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık
                     progress.status = ScraperStatus.STOPPED

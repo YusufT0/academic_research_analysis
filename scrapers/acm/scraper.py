@@ -18,7 +18,7 @@ logger = get_logger('acm')
 from .config import ProxyConfig, ACMConfig
 from .driver import SeleniumDriver
 from .utils import handle_cookie_consent, handle_open_access_modal, wait_for_page_load
-from .parsers import JournalParser, ArticleParser, ArticleDetailParser
+from .parsers import JournalParser, ArticleParser, ArticleDetailParser, IssueListParser
 from .navigation import PageNavigator
 
 
@@ -213,6 +213,343 @@ class ACMScraper:
             traceback.print_exc()
             return []
     
+    def extract_aims_and_scope(self, journal_code: str):
+        """
+        ACM journal sayfasından aims & scope bilgisini çıkarır.
+        Önce /journal/CODE, bulamazsa /journal/CODE/about sayfasını dener.
+
+        Returns:
+            str: HTML içeriği veya None
+        """
+        for suffix in ['', '/about']:
+            url = f"{self.ACM_BASE}/journal/{journal_code}{suffix}"
+            try:
+                logger.info(f"Aims & scope için gidiliyor: {url}")
+                if not self.selenium_driver.get(url, wait_after=3):
+                    continue
+                wait_for_page_load(self.selenium_driver)
+                time.sleep(1)
+                self._close_modals()
+                self.check_stop_flag()
+
+                aims = JournalParser.extract_aims_and_scope(self.selenium_driver.page_source)
+                if aims:
+                    logger.success(f"Aims & scope alındı ({len(aims)} karakter)")
+                    return aims
+            except ScraperStoppedException:
+                raise
+            except CloudflareBlockedException:
+                raise
+            except Exception as e:
+                logger.warning(f"Aims & scope alınamadı ({url}): {e}")
+
+        logger.warning(f"{journal_code}: Aims & scope bulunamadı")
+        return None
+
+    def _extract_all_issues(
+        self,
+        journal_code: str,
+        depth: int = None,
+        existing_urls: set = None,
+    ) -> list:
+        """
+        LOI (Archive) sayfasından issue listesini toplar.
+
+        Akış:
+        1. /loi/CODE sayfasına git
+        2. Decade sekmeleri varsa sırayla işle (gerekirse tıkla)
+        3. Her decade içindeki year panel'larını işle:
+           - DOM'da yüklü olanlar → parse et
+           - Boş olanlar → JS ile year tab'a tıkla, AJAX yüklensin, parse et
+        4. depth kadar YENİ issue toplandığında dur
+
+        Returns:
+            list: [{'url': '/toc/CODE/YEAR/VOL/ISSUE', 'title': str}, ...] (en yeniden eskiye)
+        """
+        existing_urls = existing_urls or set()
+        all_issues = []
+        seen_urls = set()
+
+        def count_new():
+            return sum(1 for i in all_issues if i['url'] not in existing_urls)
+
+        def add_issues(issues):
+            for i in issues:
+                if i['url'] not in seen_urls:
+                    seen_urls.add(i['url'])
+                    all_issues.append(i)
+
+        # 1. LOI sayfasına git
+        loi_url = f"{self.ACM_BASE}/loi/{journal_code}"
+        logger.info(f"LOI sayfasına gidiliyor: {loi_url}")
+        if not self.selenium_driver.get(loi_url, wait_after=3):
+            logger.warning("LOI sayfası yüklenemedi")
+            return []
+
+        wait_for_page_load(self.selenium_driver)
+        time.sleep(2)
+        self._close_modals()
+        self.check_stop_flag()
+
+        # 2. Decade sekmeleri
+        decade_tabs = IssueListParser.extract_decade_tabs(self.selenium_driver.page_source)
+        logger.info(
+            f"Decade sekmeleri: {[d['text'] for d in decade_tabs]}"
+            if decade_tabs else "Decade sekmesi yok, tüm issue'lar sayfada"
+        )
+
+        if not decade_tabs:
+            issues = IssueListParser.extract_all_issues_from_page(self.selenium_driver.page_source)
+            add_issues(issues)
+            logger.success(f"Toplam {len(all_issues)} issue ({count_new()} yeni)")
+            return all_issues
+
+        # 3. Her decade'i işle — en güncel decade'den başla (reversed)
+        for decade_idx, decade in enumerate(reversed(decade_tabs)):
+            self.check_stop_flag()
+
+            if depth and count_new() >= depth:
+                break
+
+            # En güncel decade ilk işlenir; eğer sayfa yüklenirken bu decade zaten
+            # active değilse (eski bir decade active ise) tıklamak gerekir.
+            need_click = not decade.get('is_active') or decade_idx > 0
+            if need_click:
+                logger.info(f"Decade sekmesine tıklanıyor: {decade['text']}")
+                try:
+                    js = (
+                        f"var el = document.querySelector("
+                        f"\"a.decade-item[data-url='{decade['data_url']}']\");"
+                        f" if(el) el.click();"
+                    )
+                    self.selenium_driver.execute_script(js)
+                    time.sleep(2)
+                    wait_for_page_load(self.selenium_driver)
+                except Exception as e:
+                    logger.warning(f"Decade tıklanamadı ({decade['text']}): {e}")
+                    continue
+
+            # 4. Bu decade'e ait year panellerini işle — en güncel yıldan başla (reversed)
+            year_info = IssueListParser.extract_year_panel_info(
+                self.selenium_driver.page_source,
+                decade_panel_id=decade.get('panel_id'),
+            )
+            logger.info(f"Decade {decade['text']}: {len(year_info)} year sekmesi")
+
+            for year in reversed(year_info):
+                self.check_stop_flag()
+
+                if depth and count_new() >= depth:
+                    break
+
+                if year['has_issues']:
+                    # Zaten DOM'da yüklü
+                    issues = IssueListParser.extract_issues_from_panel(
+                        self.selenium_driver.page_source, year['panel_id']
+                    )
+                    add_issues(issues)
+                    logger.info(f"  Year {year['text']}: {len(issues)} issue (DOM'dan)")
+                else:
+                    # AJAX ile yükle: year tab'a tıkla
+                    logger.info(f"  Year {year['text']}: AJAX ile yükleniyor...")
+                    try:
+                        panel_id = year['panel_id']
+                        js = (
+                            f"var el = document.querySelector("
+                            f"\"a.year-item[aria-controls='{panel_id}']\");"
+                            f" if(el) el.click();"
+                        )
+                        self.selenium_driver.execute_script(js)
+
+                        # Panel'de issue'ların belirmesini bekle (max 10 sn)
+                        loaded = False
+                        for _ in range(20):
+                            time.sleep(0.5)
+                            if IssueListParser.extract_issues_from_panel(
+                                self.selenium_driver.page_source, panel_id
+                            ):
+                                loaded = True
+                                break
+
+                        issues = IssueListParser.extract_issues_from_panel(
+                            self.selenium_driver.page_source, panel_id
+                        )
+                        add_issues(issues)
+                        logger.info(
+                            f"  Year {year['text']}: {len(issues)} issue "
+                            f"({'yüklendi' if loaded else 'timeout'})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"  Year {year['text']} tıklanamadı: {e}")
+
+            if depth and count_new() >= depth:
+                break
+
+        logger.success(f"Toplam {len(all_issues)} issue bulundu ({count_new()} yeni)")
+        return all_issues
+
+    def _process_single_issue(
+        self,
+        issue_stub: dict,
+        max_articles: int = None,
+        article_progress_callback=None,
+        article_list_callback=None,
+        issue_idx: int = 1,
+        total_issues: int = 1,
+    ) -> dict:
+        """
+        Tek bir ACM issue sayfasına gidip makale detaylarını toplar.
+
+        Args:
+            issue_stub: {'url': '/toc/CODE/YEAR/VOL/ISSUE', 'title': str}
+            max_articles: Bu issue için maksimum makale sayısı
+            issue_idx / total_issues: Loglama için konum bilgisi
+
+        Returns:
+            dict: {'issue_info': {...}, 'articles': [...]}
+        """
+        issue_url = issue_stub['url']
+        full_issue_url = (
+            f"{self.ACM_BASE}{issue_url}" if issue_url.startswith('/') else issue_url
+        )
+
+        logger.section(f"Issue {issue_idx}/{total_issues}: {issue_stub.get('title', issue_url)}")
+        logger.info(f"  Issue URL: {full_issue_url}")
+
+        if not self.selenium_driver.get(full_issue_url, wait_after=5):
+            logger.warning(f"Issue sayfası yüklenemedi: {full_issue_url}")
+            return {'issue_info': self._extract_issue_info_from_url(full_issue_url), 'articles': []}
+
+        wait_for_page_load(self.selenium_driver)
+        time.sleep(2)
+        self._close_modals()
+
+        # Cloudflare kontrolü
+        title = self.selenium_driver.execute_script("return document.title") or ""
+        if "just a moment" in title.lower() or "cloudflare" in title.lower():
+            raise CloudflareBlockedException("Cloudflare engeli algılandı (issue sayfası)")
+
+        current_url = self.selenium_driver.current_url
+        issue_info = self._extract_issue_info_from_url(current_url)
+
+        stub_title = issue_stub.get('title', '').strip()
+        if stub_title:
+            issue_info['issue_number'] = stub_title
+
+        logger.success(f"  Issue: {issue_info.get('issue_number')} | {issue_info.get('date')}")
+
+        # Makale URL'lerini al
+        page_source = self.selenium_driver.page_source
+        article_list = ArticleParser.extract_article_urls(page_source)
+
+        if not article_list:
+            logger.warning(f"  Makale bulunamadı: {issue_stub.get('title')}")
+            return {'issue_info': issue_info, 'articles': []}
+
+        if max_articles and len(article_list) > max_articles:
+            logger.info(f"  Makale sayısı {len(article_list)} -> {max_articles} ile sınırlandı")
+            article_list = article_list[:max_articles]
+
+        logger.info(f"  {len(article_list)} makale toplanacak...")
+
+        if article_list_callback:
+            try:
+                article_list_callback([a.get('title', '') for a in article_list])
+            except Exception:
+                pass
+
+        articles = []
+        retry_queue = []
+        consecutive_failures = 0
+
+        for idx, article_stub in enumerate(article_list, 1):
+            self.check_stop_flag()
+
+            if article_progress_callback:
+                try:
+                    article_progress_callback(idx, len(article_list), None)
+                except Exception:
+                    pass
+
+            article_url = article_stub.get('url', '')
+            full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+            logger.info(f"  [{idx}/{len(article_list)}] {full_url}")
+
+            article_data = None
+            success = False
+
+            for attempt in range(2):
+                if attempt > 0:
+                    time.sleep(2)
+
+                if not self.selenium_driver.get(full_url, wait_after=3):
+                    continue
+
+                wait_for_page_load(self.selenium_driver)
+                time.sleep(1)
+                self._close_modals()
+
+                article_data = ArticleDetailParser.extract_article_details(
+                    self.selenium_driver.page_source, full_url
+                )
+
+                if article_data and article_data.get('title'):
+                    success = True
+                    break
+
+            if success and article_data:
+                articles.append(article_data)
+                logger.success(f"  Makale eklendi: {article_data['title'][:50]}...")
+                consecutive_failures = 0
+            else:
+                retry_queue.append(full_url)
+                consecutive_failures += 1
+
+            if article_progress_callback:
+                try:
+                    article_progress_callback(
+                        idx, len(article_list),
+                        article_data.get('title') if (success and article_data) else None
+                    )
+                except Exception:
+                    pass
+
+            if consecutive_failures >= 3:
+                logger.error("Üst üste 3 makale hatası! Tarayıcı yeniden başlatılıyor...")
+                self.selenium_driver.restart()
+                time.sleep(60)
+                consecutive_failures = 0
+
+            self._random_wait()
+
+        # Retry kuyruğu
+        if retry_queue:
+            logger.section(f"KUYRUK: {len(retry_queue)} başarısız makale tekrar deneniyor...")
+            for r_url in retry_queue:
+                self.check_stop_flag()
+                try:
+                    if not self.selenium_driver.get(r_url, wait_after=3):
+                        continue
+                    wait_for_page_load(self.selenium_driver)
+                    time.sleep(1)
+                    self._close_modals()
+
+                    article_data = ArticleDetailParser.extract_article_details(
+                        self.selenium_driver.page_source, r_url
+                    )
+                    if article_data and article_data.get('title'):
+                        articles.append(article_data)
+                        logger.success(f"  Kurtarıldı: {article_data['title'][:50]}...")
+
+                    self._random_wait()
+                except (ScraperStoppedException, CloudflareBlockedException):
+                    raise
+                except Exception as e:
+                    logger.warning(f"  Kuyruk hatası: {e}")
+
+        logger.found(len(articles), f"makale (issue {issue_idx})")
+        return {'issue_info': issue_info, 'articles': articles}
+
     def _extract_issue_info_from_url(self, url: str) -> dict:
         """
         Issue URL'sinden volume/issue bilgisini çıkarır.
@@ -247,242 +584,109 @@ class ACMScraper:
     def scrape_journal_articles(
         self,
         journal: Dict[str, Any],
+        depth: int = 1,
         max_articles: int = None,
         article_progress_callback=None,
         article_list_callback=None,
+        existing_issue_urls: set = None,
     ) -> List[Dict[str, Any]]:
         """
-        Bir journal'ın son sayısındaki makaleleri toplar:
-        1. Latest issue sayfasına git (/toc/CODE/current)
-        2. Modalları kapat
-        3. Makale URL'lerini parse et
-        4. Her makale sayfasına gidip detayları topla
-        
+        Bir journal'ın aims & scope bilgisini alır ve issue'larını + makalelerini toplar.
+
+        Akış:
+        1. /journal/CODE → Aims & scope çıkar
+        2. /loi/CODE     → Issue listesi al (depth kadar yeni issue)
+        3. Her issue için /toc/CODE/YEAR/VOL/ISSUE → Makale detayları topla
+
         Args:
-            journal: Journal bilgileri dict'i
-            max_articles: Maksimum toplanacak makale sayısı (None ise config'den)
-            
+            journal: Journal bilgileri dict'i (code, name, url, ...)
+            depth: Kaç YENİ issue işlenecek (1 = sadece en yeni, None = tümü)
+            max_articles: Her issue için maksimum makale sayısı (None ise config'den)
+            article_progress_callback: İlerleme callback'i
+            article_list_callback: Makale listesi callback'i
+            existing_issue_urls: DB'de zaten var olan issue URL'leri.
+                                  Bu URL'ler depth sayımına dahil edilmez.
+
         Returns:
-            List[Dict]: Makale detay bilgileri listesi (DB uyumlu)
+            list[dict]: [{'issue_info': {...}, 'articles': [...]}, ...]
         """
         if max_articles is None:
             max_articles = self.config.max_articles
-        
+
+        existing_issue_urls = existing_issue_urls or set()
         journal_code = journal.get('code', '')
         journal_name = journal.get('name', 'Unknown')
-        
-        articles = []
-        
+
+        if not journal_code:
+            logger.warning(f"{journal_name}: Journal kodu bulunamadı")
+            return []
+
+        logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_name} ({journal_code})")
+
         try:
             self.check_stop_flag()
-            
-            logger.section(f"JOURNAL İŞLENİYOR: {journal_name} ({journal_code})")
-            
-            # 1) Latest issue sayfasına doğrudan git ve Cloudflare kontrolü
-            cf_blocked = False
-            for attempt in range(2):
-                if attempt > 0:
-                    logger.warning("Cloudflare bloğu veya bağlantı hatası: Farklı bir tarayıcı oturumu ile tekrar deneniyor...")
-                    if not self.selenium_driver.restart():
-                        logger.error("Tarayıcı yeniden başlatılamadı!")
-                        return articles
-                    
-                if not PageNavigator.navigate_to_latest_issue(self.selenium_driver, journal, wait_after=5):
-                    logger.warning(f"{journal_name}: Latest issue sayfasına gidilemedi")
-                    if attempt == 0:
-                        continue
-                    return articles
-                
-                # Cookie popup kapanmadan hemen önce sayfa title'ı kontrol et
-                title = self.selenium_driver.execute_script("return document.title") or ""
-                if "just a moment" in title.lower() or "checking your browser" in title.lower() or "cloudflare" in title.lower():
-                    logger.warning(f"Cloudflare bloğu algılandı! Title: {title}")
-                    if attempt == 0:
-                        continue
-                    logger.error("İkinci denemede de Cloudflare geçilemedi. İşlem başarısız sonlandırılıyor.")
-                    raise CloudflareBlockedException("Cloudflare engeli aşılamadı (Just a moment...)")
-                else:
-                    break
-            
-            # 2) Modalları kapat (her sayfada çıkabiliyor)
-            self._close_modals()
-            
-            # Sayfanın tamamen yüklenmesini bekle
-            wait_for_page_load(self.selenium_driver)
-            time.sleep(2)
-            
-            # Issue bilgisini URL'den çıkar ve journal'a ekle
-            current_url = self.selenium_driver.current_url
-            issue_info = self._extract_issue_info_from_url(current_url)
-            journal['issue_number'] = issue_info.get('issue_number')
-            journal['issue_date'] = issue_info.get('date')
-            journal['issue_url'] = current_url
-            
-            # 3) Issue sayfasındaki makale URL'lerini parse et
-            page_source = self.selenium_driver.page_source
-            article_list = ArticleParser.extract_article_urls(page_source)
-            
-            if not article_list:
-                logger.warning(f"{journal_name}: Makale bulunamadı")
-                return articles
-            
-            # Max limit uygula
-            if len(article_list) > max_articles:
-                logger.info(f"Makale sayısı {len(article_list)} -> {max_articles} ile sınırlandı")
-                article_list = article_list[:max_articles]
-            
-            logger.info(f"{len(article_list)} makale detayı toplanacak...")
 
-            # Makale listesini (başlıklarla birlikte) UI'a bildir
-            if article_list_callback:
-                try:
-                    article_list_callback([a.get('title', '') for a in article_list])
-                except Exception:
-                    pass
+            # 1) Aims & scope
+            aims_and_scope = self.extract_aims_and_scope(journal_code)
+            journal['aims_and_scope'] = aims_and_scope
 
-            # 4) Her makale için detay sayfasına git ve bilgileri topla
-            retry_queue = []
-            consecutive_failures = 0
-            
-            for idx, article_stub in enumerate(article_list, 1):
+            self.check_stop_flag()
+
+            # 2) Issue listesi
+            all_issues = self._extract_all_issues(
+                journal_code,
+                depth=depth,
+                existing_urls=existing_issue_urls,
+            )
+
+            if not all_issues:
+                logger.warning(f"{journal_name}: Issue bulunamadı")
+                return []
+
+            # 3) Yeni issue'ları filtrele, depth kadar al
+            new_issues = [i for i in all_issues if i['url'] not in existing_issue_urls]
+            skipped = len(all_issues) - len(new_issues)
+            if skipped:
+                logger.info(f"{skipped} issue zaten var, atlanıyor. Yeni: {len(new_issues)}")
+
+            issues_to_process = new_issues[:depth] if depth else new_issues
+            logger.info(
+                f"Toplam {len(all_issues)} issue, {len(issues_to_process)} tanesi işlenecek "
+                f"(depth={depth})"
+            )
+
+            # 4) Her issue'yu işle
+            issue_results = []
+            for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
-                # Makale başlamadan önce UI'a bildir (anlık güncelleme)
-                if article_progress_callback:
-                    try:
-                        article_progress_callback(idx, len(article_list), None)
-                    except Exception:
-                        pass
+                result = self._process_single_issue(
+                    issue_stub=issue_stub,
+                    max_articles=max_articles,
+                    article_progress_callback=article_progress_callback,
+                    article_list_callback=article_list_callback,
+                    issue_idx=issue_idx,
+                    total_issues=len(issues_to_process),
+                )
 
-                try:
-                    article_url = article_stub.get('url', '')
-                    
-                    # Full URL yap
-                    if article_url.startswith('/'):
-                        full_url = f"{self.ACM_BASE}{article_url}"
-                    else:
-                        full_url = article_url
-                    
-                    logger.info(f"[{idx}/{len(article_list)}] Makale detayı alınıyor: {full_url}")
-                    
-                    article_data = None
-                    success = False
-                    
-                    # Anında deneme (2 defa)
-                    for attempt in range(2):
-                        if attempt > 0:
-                            logger.info(f"Makale tekrar deneniyor (Deneme {attempt+1})...")
-                            # Küçük bir bekleme
-                            time.sleep(2)
-                        
-                        # Makale sayfasına git
-                        if not self.selenium_driver.get(full_url, wait_after=3):
-                            logger.warning(f"Makale sayfası yüklenemedi: {article_url}")
-                            continue
-                        
-                        wait_for_page_load(self.selenium_driver)
-                        time.sleep(1)
-                        
-                        # Modalları kapat
-                        self._close_modals()
-                        
-                        # Makale detaylarını parse et
-                        article_page = self.selenium_driver.page_source
-                        article_data = ArticleDetailParser.extract_article_details(article_page, full_url)
-                        
-                        if article_data and article_data.get('title'):
-                            success = True
-                            break
-                    
-                    if success and article_data:
-                        articles.append(article_data)
-                        logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
-                        consecutive_failures = 0
-                    else:
-                        logger.warning(f"Makale başarısız oldu, kuyruğa ekleniyor: {full_url}")
-                        retry_queue.append(full_url)
-                        consecutive_failures += 1
+                for article in result['articles']:
+                    article['journal_name'] = journal_name
 
-                    if article_progress_callback:
-                        try:
-                            article_progress_callback(idx, len(article_list), article_data.get('title') if (success and article_data) else None)
-                        except Exception:
-                            pass
-                    
-                    # Üst üste çok hata olursa soğuma & restart
-                    if consecutive_failures >= 3:
-                        logger.error("Üst üste 3 makale hatası! Koruma mekanizması devreye giriyor...")
-                        logger.info("Tarayıcı tamamen yeniden başlatılacak ve 60 saniye beklenecek.")
-                        self.selenium_driver.restart()
-                        time.sleep(60)
-                        consecutive_failures = 0
-                        
-                    # Rate limiting (Random Wait)
-                    self._random_wait()
-                    
-                except ScraperStoppedException:
-                    raise
-                except CloudflareBlockedException:
-                    raise
-                except Exception as e:
-                    logger.warning(f"Makale {idx} hatası: {e}")
-                    consecutive_failures += 1
-                    continue
-            
-            # 5) Kuyruktaki başarısız makaleleri son bir kez dene
-            if retry_queue:
-                logger.section(f"KUYRUK İŞLENİYOR: {len(retry_queue)} başarısız makale tekrar denenecek...")
-                failed_permanently = []
-                
-                for idx, r_url in enumerate(retry_queue, 1):
-                    self.check_stop_flag()
-                    logger.info(f"[Kuyruk {idx}/{len(retry_queue)}] Deneniyor: {r_url}")
-                    
-                    try:
-                        success = False
-                        
-                        if not self.selenium_driver.get(r_url, wait_after=3):
-                            failed_permanently.append(r_url)
-                            continue
-                        
-                        wait_for_page_load(self.selenium_driver)
-                        time.sleep(1)
-                        self._close_modals()
-                        
-                        article_page = self.selenium_driver.page_source
-                        article_data = ArticleDetailParser.extract_article_details(article_page, r_url)
-                        
-                        if article_data and article_data.get('title'):
-                            articles.append(article_data)
-                            logger.success(f"Kuyruktan başarıyla kurtarıldı: {article_data['title'][:50]}...")
-                        else:
-                            failed_permanently.append(r_url)
-                            logger.error("Makale kalıcı olarak başarısız oldu.")
-                            
-                        self._random_wait()
-                        
-                    except ScraperStoppedException:
-                        raise
-                    except CloudflareBlockedException:
-                        raise
-                    except Exception as e:
-                        logger.warning(f"Kuyrukta hata: {e}")
-                        failed_permanently.append(r_url)
-                        continue
-                        
-                if failed_permanently:
-                    logger.error(f"{len(failed_permanently)} makale kuyruktaki denemelere rağmen kurtarılamadı!")
-            
-            logger.found(len(articles), f"makale ({journal_name})")
-            
+                issue_results.append(result)
+
+            logger.found(
+                sum(len(r['articles']) for r in issue_results),
+                f"makale ({journal_name})"
+            )
+            return issue_results
+
         except (ScraperStoppedException, CloudflareBlockedException):
             raise
         except Exception as e:
-            logger.error(f"{journal_name}: Makale toplama hatası: {e}")
+            logger.error(f"{journal_name}: Hata: {e}")
             import traceback
             traceback.print_exc()
-        
-        return articles
+            return []
 
     def process_article(self, article_url: str) -> Optional[Dict[str, Any]]:
         """
@@ -571,14 +775,15 @@ class ACMScraper:
                 
                 logger.subsection(f"[{idx}/{len(journals)}] {journal.get('name', 'Unknown')}")
                 
-                # Journal'ın latest issue'sundaki makaleleri al
-                articles = self.scrape_journal_articles(
-                    journal, 
+                # Journal'ın issue'larındaki makaleleri al
+                issue_results = self.scrape_journal_articles(
+                    journal,
                     max_articles=max_articles_per_journal
                 )
-                
-                # Sonuçlara ekle
-                result['articles'].extend(articles)
+
+                # Sonuçlara ekle (issue_results: [{issue_info, articles}, ...])
+                for res in issue_results:
+                    result['articles'].extend(res.get('articles', []))
                 
                 logger.info(f"Toplam makale sayısı: {len(result['articles'])}")
                 
