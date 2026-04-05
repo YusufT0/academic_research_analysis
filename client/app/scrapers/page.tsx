@@ -18,6 +18,7 @@ import {
   FileText,
   Columns2,
   AlignJustify,
+  Link2,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -42,6 +43,7 @@ import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
 import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
 import { OpenAlexScanner } from '@/components/dashboard/OpenAlexScanner';
+import { JournalUrlScraper } from '@/components/scrapers/JournalUrlScraper';
 
 // ==================== Status Config ====================
 
@@ -341,7 +343,13 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
   const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
   const [limit, setLimit] = useState<number>(25);
   const [depth, setDepth] = useState<number>(1);
-  const config = statusConfig[scraper.status] || statusConfig.idle;
+
+  // Tekil journal modu aktifse idle gibi davran — gerçek durum JournalUrlScraper'da gösterilir
+  const effectiveScraper = scraper.is_single_journal_mode
+    ? { ...scraper, status: 'idle' as const, progress_percent: 0, current_journal: null, completed_journals: [], pending_journals: [] }
+    : scraper;
+
+  const config = statusConfig[effectiveScraper.status] || statusConfig.idle;
 
   // Gelen scraper nesnesindeki süre güncellendiğinde local state'i senkronize et
   useEffect(() => {
@@ -372,9 +380,9 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
     }
   };
 
-  const isRunning = scraper.status === 'running';
-  const isPaused = scraper.status === 'paused';
-  const canStart = ['idle', 'stopped', 'completed', 'error'].includes(scraper.status);
+  const isRunning = effectiveScraper.status === 'running';
+  const isPaused = effectiveScraper.status === 'paused';
+  const canStart = ['idle', 'stopped', 'completed', 'error'].includes(effectiveScraper.status);
 
   return (
     <Card>
@@ -394,15 +402,15 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         <div>
           <div className="flex justify-between text-sm mb-2">
             <span className="text-slate-600">İlerleme</span>
-            <span className="font-semibold">{scraper.progress_percent.toFixed(1)}%</span>
+            <span className="font-semibold">{effectiveScraper.progress_percent.toFixed(1)}%</span>
           </div>
           <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
             <div
-              className={`h-full rounded-full transition-all duration-500 ${scraper.status === 'error' ? 'bg-red-500' :
-                scraper.status === 'completed' ? 'bg-emerald-500' :
+              className={`h-full rounded-full transition-all duration-500 ${effectiveScraper.status === 'error' ? 'bg-red-500' :
+                effectiveScraper.status === 'completed' ? 'bg-emerald-500' :
                   'bg-gradient-to-r from-emerald-500 to-teal-400'
                 }`}
-              style={{ width: `${scraper.progress_percent}%` }}
+              style={{ width: `${effectiveScraper.progress_percent}%` }}
             />
           </div>
         </div>
@@ -410,45 +418,45 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Stats Grid */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <div className="bg-slate-50 rounded-lg p-3 text-center">
-            <p className="text-2xl font-bold text-slate-900">{scraper.journals_scraped}</p>
-            <p className="text-xs text-slate-500">/ {scraper.total_journals} Dergi</p>
+            <p className="text-2xl font-bold text-slate-900">{effectiveScraper.journals_scraped}</p>
+            <p className="text-xs text-slate-500">/ {effectiveScraper.total_journals} Dergi</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
-            <p className="text-2xl font-bold text-slate-900">{scraper.issues_scraped}</p>
+            <p className="text-2xl font-bold text-slate-900">{effectiveScraper.issues_scraped}</p>
             <p className="text-xs text-slate-500">Sayı</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
-            <p className="text-2xl font-bold text-emerald-600">{scraper.articles_scraped}</p>
+            <p className="text-2xl font-bold text-emerald-600">{effectiveScraper.articles_scraped}</p>
             <p className="text-xs text-slate-500">Yeni Makale</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
-            <p className={`text-2xl font-bold ${scraper.errors_count > 0 ? 'text-red-600' : 'text-slate-900'}`}>
-              {scraper.errors_count}
+            <p className={`text-2xl font-bold ${effectiveScraper.errors_count > 0 ? 'text-red-600' : 'text-slate-900'}`}>
+              {effectiveScraper.errors_count}
             </p>
             <p className="text-xs text-slate-500">Hata</p>
           </div>
         </div>
 
-        {/* Journal Queue */}
-        {(scraper.current_journal || (scraper.completed_journals?.length ?? 0) > 0) && (
-          <JournalQueue scraper={scraper} />
+        {/* Journal Queue — tekil journal modunda gösterme */}
+        {!scraper.is_single_journal_mode && (effectiveScraper.current_journal || (effectiveScraper.completed_journals?.length ?? 0) > 0) && (
+          <JournalQueue scraper={effectiveScraper} />
         )}
 
         {/* Last Error */}
-        {scraper.last_error && (
+        {effectiveScraper.last_error && (
           <div className="bg-red-50 rounded-lg p-4 flex items-start gap-3">
             <AlertTriangle className="h-5 w-5 text-red-500 flex-shrink-0 mt-0.5" />
             <div>
               <p className="text-xs text-red-600 font-medium mb-1">Son Hata</p>
-              <p className="text-sm text-red-800">{scraper.last_error}</p>
+              <p className="text-sm text-red-800">{effectiveScraper.last_error}</p>
             </div>
           </div>
         )}
 
         {/* Time Info */}
         <div className="flex items-center justify-between text-sm text-slate-500">
-          {scraper.started_at && (
-            <span>Başlangıç: {new Date(scraper.started_at).toLocaleTimeString('tr-TR')}</span>
+          {effectiveScraper.started_at && (
+            <span>Başlangıç: {new Date(effectiveScraper.started_at).toLocaleTimeString('tr-TR')}</span>
           )}
           {localElapsed > 0 && (
             <span>Geçen süre: {Math.floor(localElapsed / 60)} dk {Math.floor(localElapsed % 60)} sn</span>
@@ -993,6 +1001,7 @@ export default function ScrapersPage() {
   const [status, setStatus] = useState<AllScrapersStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [openAlexExpanded, setOpenAlexExpanded] = useState(false);
+  const [journalUrlExpanded, setJournalUrlExpanded] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -1101,6 +1110,32 @@ export default function ScrapersPage() {
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
+      </div>
+
+      {/* URL ile Tekil Journal Scraping */}
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+        <button
+          onClick={() => setJournalUrlExpanded(!journalUrlExpanded)}
+          className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-blue-100 text-blue-700 rounded-lg">
+              <Link2 className="h-5 w-5" />
+            </div>
+            <div className="text-left">
+              <h2 className="font-semibold text-slate-900">URL ile Journal İşle</h2>
+              <p className="text-sm text-slate-500">ACM, ScienceDirect veya IEEE Xplore URL&#39;si girerek tekil dergi scraping yapın</p>
+            </div>
+          </div>
+          <ChevronUp
+            className={`h-5 w-5 text-slate-400 transition-transform ${journalUrlExpanded ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {journalUrlExpanded && (
+          <div className="p-4 border-t border-slate-200">
+            <JournalUrlScraper />
+          </div>
+        )}
       </div>
 
       {/* OpenAlex Tarayıcısı - Collapsible */}

@@ -37,6 +37,7 @@ from .routers import (
     openalex_router,
     citation_graph_router,
     authors_router,
+    journal_scraper_router,
 )
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -395,6 +396,7 @@ app.include_router(search_router, prefix="/api/v1")
 app.include_router(openalex_router, prefix="/api/v1")
 app.include_router(citation_graph_router, prefix="/api/v1")
 app.include_router(authors_router, prefix="/api/v1")
+app.include_router(journal_scraper_router, prefix="/api/v1")
 
 # Register global error handlers
 register_error_handlers(app)

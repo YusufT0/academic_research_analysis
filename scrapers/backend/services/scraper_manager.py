@@ -121,6 +121,12 @@ class ScraperProgress:
         
         # Logs
         self.logs: List[Dict[str, Any]] = []
+
+        # Tekil journal modu flag'i
+        # True olduğunda bu scraper, URL aracılığıyla tek bir journal
+        # işlemek için başlatılmış demektir. Frontend bunu kullanarak
+        # ana scraper kartını "meşgul" olarak göstermez.
+        self.is_single_journal_mode: bool = False
         
     @property
     def status(self) -> ScraperStatus:
@@ -226,6 +232,7 @@ class ScraperProgress:
             "elapsed_seconds": self.elapsed_seconds,
             "progress_percent": self.progress_percent,
             "last_error": self.last_error,
+            "is_single_journal_mode": self.is_single_journal_mode,
         }
     
     def reset(self):
@@ -253,6 +260,8 @@ class ScraperProgress:
         self.last_activity = None
         self.last_error = None
         self.logs = []
+        # Not: is_single_journal_mode burada sıfırlanmaz —
+        # thread fonksiyonu override varlığına göre bunu yönetir.
         
     def __setattr__(self, name, value):
         # Önceki değeri al (sadece metrik artışlarını hesaplamak için)
@@ -441,6 +450,84 @@ class ScraperManager:
 
         return logs[:limit] if limit else logs
     
+    # ==================== Single Journal Scraper ====================
+
+    async def start_single_journal(
+        self,
+        url: str,
+        scraper_type: str,
+        max_articles: int = 50,
+        depth: int = 1,
+        headless: bool = True,
+    ) -> bool:
+        """
+        Tek bir journal URL'sini scrape eder.
+
+        Mevcut IEEE/ScienceDirect/ACM scraper altyapısını kullanır —
+        journal listesi olarak yalnızca verilen URL'yi temsil eden
+        1 elemanlı bir liste oluşturur, ardından ilgili scraper'ı başlatır.
+        Böylece mevcut progress tracking, WebSocket events ve
+        JournalQueue UI'ı değiştirilmeden çalışır.
+        """
+        url = url.strip()
+
+        # Platforma göre tek-elemanlı journal dicts oluştur
+        if scraper_type == "ieee":
+            # IEEE'de journal dict: {name, url, punumber}
+            import re as _re
+            m = _re.search(r"punumber=(\d+)", url, _re.IGNORECASE)
+            punumber = m.group(1) if m else "unknown"
+            single_journal_list = [{
+                "name": f"Journal (punumber={punumber})",
+                "url": url,
+                "punumber": punumber,
+                "open_access": False,
+                "aims_and_scope": None,
+            }]
+            self._ieee_single_journal_override = single_journal_list
+            return await self.start_ieee(
+                headless=headless,
+                max_articles=max_articles,
+                depth=depth,
+            )
+
+        elif scraper_type == "sciencedirect":
+            import re as _re
+            m = _re.search(r"/journal/([a-zA-Z0-9\-]+)", url, _re.IGNORECASE)
+            journal_slug = m.group(1) if m else "unknown"
+            single_journal_list = [{
+                "name": f"Journal ({journal_slug})",
+                "url": url,
+                "slug": journal_slug,
+                "open_access": False,
+            }]
+            self._sd_single_journal_override = single_journal_list
+            return await self.start_sciencedirect(
+                headless=headless,
+                max_articles=max_articles,
+                depth=depth,
+            )
+
+        elif scraper_type == "acm":
+            import re as _re
+            m = _re.search(r"/(journal|loi)/([a-zA-Z0-9\-]+)", url, _re.IGNORECASE)
+            acm_id = m.group(2) if m else "unknown"
+            single_journal_list = [{
+                "name": f"Journal ({acm_id})",
+                "url": f"/journal/{acm_id}",   # ACM DB'de relative path saklıyor
+                "code": acm_id,                 # ACM scraper.scrape_journal_articles bunu bekliyor
+                "open_access": False,
+            }]
+            self._acm_single_journal_override = single_journal_list
+            return await self.start_acm(
+                headless=headless,
+                max_articles=max_articles,
+                depth=depth,
+            )
+
+        return False
+
+
     # ==================== IEEE Scraper ====================
     
     async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
@@ -475,6 +562,8 @@ class ScraperManager:
         """
         progress = self.ieee_progress
         progress.reset()
+        # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
+        progress.is_single_journal_mode = bool(getattr(self, '_ieee_single_journal_override', None))
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "IEEE scraper başlatılıyor (ayrı thread)...")
@@ -502,57 +591,66 @@ class ScraperManager:
             progress.add_log("info", "Browser başlatıldı")
             logger.success("[IEEE Thread] Browser başlatıldı")
             
-            # Navigate to journals page
-            logger.info("[IEEE Thread] Journals sayfasına gidiliyor...")
-            success = scraper.navigate_to_journals()
-            if not success:
-                raise Exception("Journals sayfasına gidilemedi")
-            
-            progress.add_log("success", "Journals sayfasına gidildi")
-            logger.success("[IEEE Thread] Journals sayfasına gidildi")
-            
-            # Get all journals
-            logger.info("[IEEE Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_all_journals()
-            progress.total_journals = len(all_journals)
-            progress.add_log("info", f"{len(all_journals)} journal bulundu")
-            logger.info(f"[IEEE Thread] {len(all_journals)} journal bulundu")
-            
-            # ============================================================
-            # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
-            # ============================================================
-            logger.info("[IEEE Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
-            progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
-            
-            # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
-            journal_names = [j.get('name', '') for j in all_journals]
-            
-            # Async call from thread
-            journal_repo = JournalRepository()
-            future = asyncio.run_coroutine_threadsafe(
-                journal_repo.get_bulk_priority_info(journal_names, 'ieeexplore'),
-                self._loop
-            )
-            priority_info = future.result(timeout=30)
-            
-            # İstatistikleri hesapla
-            new_count = sum(1 for info in priority_info.values() if not info['exists'])
-            existing_count = len(priority_info) - new_count
-            
-            logger.info(f"[IEEE Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
-            progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
-            
-            # Journal'ları öncelik sistemine göre sırala
-            all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
-            
-            logger.success("[IEEE Thread] Journal'lar öncelik sırasına göre sıralandı!")
-            progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
-            
-            # İlk 5 journal'ı logla
-            for i, j in enumerate(all_journals[:5], 1):
-                info = priority_info.get(j.get('name', ''), {})
-                status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
-                logger.info(f"[IEEE Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            # ── Tekil journal override kontrolü ──────────────────────────
+            _single_override = getattr(self, '_ieee_single_journal_override', None)
+            if _single_override:
+                self._ieee_single_journal_override = None  # tüket — bir kere kullan
+                all_journals = _single_override
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"Tekil journal modu — URL: {all_journals[0].get('url', '')}")
+                logger.info(f"[IEEE Thread] Tekil journal modu: {all_journals[0].get('url', '')}")
+            else:
+                # Navigate to journals page
+                logger.info("[IEEE Thread] Journals sayfasına gidiliyor...")
+                success = scraper.navigate_to_journals()
+                if not success:
+                    raise Exception("Journals sayfasına gidilemedi")
+
+                progress.add_log("success", "Journals sayfasına gidildi")
+                logger.success("[IEEE Thread] Journals sayfasına gidildi")
+
+                # Get all journals
+                logger.info("[IEEE Thread] Journal listesi alınıyor...")
+                all_journals = scraper.scrape_all_journals()
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"{len(all_journals)} journal bulundu")
+                logger.info(f"[IEEE Thread] {len(all_journals)} journal bulundu")
+
+                # ============================================================
+                # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+                # ============================================================
+                logger.info("[IEEE Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+                progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+
+                # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
+                journal_names = [j.get('name', '') for j in all_journals]
+
+                # Async call from thread
+                journal_repo = JournalRepository()
+                future = asyncio.run_coroutine_threadsafe(
+                    journal_repo.get_bulk_priority_info(journal_names, 'ieeexplore'),
+                    self._loop
+                )
+                priority_info = future.result(timeout=30)
+
+                # İstatistikleri hesapla
+                new_count = sum(1 for info in priority_info.values() if not info['exists'])
+                existing_count = len(priority_info) - new_count
+
+                logger.info(f"[IEEE Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+                progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+
+                # Journal'ları öncelik sistemine göre sırala
+                all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+
+                logger.success("[IEEE Thread] Journal'lar öncelik sırasına göre sıralandı!")
+                progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+
+                # İlk 5 journal'ı logla
+                for i, j in enumerate(all_journals[:5], 1):
+                    info = priority_info.get(j.get('name', ''), {})
+                    status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                    logger.info(f"[IEEE Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
             
             # Scrape each journal
             for idx, journal in enumerate(all_journals):
@@ -862,6 +960,8 @@ class ScraperManager:
         """
         progress = self.sciencedirect_progress
         progress.reset()
+        # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
+        progress.is_single_journal_mode = bool(getattr(self, '_sd_single_journal_override', None))
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "ScienceDirect scraper başlatılıyor (ayrı thread)...")
@@ -889,57 +989,66 @@ class ScraperManager:
             progress.add_log("info", "Browser başlatıldı")
             logger.success("[SD Thread] Browser başlatıldı")
             
-            # Navigate to journals page
-            logger.info("[SD Thread] Journals sayfasına gidiliyor...")
-            success = scraper.navigate_to_journals()
-            if not success:
-                raise Exception("Journals sayfasına gidilemedi")
-            
-            progress.add_log("success", "Journals sayfasına gidildi")
-            logger.success("[SD Thread] Journals sayfasına gidildi")
-            
-            # Get all journals
-            logger.info("[SD Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_all_journals()
-            progress.total_journals = len(all_journals)
-            progress.add_log("info", f"{len(all_journals)} journal bulundu")
-            logger.info(f"[SD Thread] {len(all_journals)} journal bulundu")
-            
-            # ============================================================
-            # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
-            # ============================================================
-            logger.info("[SD Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
-            progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
-            
-            # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
-            journal_names = [j.get('name', '') for j in all_journals]
-            
-            # Async call from thread
-            journal_repo = JournalRepository()
-            future = asyncio.run_coroutine_threadsafe(
-                journal_repo.get_bulk_priority_info(journal_names, 'sciencedirect'),
-                self._loop
-            )
-            priority_info = future.result(timeout=30)
-            
-            # İstatistikleri hesapla
-            new_count = sum(1 for info in priority_info.values() if not info['exists'])
-            existing_count = len(priority_info) - new_count
-            
-            logger.info(f"[SD Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
-            progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
-            
-            # Journal'ları öncelik sistemine göre sırala
-            all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
-            
-            logger.success("[SD Thread] Journal'lar öncelik sırasına göre sıralandı!")
-            progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
-            
-            # İlk 5 journal'ı logla
-            for i, j in enumerate(all_journals[:5], 1):
-                info = priority_info.get(j.get('name', ''), {})
-                status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
-                logger.info(f"[SD Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            # ── Tekil journal override kontrolü ──────────────────────────
+            _single_override = getattr(self, '_sd_single_journal_override', None)
+            if _single_override:
+                self._sd_single_journal_override = None  # tüket
+                all_journals = _single_override
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"Tekil journal modu — URL: {all_journals[0].get('url', '')}")
+                logger.info(f"[SD Thread] Tekil journal modu: {all_journals[0].get('url', '')}")
+            else:
+                # Navigate to journals page
+                logger.info("[SD Thread] Journals sayfasına gidiliyor...")
+                success = scraper.navigate_to_journals()
+                if not success:
+                    raise Exception("Journals sayfasına gidilemedi")
+
+                progress.add_log("success", "Journals sayfasına gidildi")
+                logger.success("[SD Thread] Journals sayfasına gidildi")
+
+                # Get all journals
+                logger.info("[SD Thread] Journal listesi alınıyor...")
+                all_journals = scraper.scrape_all_journals()
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"{len(all_journals)} journal bulundu")
+                logger.info(f"[SD Thread] {len(all_journals)} journal bulundu")
+
+                # ============================================================
+                # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+                # ============================================================
+                logger.info("[SD Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+                progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+
+                # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
+                journal_names = [j.get('name', '') for j in all_journals]
+
+                # Async call from thread
+                journal_repo = JournalRepository()
+                future = asyncio.run_coroutine_threadsafe(
+                    journal_repo.get_bulk_priority_info(journal_names, 'sciencedirect'),
+                    self._loop
+                )
+                priority_info = future.result(timeout=30)
+
+                # İstatistikleri hesapla
+                new_count = sum(1 for info in priority_info.values() if not info['exists'])
+                existing_count = len(priority_info) - new_count
+
+                logger.info(f"[SD Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+                progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+
+                # Journal'ları öncelik sistemine göre sırala
+                all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+
+                logger.success("[SD Thread] Journal'lar öncelik sırasına göre sıralandı!")
+                progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+
+                # İlk 5 journal'ı logla
+                for i, j in enumerate(all_journals[:5], 1):
+                    info = priority_info.get(j.get('name', ''), {})
+                    status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                    logger.info(f"[SD Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
             
             # Scrape each journal
             for idx, journal in enumerate(all_journals):
@@ -1251,6 +1360,8 @@ class ScraperManager:
         """
         progress = self.acm_progress
         progress.reset()
+        # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
+        progress.is_single_journal_mode = bool(getattr(self, '_acm_single_journal_override', None))
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "ACM scraper başlatılıyor (ayrı thread)...")
@@ -1278,57 +1389,66 @@ class ScraperManager:
             progress.add_log("info", "Browser başlatıldı")
             logger.success("[ACM Thread] Browser başlatıldı")
             
-            # Navigate to journals page
-            logger.info("[ACM Thread] Journals sayfasına gidiliyor...")
-            success = scraper.navigate_to_journals()
-            if not success:
-                raise Exception("Journals sayfasına gidilemedi")
-            
-            progress.add_log("success", "Journals sayfasına gidildi")
-            logger.success("[ACM Thread] Journals sayfasına gidildi")
-            
-            # Get all journals
-            logger.info("[ACM Thread] Journal listesi alınıyor...")
-            all_journals = scraper.scrape_journals()
-            progress.total_journals = len(all_journals)
-            progress.add_log("info", f"{len(all_journals)} journal bulundu")
-            logger.info(f"[ACM Thread] {len(all_journals)} journal bulundu")
-            
-            # ============================================================
-            # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
-            # ============================================================
-            logger.info("[ACM Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
-            progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
-            
-            # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
-            journal_names = [j.get('name', '') for j in all_journals]
-            
-            # Async call from thread
-            journal_repo = JournalRepository()
-            future = asyncio.run_coroutine_threadsafe(
-                journal_repo.get_bulk_priority_info(journal_names, 'acm'),
-                self._loop
-            )
-            priority_info = future.result(timeout=30)
-            
-            # İstatistikleri hesapla
-            new_count = sum(1 for info in priority_info.values() if not info['exists'])
-            existing_count = len(priority_info) - new_count
-            
-            logger.info(f"[ACM Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
-            progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
-            
-            # Journal'ları öncelik sistemine göre sırala
-            all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
-            
-            logger.success("[ACM Thread] Journal'lar öncelik sırasına göre sıralandı!")
-            progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
-            
-            # İlk 5 journal'ı logla
-            for i, j in enumerate(all_journals[:5], 1):
-                info = priority_info.get(j.get('name', ''), {})
-                status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
-                logger.info(f"[ACM Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            # ── Tekil journal override kontrolü ──────────────────────────
+            _single_override = getattr(self, '_acm_single_journal_override', None)
+            if _single_override:
+                self._acm_single_journal_override = None  # tüket
+                all_journals = _single_override
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"Tekil journal modu — URL: {all_journals[0].get('url', '')}")
+                logger.info(f"[ACM Thread] Tekil journal modu: {all_journals[0].get('url', '')}")
+            else:
+                # Navigate to journals page
+                logger.info("[ACM Thread] Journals sayfasına gidiliyor...")
+                success = scraper.navigate_to_journals()
+                if not success:
+                    raise Exception("Journals sayfasına gidilemedi")
+
+                progress.add_log("success", "Journals sayfasına gidildi")
+                logger.success("[ACM Thread] Journals sayfasına gidildi")
+
+                # Get all journals
+                logger.info("[ACM Thread] Journal listesi alınıyor...")
+                all_journals = scraper.scrape_journals()
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"{len(all_journals)} journal bulundu")
+                logger.info(f"[ACM Thread] {len(all_journals)} journal bulundu")
+
+                # ============================================================
+                # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+                # ============================================================
+                logger.info("[ACM Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+                progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+
+                # Journal repository'yi başlat ve öncelik bilgilerini al (async call from thread)
+                journal_names = [j.get('name', '') for j in all_journals]
+
+                # Async call from thread
+                journal_repo = JournalRepository()
+                future = asyncio.run_coroutine_threadsafe(
+                    journal_repo.get_bulk_priority_info(journal_names, 'acm'),
+                    self._loop
+                )
+                priority_info = future.result(timeout=30)
+
+                # İstatistikleri hesapla
+                new_count = sum(1 for info in priority_info.values() if not info['exists'])
+                existing_count = len(priority_info) - new_count
+
+                logger.info(f"[ACM Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+                progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+
+                # Journal'ları öncelik sistemine göre sırala
+                all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+
+                logger.success("[ACM Thread] Journal'lar öncelik sırasına göre sıralandı!")
+                progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+
+                # İlk 5 journal'ı logla
+                for i, j in enumerate(all_journals[:5], 1):
+                    info = priority_info.get(j.get('name', ''), {})
+                    status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                    logger.info(f"[ACM Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
             
             # Scrape each journal
             for idx, journal in enumerate(all_journals):

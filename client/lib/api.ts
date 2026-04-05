@@ -293,6 +293,66 @@ export async function getScraperLogs(scraperType = 'all', limit = 50): Promise<S
   return fetchApi<ScraperLogsResponse>(`/scrapers/logs?scraper_type=${scraperType}&limit=${limit}`);
 }
 
+// ==================== Journal URL Scraper ====================
+
+export interface JournalUrlValidateResponse {
+  valid: boolean;
+  scraper_type: string | null;
+  message: string;
+}
+
+export interface JournalExistsResponse {
+  exists: boolean;
+  journal: {
+    id: string;
+    name: string;
+    url: string | null;
+    source_website: string;
+    article_count: number;
+    issue_count: number;
+    publisher: string | null;
+    issn: string | null;
+    updated_at: string | null;
+    created_at: string | null;
+  } | null;
+}
+
+export async function validateJournalUrl(url: string): Promise<JournalUrlValidateResponse> {
+  return fetchApi<JournalUrlValidateResponse>('/scrapers/journal/validate', {
+    method: 'POST',
+    body: JSON.stringify({ url }),
+  });
+}
+
+export async function checkJournalExists(url: string): Promise<JournalExistsResponse> {
+  const params = new URLSearchParams({ url });
+  return fetchApi<JournalExistsResponse>(`/scrapers/journal/check-exists?${params.toString()}`);
+}
+
+export async function startSingleJournalScraper(
+  url: string,
+  scraperType: string,
+  maxArticles = 50,
+  depth = 1,
+  headless = false,
+) {
+  return fetchApi('/scrapers/journal/start', {
+    method: 'POST',
+    body: JSON.stringify({
+      url,
+      scraper_type: scraperType,
+      max_articles: maxArticles,
+      depth,
+      headless,
+    }),
+  });
+}
+
+export async function getSingleJournalScraperStatus(scraperType: string) {
+  return fetchApi(`/scrapers/journal/status?scraper_type=${scraperType}`);
+}
+
+
 // ==================== Elasticsearch Search ====================
 
 export interface ElasticSearchFilters {

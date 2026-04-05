@@ -120,6 +120,7 @@ export interface ScraperStatus {
   elapsed_seconds: number;
   progress_percent: number;
   last_error: string | null;
+  is_single_journal_mode?: boolean;
 }
 
 export interface AllScrapersStatus {
