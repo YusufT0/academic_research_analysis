@@ -31,18 +31,20 @@ class ScraperStoppedException(Exception):
 class ScienceDirectScraper:
     """Science Direct scraper ana sınıfı"""
     
-    def __init__(self, use_proxy: bool = None, headless: bool = False, 
-                 use_undetected: bool = True, stop_flag=None):
+    def __init__(self, use_proxy: bool = None, headless: bool = False,
+                 use_undetected: bool = True, stop_flag=None, pause_flag=None):
         """
         Science Direct scraper'ı başlatır
-        
+
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
             use_undetected: undetected-chromedriver kullan (Cloudflare bypass)
             stop_flag: threading.Event - durdurma sinyali için
+            pause_flag: threading.Event - duraklatma sinyali için
         """
         self.stop_flag = stop_flag
+        self.pause_flag = pause_flag
         self.config = ScienceDirectConfig()
         
         # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
@@ -90,6 +92,20 @@ class ScienceDirectScraper:
         if self.stop_flag and self.stop_flag.is_set():
             logger.warning("Stop sinyali alındı, scraper durduruluyor...")
             raise ScraperStoppedException("Scraper durduruldu")
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Stop/pause flag kontrolü yaparak bekle. Stop flag set ise exception fırlatır."""
+        end = time.time() + seconds
+        while True:
+            self.check_stop_flag()
+            if self.pause_flag and self.pause_flag.is_set():
+                while self.pause_flag.is_set():
+                    self.check_stop_flag()
+                    time.sleep(0.3)
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.3, remaining))
     
     def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
@@ -122,7 +138,7 @@ class ScienceDirectScraper:
                 
                 # Cloudflare kontrolünü bekle
                 logger.loading("Cloudflare kontrolü bekleniyor")
-                time.sleep(5)  # Cloudflare challenge için ek süre
+                self._interruptible_sleep(5)  # Cloudflare challenge için ek süre
                 
                 # Sayfanın yüklenmesini bekle
                 WebDriverWait(self.driver, self.config.timeout).until(
@@ -136,10 +152,10 @@ class ScienceDirectScraper:
                 # Cloudflare challenge kontrolü
                 if "challenge" in self.driver.current_url.lower() or "captcha" in self.driver.page_source.lower():
                     logger.warning("Cloudflare challenge algılandı, bekleniyor...")
-                    time.sleep(10)  # Challenge'ın geçmesi için bekle
-                
+                    self._interruptible_sleep(10)  # Challenge'ın geçmesi için bekle
+
                 # Kısa bekleme (sayfa tamamen render olsun)
-                time.sleep(2)
+                self._interruptible_sleep(2)
                 
                 # Cookie popup'ını kapat
                 handle_cookie_consent(self.driver)
@@ -154,7 +170,7 @@ class ScienceDirectScraper:
                     if self.driver:
                         self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
                         self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
-                    time.sleep(2)
+                    self._interruptible_sleep(2)
                     continue
                 return False
             except Exception as e:
@@ -184,7 +200,7 @@ class ScienceDirectScraper:
                         else:
                             logger.error("Driver yeniden başlatılamadı!")
                             return False
-                        time.sleep(2)  # Yeniden başlatma sonrası kısa bekleme
+                        self._interruptible_sleep(2)  # Yeniden başlatma sonrası kısa bekleme
                         continue
                     else:
                         logger.error("Maksimum deneme sayısına ulaşıldı - bağlantı sorunu devam ediyor")
@@ -221,14 +237,14 @@ class ScienceDirectScraper:
             
             # Sayfanın yüklenmesini bekle
             logger.loading("Sayfa yükleniyor")
-            time.sleep(3)
-            
+            self._interruptible_sleep(3)
+
             # Cookie popup'ını kapat
             handle_cookie_consent(self.driver)
-            
+
             # Arama sonuçlarının yüklenmesini bekle
             logger.loading("Arama sonuçları bekleniyor")
-            time.sleep(2)
+            self._interruptible_sleep(2)
             
             # Sonuçları kontrol et
             logger.info("Sonuçlar kontrol ediliyor...")
@@ -302,7 +318,7 @@ class ScienceDirectScraper:
             full_url = f"https://www.sciencedirect.com{journal_url}" if journal_url.startswith('/') else journal_url
             logger.info(f"Journal about bilgileri alınıyor: {full_url}")
             self.driver.get(full_url)
-            time.sleep(3)
+            self._interruptible_sleep(3)
             handle_cookie_consent(self.driver)
 
             page_source = self.driver.page_source
@@ -313,7 +329,7 @@ class ScienceDirectScraper:
                 about_url = full_url.rstrip('/') + '/about/aims-and-scope'
                 logger.info(f"About sekmesi bulundu, aims-and-scope sayfasına gidiliyor: {about_url}")
                 self.driver.get(about_url)
-                time.sleep(3)
+                self._interruptible_sleep(3)
                 handle_cookie_consent(self.driver)
                 aims_and_scope = JournalParser.extract_aims_scope_from_about_page(self.driver.page_source)
             else:
@@ -375,7 +391,7 @@ class ScienceDirectScraper:
 
             logger.info(f"Issues sayfasına gidiliyor: {issues_url}")
             self.driver.get(issues_url)
-            time.sleep(3)
+            self._interruptible_sleep(3)
             handle_cookie_consent(self.driver)
 
             all_issues = []
@@ -420,7 +436,7 @@ class ScienceDirectScraper:
                                     ))
                                 )
                             else:
-                                time.sleep(2)
+                                self._interruptible_sleep(2)
 
                         except TimeoutException:
                             logger.warning(
@@ -453,7 +469,7 @@ class ScienceDirectScraper:
                         "button[aria-label='Next page']:not([disabled])"
                     )
                     next_btn.click()
-                    time.sleep(3)
+                    self._interruptible_sleep(3)
                     handle_cookie_consent(self.driver)
                 except Exception:
                     logger.info("Issues sayfasında son sayfaya ulaşıldı")
@@ -499,7 +515,7 @@ class ScienceDirectScraper:
         logger.info(f"  Issue URL: {full_issue_url}")
 
         self.driver.get(full_issue_url)
-        time.sleep(3)
+        self._interruptible_sleep(3)
         handle_cookie_consent(self.driver)
 
         # Issue bilgilerini al
@@ -595,8 +611,8 @@ class ScienceDirectScraper:
             # Makale sayfasına git
             full_url = f"https://www.sciencedirect.com{article_url}" if article_url.startswith('/') else article_url
             self.driver.get(full_url)
-            time.sleep(3)
-            
+            self._interruptible_sleep(3)
+
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
                 logger.warning("Content error tespit edildi!")
@@ -694,6 +710,8 @@ class ScienceDirectScraper:
         article_progress_callback=None,
         article_list_callback=None,
         existing_issue_urls: set = None,
+        issue_start_callback=None,
+        issue_complete_callback=None,
     ) -> list:
         """
         Bir journal'ın issue'larını ve makalelerini tarar.
@@ -754,6 +772,16 @@ class ScienceDirectScraper:
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
+                if issue_start_callback:
+                    try:
+                        issue_start_callback(
+                            issue_idx,
+                            len(issues_to_process),
+                            issue_stub.get('title', f'Issue {issue_idx}'),
+                        )
+                    except Exception:
+                        pass
+
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
@@ -770,6 +798,16 @@ class ScienceDirectScraper:
                     print_article_summary(article, len(result['articles']))
 
                 issue_results.append(result)
+
+                if issue_complete_callback:
+                    try:
+                        issue_complete_callback(
+                            issue_idx,
+                            len(result['articles']),
+                            [a.get('title', '') for a in result['articles']],
+                        )
+                    except Exception:
+                        pass
 
             # 4. Tüm journal için final failed articles denemesi
             if self.rate_limiter.failed_articles:
@@ -912,8 +950,8 @@ class ScienceDirectScraper:
                 break
             
             # Sayfa yüklenmesini bekle
-            time.sleep(2)
-        
+            self._interruptible_sleep(2)
+
         logger.header("Tarama Tamamlandı!")
         logger.stats({
             'Toplam Journal': len(all_journals),

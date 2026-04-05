@@ -36,16 +36,18 @@ class ACMScraper:
     
     ACM_BASE = "https://dl.acm.org"
     
-    def __init__(self, use_proxy: bool = None, headless: bool = False, stop_flag=None):
+    def __init__(self, use_proxy: bool = None, headless: bool = False, stop_flag=None, pause_flag=None):
         """
         ACM scraper'ı başlatır
-        
+
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
             stop_flag: threading.Event - durdurma sinyali için
+            pause_flag: threading.Event - duraklatma sinyali için
         """
         self.stop_flag = stop_flag
+        self.pause_flag = pause_flag
         self.config = ACMConfig()
         
         # Proxy yapılandırması
@@ -81,7 +83,21 @@ class ACMScraper:
         if self.stop_flag and self.stop_flag.is_set():
             logger.warning("Stop sinyali alındı, scraper durduruluyor...")
             raise ScraperStoppedException("Scraper durduruldu")
-    
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Stop/pause flag kontrolü yaparak bekle. Stop flag set ise exception fırlatır."""
+        end = time.time() + seconds
+        while True:
+            self.check_stop_flag()
+            if self.pause_flag and self.pause_flag.is_set():
+                while self.pause_flag.is_set():
+                    self.check_stop_flag()
+                    time.sleep(0.3)
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.3, remaining))
+
     def initialize(self):
         """Scraper'ı başlatır"""
         logger.header("ACM Scraper Başlatılıyor...")
@@ -100,7 +116,7 @@ class ACMScraper:
         """Rate limiting için rastgele bekleme"""
         wait = random.uniform(self.config.min_wait, self.config.max_wait)
         logger.info(f"Rate limiting: {wait:.2f} saniye bekleniyor...")
-        time.sleep(wait)
+        self._interruptible_sleep(wait)
     
     def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
@@ -125,11 +141,6 @@ class ACMScraper:
                         continue
                     return False
                 
-                # Sayfanın tamamen yüklenmesini bekle
-                logger.loading("Sayfa yükleniyor")
-                wait_for_page_load(self.selenium_driver)
-                time.sleep(3)
-                
                 # Modalları kapat
                 self._close_modals()
                 
@@ -144,17 +155,17 @@ class ACMScraper:
                     
                     # En alta kaydır
                     self.selenium_driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                    time.sleep(5) # Yüklenmesi için bekle
-                    
+                    self._interruptible_sleep(5)  # Yüklenmesi için bekle
+
                     # Modallar tekrar çıkabilir
                     if scroll_count % 5 == 0:
                         self._close_modals()
-                    
+
                     new_height = self.selenium_driver.execute_script("return document.body.scrollHeight")
-                    
+
                     if new_height == last_height:
                         logger.info("Sayfa sonuna ulaşıldı, kontrol için tekrar bekleniyor...")
-                        time.sleep(5)
+                        self._interruptible_sleep(5)
                         final_height = self.selenium_driver.execute_script("return document.body.scrollHeight")
                         if final_height == last_height:
                             break
@@ -215,33 +226,50 @@ class ACMScraper:
     
     def extract_aims_and_scope(self, journal_code: str):
         """
-        ACM journal sayfasından aims & scope bilgisini çıkarır.
-        Önce /journal/CODE, bulamazsa /journal/CODE/about sayfasını dener.
+        /journal/CODE sayfasından aims & scope bilgisini çıkarır.
+
+        Sayfa yüklendikten sonra (More) butonu varsa JS ile tıklar,
+        tam içerik DOM'a yazıldıktan sonra parse eder.
 
         Returns:
             str: HTML içeriği veya None
         """
-        for suffix in ['', '/about']:
-            url = f"{self.ACM_BASE}/journal/{journal_code}{suffix}"
-            try:
-                logger.info(f"Aims & scope için gidiliyor: {url}")
-                if not self.selenium_driver.get(url, wait_after=3):
-                    continue
-                wait_for_page_load(self.selenium_driver)
-                time.sleep(1)
-                self._close_modals()
-                self.check_stop_flag()
+        url = f"{self.ACM_BASE}/journal/{journal_code}"
+        try:
+            logger.info(f"Aims & scope için gidiliyor: {url}")
+            if not self.selenium_driver.get(url, wait_after=3):
+                return None
+            self._close_modals()
+            self.check_stop_flag()
 
-                aims = JournalParser.extract_aims_and_scope(self.selenium_driver.page_source)
-                if aims:
-                    logger.success(f"Aims & scope alındı ({len(aims)} karakter)")
-                    return aims
-            except ScraperStoppedException:
-                raise
-            except CloudflareBlockedException:
-                raise
+            # (More) butonu varsa tıkla — kısa içeriklerde bu buton olmaz
+            try:
+                js_click_more = (
+                    "(function() {"
+                    " var btn = document.querySelector("
+                    "'.item-meta__info .truncate-text .read-more');"
+                    " if (btn) { btn.click(); return true; }"
+                    " return false;"
+                    "})()"
+                )
+                clicked = self.selenium_driver.execute_script(js_click_more)
+                if clicked:
+                    logger.info("(More) butonuna tıklandı, içerik genişletiliyor...")
+                    self._interruptible_sleep(1.0)
             except Exception as e:
-                logger.warning(f"Aims & scope alınamadı ({url}): {e}")
+                logger.warning(f"(More) butonuna tıklama hatası: {e}")
+
+            aims = JournalParser.extract_aims_and_scope(self.selenium_driver.page_source)
+            if aims:
+                logger.success(f"Aims & scope alındı ({len(aims)} karakter)")
+                return aims
+
+        except ScraperStoppedException:
+            raise
+        except CloudflareBlockedException:
+            raise
+        except Exception as e:
+            logger.warning(f"Aims & scope alınamadı ({url}): {e}")
 
         logger.warning(f"{journal_code}: Aims & scope bulunamadı")
         return None
@@ -286,13 +314,21 @@ class ACMScraper:
             logger.warning("LOI sayfası yüklenemedi")
             return []
 
-        wait_for_page_load(self.selenium_driver)
-        time.sleep(2)
         self._close_modals()
+        # Modal CDP click'leri sonrası sayfanın JS tab'larını render etmesini bekle
+        wait_for_page_load(self.selenium_driver)
         self.check_stop_flag()
 
-        # 2. Decade sekmeleri
-        decade_tabs = IssueListParser.extract_decade_tabs(self.selenium_driver.page_source)
+        # 2. Decade sekmeleri — JS render gecikebilir, birkaç kez dene
+        decade_tabs = []
+        for _attempt in range(5):
+            decade_tabs = IssueListParser.extract_decade_tabs(self.selenium_driver.page_source)
+            if decade_tabs:
+                break
+            # Tab'lar henüz DOM'da değil — kısa bekle
+            time.sleep(1.0)
+            self.check_stop_flag()
+
         logger.info(
             f"Decade sekmeleri: {[d['text'] for d in decade_tabs]}"
             if decade_tabs else "Decade sekmesi yok, tüm issue'lar sayfada"
@@ -323,7 +359,7 @@ class ACMScraper:
                         f" if(el) el.click();"
                     )
                     self.selenium_driver.execute_script(js)
-                    time.sleep(2)
+                    self._interruptible_sleep(2)
                     wait_for_page_load(self.selenium_driver)
                 except Exception as e:
                     logger.warning(f"Decade tıklanamadı ({decade['text']}): {e}")
@@ -359,17 +395,53 @@ class ACMScraper:
                             f"\"a.year-item[aria-controls='{panel_id}']\");"
                             f" if(el) el.click();"
                         )
-                        self.selenium_driver.execute_script(js)
 
-                        # Panel'de issue'ların belirmesini bekle (max 10 sn)
                         loaded = False
-                        for _ in range(20):
-                            time.sleep(0.5)
-                            if IssueListParser.extract_issues_from_panel(
-                                self.selenium_driver.page_source, panel_id
-                            ):
-                                loaded = True
+                        max_year_attempts = 3
+                        for year_attempt in range(max_year_attempts):
+                            if year_attempt > 0:
+                                logger.info(
+                                    f"  Year {year['text']}: yeniden yükleniyor "
+                                    f"({year_attempt}/{max_year_attempts - 1})..."
+                                )
+                                # LOI sayfasını yeniden yükle, decade/year state sıfırlanır
+                                if not self.selenium_driver.get(loi_url, wait_after=3):
+                                    logger.warning(f"  Year {year['text']}: LOI sayfası yeniden yüklenemedi")
+                                    break
+                                self._close_modals()
+                                # Decade tab'ına tekrar tıkla (eğer gerekiyorsa)
+                                if need_click:
+                                    try:
+                                        js_decade = (
+                                            f"var el = document.querySelector("
+                                            f"\"a.decade-item[data-url='{decade['data_url']}']\");"
+                                            f" if(el) el.click();"
+                                        )
+                                        self.selenium_driver.execute_script(js_decade)
+                                        self._interruptible_sleep(2)
+                                        wait_for_page_load(self.selenium_driver)
+                                    except Exception:
+                                        pass
+
+                            self.selenium_driver.execute_script(js)
+
+                            # Panel'de issue'ların belirmesini bekle (max 10 sn)
+                            for _ in range(20):
+                                self.check_stop_flag()
+                                time.sleep(0.5)
+                                if IssueListParser.extract_issues_from_panel(
+                                    self.selenium_driver.page_source, panel_id
+                                ):
+                                    loaded = True
+                                    break
+
+                            if loaded:
                                 break
+
+                            logger.warning(
+                                f"  Year {year['text']}: timeout "
+                                f"(deneme {year_attempt + 1}/{max_year_attempts})"
+                            )
 
                         issues = IssueListParser.extract_issues_from_panel(
                             self.selenium_driver.page_source, panel_id
@@ -377,7 +449,7 @@ class ACMScraper:
                         add_issues(issues)
                         logger.info(
                             f"  Year {year['text']}: {len(issues)} issue "
-                            f"({'yüklendi' if loaded else 'timeout'})"
+                            f"({'yüklendi' if loaded else 'tüm denemeler başarısız'})"
                         )
                     except Exception as e:
                         logger.warning(f"  Year {year['text']} tıklanamadı: {e}")
@@ -420,8 +492,6 @@ class ACMScraper:
             logger.warning(f"Issue sayfası yüklenemedi: {full_issue_url}")
             return {'issue_info': self._extract_issue_info_from_url(full_issue_url), 'articles': []}
 
-        wait_for_page_load(self.selenium_driver)
-        time.sleep(2)
         self._close_modals()
 
         # Cloudflare kontrolü
@@ -480,14 +550,14 @@ class ACMScraper:
 
             for attempt in range(2):
                 if attempt > 0:
-                    time.sleep(2)
+                    self._interruptible_sleep(2)
 
                 if not self.selenium_driver.get(full_url, wait_after=3):
                     continue
 
-                wait_for_page_load(self.selenium_driver)
-                time.sleep(1)
                 self._close_modals()
+                # Modal etkileşimleri sonrası sayfa settle olana kadar bekle
+                wait_for_page_load(self.selenium_driver)
 
                 article_data = ArticleDetailParser.extract_article_details(
                     self.selenium_driver.page_source, full_url
@@ -517,7 +587,7 @@ class ACMScraper:
             if consecutive_failures >= 3:
                 logger.error("Üst üste 3 makale hatası! Tarayıcı yeniden başlatılıyor...")
                 self.selenium_driver.restart()
-                time.sleep(60)
+                self._interruptible_sleep(60)
                 consecutive_failures = 0
 
             self._random_wait()
@@ -530,9 +600,8 @@ class ACMScraper:
                 try:
                     if not self.selenium_driver.get(r_url, wait_after=3):
                         continue
-                    wait_for_page_load(self.selenium_driver)
-                    time.sleep(1)
                     self._close_modals()
+                    wait_for_page_load(self.selenium_driver)
 
                     article_data = ArticleDetailParser.extract_article_details(
                         self.selenium_driver.page_source, r_url
@@ -589,6 +658,8 @@ class ACMScraper:
         article_progress_callback=None,
         article_list_callback=None,
         existing_issue_urls: set = None,
+        issue_start_callback=None,
+        issue_complete_callback=None,
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın aims & scope bilgisini alır ve issue'larını + makalelerini toplar.
@@ -660,6 +731,16 @@ class ACMScraper:
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
+                if issue_start_callback:
+                    try:
+                        issue_start_callback(
+                            issue_idx,
+                            len(issues_to_process),
+                            issue_stub.get('title', f'Issue {issue_idx}'),
+                        )
+                    except Exception:
+                        pass
+
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
@@ -673,6 +754,16 @@ class ACMScraper:
                     article['journal_name'] = journal_name
 
                 issue_results.append(result)
+
+                if issue_complete_callback:
+                    try:
+                        issue_complete_callback(
+                            issue_idx,
+                            len(result['articles']),
+                            [a.get('title', '') for a in result['articles']],
+                        )
+                    except Exception:
+                        pass
 
             logger.found(
                 sum(len(r['articles']) for r in issue_results),
@@ -714,11 +805,9 @@ class ACMScraper:
                 logger.warning(f"Makale sayfası yüklenemedi: {article_url}")
                 return None
             
-            wait_for_page_load(self.selenium_driver)
-            time.sleep(1)
-            
             # Modalları kapat
             self._close_modals()
+            wait_for_page_load(self.selenium_driver)
             
             # Makale detaylarını parse et
             page_source = self.selenium_driver.page_source

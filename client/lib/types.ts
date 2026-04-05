@@ -21,6 +21,7 @@ export interface Journal {
   average_citation_count?: number | null;
   total_citation_count?: number;
   last_citation_update_date?: string | null;
+  aims_and_scope?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -81,6 +82,18 @@ export interface PaginatedResponse<T> {
   has_prev: boolean;
 }
 
+export interface IssueProgress {
+  title: string;
+  articles_count: number;
+  article_list?: string[];
+}
+
+export interface CompletedJournal {
+  name: string;
+  articles_count: number;
+  issues?: IssueProgress[];
+}
+
 export interface ScraperStatus {
   scraper_type: string;
   status: 'idle' | 'starting' | 'running' | 'paused' | 'stopping' | 'stopped' | 'error' | 'completed';
@@ -88,7 +101,11 @@ export interface ScraperStatus {
   current_journal_index: number;
   total_journals: number;
   pending_journals: string[];
-  completed_journals: Array<{ name: string; articles_count: number; article_list?: string[] }>;
+  completed_journals: CompletedJournal[];
+  current_issue: string | null;
+  current_issue_index: number;
+  total_issues: number;
+  completed_issues: IssueProgress[];
   article_list: string[];
   current_article: string | null;
   current_article_index: number;

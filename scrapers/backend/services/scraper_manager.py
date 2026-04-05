@@ -93,8 +93,14 @@ class ScraperProgress:
         self.pending_journals: List[str] = []   # Kalan tüm dergiler
         self.completed_journals: List[Dict[str, Any]] = []  # [{name, articles_count}]
 
+        # Issue ilerleme
+        self.current_issue: Optional[str] = None
+        self.current_issue_index: int = 0
+        self.total_issues: int = 0
+        self.completed_issues: List[Dict[str, Any]] = []  # [{title, articles_count, article_list}]
+
         # Makale ilerleme
-        self.article_list: List[str] = []           # Mevcut journal'ın makale başlıkları (ön bilgi)
+        self.article_list: List[str] = []           # Mevcut issue'nun makale başlıkları (ön bilgi)
         self.current_article: Optional[str] = None
         self.current_article_index: int = 0
         self.total_articles: int = 0
@@ -173,9 +179,9 @@ class ScraperProgress:
             "details": details
         }
         self.logs.append(entry)
-        # Son 100 log'u tut
-        if len(self.logs) > 100:
-            self.logs = self.logs[-100:]
+        # Son 1000 log'u tut
+        if len(self.logs) > 1000:
+            self.logs = self.logs[-1000:]
         
         # WebSocket üzerinden log event'i yayınla
         try:
@@ -202,6 +208,10 @@ class ScraperProgress:
             "total_journals": self.total_journals,
             "pending_journals": self.pending_journals,
             "completed_journals": self.completed_journals,
+            "current_issue": self.current_issue,
+            "current_issue_index": self.current_issue_index,
+            "total_issues": self.total_issues,
+            "completed_issues": self.completed_issues,
             "article_list": self.article_list,
             "current_article": self.current_article,
             "current_article_index": self.current_article_index,
@@ -225,6 +235,10 @@ class ScraperProgress:
         self.current_journal_index = 0
         self.pending_journals = []
         self.completed_journals = []
+        self.current_issue = None
+        self.current_issue_index = 0
+        self.total_issues = 0
+        self.completed_issues = []
         self.article_list = []
         self.current_article = None
         self.current_article_index = 0
@@ -259,7 +273,7 @@ class ScraperProgress:
                 pass
         
         # Track UI-facing metric changes to keep the frontend progress bar fluid
-        if name in ('current_journal_index', 'current_article_index', 'article_list', 'journals_scraped', 'articles_scraped', 'articles_updated', 'errors_count'):
+        if name in ('current_journal_index', 'current_issue_index', 'current_article_index', 'article_list', 'completed_issues', 'journals_scraped', 'articles_scraped', 'articles_updated', 'errors_count'):
             # Sadece koşuyorken ilerlemeyi fırlat (başlangıçtaki resetleri yoksaymak için)
             if getattr(self, '_status', None) == ScraperStatus.RUNNING:
                 try:
@@ -287,7 +301,7 @@ class ScraperManager:
         self.acm_progress = ScraperProgress("acm")
         
         # Thread executor - scraper'lar için ayrı thread pool
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="scraper")
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="scraper")
         
         # Futures
         self._ieee_future: Optional[concurrent.futures.Future] = None
@@ -298,11 +312,16 @@ class ScraperManager:
         self._ieee_stop_flag = threading.Event()
         self._sciencedirect_stop_flag = threading.Event()
         self._acm_stop_flag = threading.Event()
-        
+
         # Pause flags (thread-safe)
         self._ieee_pause_flag = threading.Event()
         self._sciencedirect_pause_flag = threading.Event()
         self._acm_pause_flag = threading.Event()
+
+        # Live scraper references — set by threads, used for force-close on stop
+        self._ieee_scraper = None
+        self._sciencedirect_scraper = None
+        self._acm_scraper = None
         
         # Database service
         self._db_service: Optional[DatabaseService] = None
@@ -419,8 +438,8 @@ class ScraperManager:
         
         # Timestamp'e göre sırala
         logs.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        return logs[:limit]
+
+        return logs[:limit] if limit else logs
     
     # ==================== IEEE Scraper ====================
     
@@ -473,7 +492,8 @@ class ScraperManager:
             # Create and initialize
             logger.info("[IEEE Thread] Browser başlatılıyor...")
             print("[IEEE Thread] Browser başlatılıyor...", flush=True)
-            scraper = IEEEXploreScraper(headless=self.ieee_headless, stop_flag=self._ieee_stop_flag)
+            scraper = IEEEXploreScraper(headless=self.ieee_headless, stop_flag=self._ieee_stop_flag, pause_flag=self._ieee_pause_flag)
+            self._ieee_scraper = scraper
             print("[IEEE Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
             print("[IEEE Thread] Browser başlatıldı!", flush=True)
@@ -543,19 +563,22 @@ class ScraperManager:
                     logger.warning("[IEEE Thread] Scraper durduruldu")
                     break
                 
-                # Pause check
-                while self._ieee_pause_flag.is_set():
+                # Pause check — scraper'ın _interruptible_sleep'i de pause'u yakalar;
+                # burada sadece status güncellemesi yapılır
+                if self._ieee_pause_flag.is_set():
                     progress.status = ScraperStatus.PAUSED
-                    import time
-                    time.sleep(1)
-                
-                if progress.status == ScraperStatus.PAUSED:
+                    while self._ieee_pause_flag.is_set():
+                        import time as _t; _t.sleep(0.3)
                     progress.status = ScraperStatus.RUNNING
                 
                 journal_name = journal.get('name', 'Unknown')
                 progress.current_journal = journal_name
                 progress.current_journal_index = idx + 1
                 progress.pending_journals = [j.get('name', '') for j in all_journals[idx + 1:]]
+                progress.current_issue = None
+                progress.current_issue_index = 0
+                progress.total_issues = 0
+                progress.completed_issues = []
                 progress.article_list = []
                 progress.current_article = None
                 progress.current_article_index = 0
@@ -571,6 +594,24 @@ class ScraperManager:
                     progress.total_articles = art_total
                     progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
                     progress.current_article_index = art_idx
+
+                def _ieee_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str):
+                    progress.total_issues = total_issues
+                    progress.current_issue = issue_title or f"Issue {issue_idx}"
+                    progress.current_issue_index = issue_idx
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def _ieee_issue_complete_cb(issue_idx: int, articles_count: int, article_titles: List[str]):
+                    title = progress.current_issue or f"Issue {issue_idx}"
+                    new_issues = progress.completed_issues + [{
+                        'title': title,
+                        'articles_count': articles_count,
+                        'article_list': article_titles[:30],
+                    }]
+                    progress.completed_issues = new_issues
 
                 try:
                     import time
@@ -614,6 +655,8 @@ class ScraperManager:
                         article_progress_callback=_ieee_article_cb,
                         article_list_callback=_ieee_article_list_cb,
                         existing_issue_urls=existing_issue_urls,
+                        issue_start_callback=_ieee_issue_start_cb,
+                        issue_complete_callback=_ieee_issue_complete_cb,
                     )
 
                     try:
@@ -654,6 +697,7 @@ class ScraperManager:
                                 total_updated += updated
                                 if issue_created:
                                     issues_created += 1
+                            await self._db_service.recalculate_journal_counts(journal_doc.id)
                             return total_created, total_updated, issues_created
 
                         # Run async database call from thread
@@ -665,7 +709,7 @@ class ScraperManager:
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
-                            'article_list': progress.article_list.copy(),
+                            'issues': progress.completed_issues.copy(),
                         })
                         progress.journals_scraped += 1
                         progress.issues_scraped += issues_created
@@ -715,12 +759,22 @@ class ScraperManager:
             traceback.print_exc()
         
         finally:
+            self._ieee_scraper = None
             if scraper:
                 try:
                     scraper.close()
                 except:
                     pass
             progress.last_activity = datetime.utcnow()
+            # Browser kapandıktan sonra kısa bekle — asyncio loop'un
+            # daha önce schedule edilmiş event'leri göndermesine izin ver
+            import time as _t; _t.sleep(0.5)
+            # Final status event'ini tekrar gönder (ilki browser kapanırken kaybolmuş olabilir)
+            try:
+                from backend.routers.websocket import emit_scraper_event
+                emit_scraper_event("status_update", progress.scraper_type, progress.to_dict())
+            except Exception:
+                pass
             # Distributed lock'u bırak
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
@@ -731,24 +785,31 @@ class ScraperManager:
         """IEEE scraper'ı durdur"""
         if self.ieee_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
             return False
-        
+
         logger.info("IEEE scraper durduruluyor...")
         self._ieee_stop_flag.set()
         self.ieee_progress.status = ScraperStatus.STOPPING
         self.ieee_progress.add_log("warning", "Durdurma sinyali gönderildi")
-        
+
+        # Tarayıcıyı hemen kapat — cdp.get() gibi uzun beklemeleri keser
+        s = self._ieee_scraper
+        if s:
+            try:
+                s.selenium_driver.close()
+            except Exception:
+                pass
+
         if self._ieee_future:
             try:
-                # Thread'in bitmesini bekle (max 15 saniye - browser kapanması için yeterli)
-                self._ieee_future.result(timeout=15)
+                self._ieee_future.result(timeout=10)
                 logger.success("IEEE scraper düzgün şekilde durduruldu")
             except concurrent.futures.TimeoutError:
-                logger.warning("IEEE scraper stop timeout - browser kapanmayı bekliyor olabilir")
+                logger.warning("IEEE scraper stop timeout")
                 self.ieee_progress.status = ScraperStatus.STOPPED
             except Exception as e:
                 logger.warning(f"IEEE scraper stop hatası: {e}")
                 self.ieee_progress.status = ScraperStatus.STOPPED
-        
+
         return True
     
     async def pause_ieee(self) -> bool:
@@ -818,7 +879,8 @@ class ScraperManager:
             # Create and initialize
             logger.info("[SD Thread] Browser başlatılıyor...")
             print("[SD Thread] Browser başlatılıyor...", flush=True)
-            scraper = ScienceDirectScraper(headless=self.sciencedirect_headless, stop_flag=self._sciencedirect_stop_flag)
+            scraper = ScienceDirectScraper(headless=self.sciencedirect_headless, stop_flag=self._sciencedirect_stop_flag, pause_flag=self._sciencedirect_pause_flag)
+            self._sciencedirect_scraper = scraper
             print("[SD Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
             print("[SD Thread] Browser başlatıldı!", flush=True)
@@ -888,12 +950,12 @@ class ScraperManager:
                     logger.warning("[SD Thread] Scraper durduruldu")
                     break
                 
-                # Pause check
-                while self._sciencedirect_pause_flag.is_set():
+                if self._sciencedirect_pause_flag.is_set():
                     progress.status = ScraperStatus.PAUSED
-                    import time
-                    time.sleep(1)
-                
+                    while self._sciencedirect_pause_flag.is_set():
+                        import time as _t; _t.sleep(0.3)
+                    progress.status = ScraperStatus.RUNNING
+
                 if progress.status == ScraperStatus.PAUSED:
                     progress.status = ScraperStatus.RUNNING
                 
@@ -901,6 +963,10 @@ class ScraperManager:
                 progress.current_journal = journal_name
                 progress.current_journal_index = idx + 1
                 progress.pending_journals = [j.get('name', '') for j in all_journals[idx + 1:]]
+                progress.current_issue = None
+                progress.current_issue_index = 0
+                progress.total_issues = 0
+                progress.completed_issues = []
                 progress.article_list = []
                 progress.current_article = None
                 progress.current_article_index = 0
@@ -916,6 +982,24 @@ class ScraperManager:
                     progress.total_articles = art_total
                     progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
                     progress.current_article_index = art_idx
+
+                def _sd_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str):
+                    progress.total_issues = total_issues
+                    progress.current_issue = issue_title or f"Issue {issue_idx}"
+                    progress.current_issue_index = issue_idx
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def _sd_issue_complete_cb(issue_idx: int, articles_count: int, article_titles: List[str]):
+                    title = progress.current_issue or f"Issue {issue_idx}"
+                    new_issues = progress.completed_issues + [{
+                        'title': title,
+                        'articles_count': articles_count,
+                        'article_list': article_titles[:30],
+                    }]
+                    progress.completed_issues = new_issues
 
                 try:
                     import time
@@ -962,6 +1046,8 @@ class ScraperManager:
                         article_progress_callback=_sd_article_cb,
                         article_list_callback=_sd_article_list_cb,
                         existing_issue_urls=existing_issue_urls,
+                        issue_start_callback=_sd_issue_start_cb,
+                        issue_complete_callback=_sd_issue_complete_cb,
                     )
 
                     try:
@@ -1005,6 +1091,7 @@ class ScraperManager:
                                 total_updated += updated
                                 if issue_created:
                                     issues_created += 1
+                            await self._db_service.recalculate_journal_counts(journal_doc.id)
                             return total_created, total_updated, issues_created
 
                         future = asyncio.run_coroutine_threadsafe(_save_journal_issues(), self._loop)
@@ -1013,7 +1100,7 @@ class ScraperManager:
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
-                            'article_list': progress.article_list.copy(),
+                            'issues': progress.completed_issues.copy(),
                         })
                         progress.journals_scraped += 1
                         progress.issues_scraped += issues_created
@@ -1063,12 +1150,19 @@ class ScraperManager:
             traceback.print_exc()
         
         finally:
+            self._sciencedirect_scraper = None
             if scraper:
                 try:
                     scraper.close()
                 except:
                     pass
             progress.last_activity = datetime.utcnow()
+            import time as _t; _t.sleep(0.5)
+            try:
+                from backend.routers.websocket import emit_scraper_event
+                emit_scraper_event("status_update", progress.scraper_type, progress.to_dict())
+            except Exception:
+                pass
             # Distributed lock'u bırak
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
@@ -1079,24 +1173,31 @@ class ScraperManager:
         """ScienceDirect scraper'ı durdur"""
         if self.sciencedirect_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
             return False
-        
+
         logger.info("ScienceDirect scraper durduruluyor...")
         self._sciencedirect_stop_flag.set()
         self.sciencedirect_progress.status = ScraperStatus.STOPPING
         self.sciencedirect_progress.add_log("warning", "Durdurma sinyali gönderildi")
-        
+
+        # Tarayıcıyı hemen kapat
+        s = self._sciencedirect_scraper
+        if s:
+            try:
+                s.selenium_driver.close()
+            except Exception:
+                pass
+
         if self._sciencedirect_future:
             try:
-                # Thread'in bitmesini bekle (max 15 saniye - browser kapanması için yeterli)
-                self._sciencedirect_future.result(timeout=15)
+                self._sciencedirect_future.result(timeout=10)
                 logger.success("ScienceDirect scraper düzgün şekilde durduruldu")
             except concurrent.futures.TimeoutError:
-                logger.warning("ScienceDirect scraper stop timeout - browser kapanmayı bekliyor olabilir")
+                logger.warning("ScienceDirect scraper stop timeout")
                 self.sciencedirect_progress.status = ScraperStatus.STOPPED
             except Exception as e:
                 logger.warning(f"ScienceDirect scraper stop hatası: {e}")
                 self.sciencedirect_progress.status = ScraperStatus.STOPPED
-        
+
         return True
     
     async def pause_sciencedirect(self) -> bool:
@@ -1167,7 +1268,8 @@ class ScraperManager:
             # Create and initialize
             logger.info("[ACM Thread] Browser başlatılıyor...")
             print("[ACM Thread] Browser başlatılıyor...", flush=True)
-            scraper = ACMScraper(headless=self.acm_headless, stop_flag=self._acm_stop_flag)
+            scraper = ACMScraper(headless=self.acm_headless, stop_flag=self._acm_stop_flag, pause_flag=self._acm_pause_flag)
+            self._acm_scraper = scraper
             print("[ACM Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
             print("[ACM Thread] Browser başlatıldı!", flush=True)
@@ -1237,12 +1339,12 @@ class ScraperManager:
                     logger.warning("[ACM Thread] Scraper durduruldu")
                     break
                 
-                # Pause check
-                while self._acm_pause_flag.is_set():
+                if self._acm_pause_flag.is_set():
                     progress.status = ScraperStatus.PAUSED
-                    import time
-                    time.sleep(1)
-                
+                    while self._acm_pause_flag.is_set():
+                        import time as _t; _t.sleep(0.3)
+                    progress.status = ScraperStatus.RUNNING
+
                 if progress.status == ScraperStatus.PAUSED:
                     progress.status = ScraperStatus.RUNNING
                 
@@ -1250,6 +1352,10 @@ class ScraperManager:
                 progress.current_journal = journal_name
                 progress.current_journal_index = idx + 1
                 progress.pending_journals = [j.get('name', '') for j in all_journals[idx + 1:]]
+                progress.current_issue = None
+                progress.current_issue_index = 0
+                progress.total_issues = 0
+                progress.completed_issues = []
                 progress.article_list = []
                 progress.current_article = None
                 progress.current_article_index = 0
@@ -1265,6 +1371,24 @@ class ScraperManager:
                     progress.total_articles = art_total
                     progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
                     progress.current_article_index = art_idx
+
+                def _acm_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str):
+                    progress.total_issues = total_issues
+                    progress.current_issue = issue_title or f"Issue {issue_idx}"
+                    progress.current_issue_index = issue_idx
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def _acm_issue_complete_cb(issue_idx: int, articles_count: int, article_titles: List[str]):
+                    title = progress.current_issue or f"Issue {issue_idx}"
+                    new_issues = progress.completed_issues + [{
+                        'title': title,
+                        'articles_count': articles_count,
+                        'article_list': article_titles[:30],
+                    }]
+                    progress.completed_issues = new_issues
 
                 try:
                     import time
@@ -1308,6 +1432,8 @@ class ScraperManager:
                         article_progress_callback=_acm_article_cb,
                         article_list_callback=_acm_article_list_cb,
                         existing_issue_urls=existing_issue_urls,
+                        issue_start_callback=_acm_issue_start_cb,
+                        issue_complete_callback=_acm_issue_complete_cb,
                     )
 
                     try:
@@ -1348,6 +1474,7 @@ class ScraperManager:
                                 total_updated += updated
                                 if issue_created:
                                     issues_created += 1
+                            await self._db_service.recalculate_journal_counts(journal_doc.id)
                             return total_created, total_updated, issues_created
 
                         # Run async database call from thread
@@ -1359,7 +1486,7 @@ class ScraperManager:
                         progress.completed_journals.append({
                             'name': journal_name,
                             'articles_count': articles_created,
-                            'article_list': progress.article_list.copy(),
+                            'issues': progress.completed_issues.copy(),
                         })
                         progress.journals_scraped += 1
                         progress.issues_scraped += issues_created
@@ -1409,12 +1536,19 @@ class ScraperManager:
             traceback.print_exc()
         
         finally:
+            self._acm_scraper = None
             if scraper:
                 try:
                     scraper.close()
                 except:
                     pass
             progress.last_activity = datetime.utcnow()
+            import time as _t; _t.sleep(0.5)
+            try:
+                from backend.routers.websocket import emit_scraper_event
+                emit_scraper_event("status_update", progress.scraper_type, progress.to_dict())
+            except Exception:
+                pass
             # Distributed lock'u bırak
             if self._loop:
                 asyncio.run_coroutine_threadsafe(
@@ -1425,24 +1559,31 @@ class ScraperManager:
         """ACM scraper'ı durdur"""
         if self.acm_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
             return False
-        
+
         logger.info("ACM scraper durduruluyor...")
         self._acm_stop_flag.set()
         self.acm_progress.status = ScraperStatus.STOPPING
         self.acm_progress.add_log("warning", "Durdurma sinyali gönderildi")
-        
+
+        # Tarayıcıyı hemen kapat
+        s = self._acm_scraper
+        if s:
+            try:
+                s.selenium_driver.close()
+            except Exception:
+                pass
+
         if self._acm_future:
             try:
-                # Thread'in bitmesini bekle (max 15 saniye - browser kapanması için yeterli)
-                self._acm_future.result(timeout=15)
+                self._acm_future.result(timeout=10)
                 logger.success("ACM scraper düzgün şekilde durduruldu")
             except concurrent.futures.TimeoutError:
-                logger.warning("ACM scraper stop timeout - browser kapanmayı bekliyor olabilir")
+                logger.warning("ACM scraper stop timeout")
                 self.acm_progress.status = ScraperStatus.STOPPED
             except Exception as e:
                 logger.warning(f"ACM scraper stop hatası: {e}")
                 self.acm_progress.status = ScraperStatus.STOPPED
-        
+
         return True
     
     async def pause_acm(self) -> bool:

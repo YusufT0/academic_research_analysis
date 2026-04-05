@@ -17,47 +17,43 @@ class JournalParser:
     @staticmethod
     def extract_aims_and_scope(page_source: str):
         """
-        ACM journal sayfasından aims & scope bilgisini çıkarır.
+        /journal/CODE sayfasındaki .item-meta__info > .truncate-text bölümünden
+        aims & scope içeriğini çıkarır.
 
-        Denenen başlıca HTML kalıpları:
-        - class/id içinde 'aims' veya 'scope' geçen section/div
-        - 'Aims', 'Scope', 'About this journal' başlıklı bölümler
-        - .journal-short-description, .journal-description, .about-journal
+        (More) butonuna dışarıdan tıklandıktan sonra çağrılmalıdır; bu metot
+        sadece mevcut DOM'u parse eder.
 
         Returns:
-            str: HTML içeriği veya None
+            str: Temizlenmiş inner HTML içeriği veya None
         """
         try:
             soup = BeautifulSoup(page_source, 'html.parser')
 
-            # Pattern 1: class veya id'de aims/scope geçen element
-            for attr in ('class', 'id'):
-                el = soup.find(
-                    ['section', 'div', 'article'],
-                    attrs={attr: re.compile(r'aims|scope', re.I)}
-                )
-                if el:
-                    logger.success(f"Aims & scope bulundu ({attr} pattern)")
-                    return str(el)
+            # .item-meta__info altındaki .truncate-text div'ini bul
+            info_div = soup.find('div', class_='item-meta__info')
+            if not info_div:
+                logger.warning("Aims & scope: .item-meta__info bulunamadı")
+                return None
 
-            # Pattern 2: başlık tabanlı arama
-            for heading in soup.find_all(['h2', 'h3', 'h4']):
-                text = heading.get_text(strip=True).lower()
-                if 'aims' in text or 'scope' in text or 'about this journal' in text:
-                    container = heading.find_parent(['section', 'div', 'article'])
-                    if container:
-                        logger.success(f"Aims & scope bulundu (heading: '{heading.get_text(strip=True)}')")
-                        return str(container)
+            truncate_div = info_div.find('div', class_='truncate-text')
+            if not truncate_div:
+                logger.warning("Aims & scope: .truncate-text bulunamadı")
+                return None
 
-            # Pattern 3: yaygın ACM sınıf adları
-            for cls in ['journal-short-description', 'journal-description', 'about-journal']:
-                el = soup.find(['div', 'section'], class_=cls)
-                if el:
-                    logger.success(f"Aims & scope bulundu (class: {cls})")
-                    return str(el)
+            # read-more ve read-less butonlarını kaldır
+            for btn in truncate_div.find_all(['span', 'button'], class_=['read-more', 'read-less']):
+                btn.decompose()
 
-            logger.warning("Aims & scope bulunamadı")
-            return None
+            # Boş mu kontrol et
+            text_content = truncate_div.get_text(strip=True)
+            if not text_content:
+                logger.warning("Aims & scope: İçerik boş")
+                return None
+
+            html_content = truncate_div.decode_contents().strip()
+            logger.success("Aims & scope bulundu (.item-meta__info .truncate-text)")
+            return html_content
+
         except Exception as e:
             logger.error(f"ACM aims & scope çıkarma hatası: {e}")
             return None

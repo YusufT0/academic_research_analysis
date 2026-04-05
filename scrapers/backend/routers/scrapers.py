@@ -378,7 +378,7 @@ async def stop_all():
 @router.get("/logs", summary="Scraper logları")
 async def get_logs(
     scraper_type: str = Query("all", description="Scraper tipi: all, ieee, sciencedirect, acm"),
-    limit: int = Query(50, ge=1, le=200, description="Maksimum log sayısı"),
+    limit: int = Query(50, ge=1, le=1000, description="Maksimum log sayısı"),
 ):
     """Scraper loglarını getir"""
     manager = get_scraper_manager()

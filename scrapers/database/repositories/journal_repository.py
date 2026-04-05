@@ -166,6 +166,7 @@ class JournalRepository(BaseRepository[Journal]):
             source_website=source_website,
             **kwargs
         )
+        journal.last_scraped_at = journal.created_at  # İlk scrape anını işaretle
         await journal.insert()
         
         # Redis Stream Publish for Citation Update
@@ -258,15 +259,19 @@ class JournalRepository(BaseRepository[Journal]):
                 result[name] = {
                     'exists': True,
                     'last_scraped_at': j.last_scraped_at,
-                    'scrape_count': j.scrape_count
+                    'scrape_count': j.scrape_count,
+                    'issue_count': j.issue_count,
+                    'article_count': j.article_count,
                 }
             else:
                 result[name] = {
                     'exists': False,
                     'last_scraped_at': None,
-                    'scrape_count': 0
+                    'scrape_count': 0,
+                    'issue_count': 0,
+                    'article_count': 0,
                 }
-        
+
         return result
     
     @staticmethod
@@ -276,44 +281,54 @@ class JournalRepository(BaseRepository[Journal]):
     ) -> List[Dict[str, Any]]:
         """
         Dergileri öncelik sistemine göre sırala
-        
+
         Öncelik Sırası:
         1. Veritabanında bulunmayan dergiler (yeni dergiler)
-        2. Veritabanında olan dergiler - last_scraped_at tarihine göre (en eski önce)
-        
+        2. 0 issue veya 0 makale olan mevcut dergiler (eksik veri)
+        3. Geri kalan mevcut dergiler — last_scraped_at'e göre (en eski önce)
+
         Args:
             journals: Dergi listesi
             priority_info: Her dergi için öncelik bilgisi dict'i
-            
+
         Returns:
             Sıralanmış dergi listesi
         """
-        # Dergileri iki gruba ayır: yeni ve mevcut
-        new_journals = []  # Veritabanında olmayanlar
-        existing_journals = []  # Veritabanında olanlar
-        
+        new_journals = []       # Veritabanında olmayanlar
+        incomplete_journals = []  # 0 issue veya 0 makale olanlar
+        existing_journals = []  # Tam veri olan mevcut dergiler
+
         for journal in journals:
             name = journal.get('name', '')
             info = priority_info.get(name, {'exists': False, 'last_scraped_at': None})
-            
+
             if not info['exists']:
                 new_journals.append(journal)
             else:
-                # last_scraped_at bilgisini journal dict'ine ekle (sıralama için)
                 journal['_last_scraped_at'] = info['last_scraped_at']
                 journal['_scrape_count'] = info.get('scrape_count', 0)
-                existing_journals.append(journal)
-        
-        # Mevcut dergileri last_scraped_at'e göre sırala (en eski önce)
-        # None değerler en başta olsun (hiç scrape edilmemiş)
-        existing_journals.sort(
+                journal['_issue_count'] = info.get('issue_count', 0)
+                journal['_article_count'] = info.get('article_count', 0)
+
+                if info.get('issue_count', 0) == 0 or info.get('article_count', 0) == 0:
+                    incomplete_journals.append(journal)
+                else:
+                    existing_journals.append(journal)
+
+        # Eksik veri olanlar: en eski scrape tarihi önce (None en önce)
+        incomplete_journals.sort(
             key=lambda x: (
-                x.get('_last_scraped_at') is not None,  # None olanlar önce
-                x.get('_last_scraped_at') or datetime.min  # Sonra tarihe göre (en eski önce)
+                x.get('_last_scraped_at') is not None,
+                x.get('_last_scraped_at') or datetime.min,
             )
         )
-        
-        # Önce yeni dergiler, sonra eskiye göre sıralanmış mevcut dergiler
-        prioritized = new_journals + existing_journals
-        
-        return prioritized
+
+        # Tam veri olanlar: en eski scrape tarihi önce
+        existing_journals.sort(
+            key=lambda x: (
+                x.get('_last_scraped_at') is not None,
+                x.get('_last_scraped_at') or datetime.min,
+            )
+        )
+
+        return new_journals + incomplete_journals + existing_journals

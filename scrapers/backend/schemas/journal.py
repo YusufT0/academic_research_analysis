@@ -47,10 +47,11 @@ class JournalResponse(BaseModel):
     total_citation_count: int = 0
     historical_citation_data: dict = Field(default_factory=dict)
     last_citation_update_date: Optional[datetime] = None
-    
+    aims_and_scope: Optional[str] = None
+
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    
+
     class Config:
         from_attributes = True
 

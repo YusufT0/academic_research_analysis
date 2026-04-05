@@ -61,7 +61,7 @@ async def list_journals(
     }
     search_query = search or ""
     
-    cached_result = await cache_service.get_search_results(f"journals_list_{search_query}", cache_params)
+    cached_result = await cache_service.get_search_results(f"journals_list_v2_{search_query}", cache_params)
     if cached_result:
         logger.info(f"Cache HIT: journals list (page {page})")
         return cached_result
@@ -119,6 +119,7 @@ async def list_journals(
                 "total_citation_count": getattr(j, "total_citation_count", 0),
                 "average_citation_count": getattr(j, "average_citation_count", None),
                 "last_citation_update_date": getattr(j, "last_citation_update_date", None),
+                "aims_and_scope": getattr(j, "aims_and_scope", None),
                 "created_at": j.created_at,
                 "updated_at": j.updated_at,
             }
@@ -132,7 +133,7 @@ async def list_journals(
         "has_prev": page > 1,
     }
     
-    await cache_service.set_search_results(f"journals_list_{search_query}", cache_params, result)
+    await cache_service.set_search_results(f"journals_list_v2_{search_query}", cache_params, result)
     logger.info(f"Cache MISS: journals list (page {page}) - cached")
     return result
 
@@ -176,6 +177,7 @@ async def get_journal(journal_id: str):
         "average_citation_count": getattr(journal, "average_citation_count", None),
         "total_citation_count": getattr(journal, "total_citation_count", 0),
         "last_citation_update_date": getattr(journal, "last_citation_update_date", None),
+        "aims_and_scope": getattr(journal, "aims_and_scope", None),
         "created_at": journal.created_at,
         "updated_at": journal.updated_at,
     }
@@ -223,6 +225,31 @@ async def get_journal(journal_id: str):
         cache_service._schedule_prefetch(prefetch_issues())
     
     return result
+
+
+@router.post("/recalculate-counts", summary="Tüm dergilerin sayı ve makale sayılarını yeniden hesapla")
+async def recalculate_all_counts():
+    """
+    Tüm dergilerin issue_count ve article_count alanlarını
+    veritabanındaki gerçek verilerden yeniden hesaplar.
+    Önbelleği de temizler.
+    """
+    from database.service import get_database_service
+
+    db_service = get_database_service()
+    journals = await Journal.find_all().to_list()
+
+    updated = 0
+    for j in journals:
+        await db_service.recalculate_journal_counts(j.id)
+        # last_scraped_at null ise created_at ile doldur
+        if j.last_scraped_at is None:
+            j.last_scraped_at = j.created_at
+            j.touch()
+            await j.save()
+        updated += 1
+
+    return {"success": True, "journals_updated": updated}
 
 
 @router.get("/{journal_id}/citation-metrics", summary="Dergi Atıf Metrikleri", response_model=JournalCitationMetricsResponse)

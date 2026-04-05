@@ -284,32 +284,82 @@ async def lifespan(app: FastAPI):
         scraper_task = asyncio.create_task(delayed_scraper_start(scraper_manager))
     
     yield
-    
-    # Shutdown
+
+    # ── SHUTDOWN ──────────────────────────────────────────────────────────────
     logger.header("BACKEND KAPATILIYOR")
-    
-    # Cancel pending scraper start task if exists
-    if scraper_task and not scraper_task.done():
-        scraper_task.cancel()
-        try:
-            await scraper_task
-        except asyncio.CancelledError:
-            pass
-    
-    # Stop all scrapers
+
+    async def _cancel(task, name="task"):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+    # 1. Cancel auto-start task
+    await _cancel(scraper_task, "scraper_start_task")
+
+    # 2. Stop all scrapers (sets stop flags + closes browsers)
     logger.info("Scraper'lar durduruluyor...")
     if scraper_manager:
-        await scraper_manager.stop_all()
-        await scraper_manager.close()
-    
-    # Close Redis cache
-    logger.info("Redis cache bağlantısı kapatılıyor...")
-    await cache_service.disconnect()
-    
-    # Close database
-    logger.info("Database bağlantısı kapatılıyor...")
-    await close_database()
-    
+        try:
+            await asyncio.wait_for(scraper_manager.stop_all(), timeout=12.0)
+        except asyncio.TimeoutError:
+            logger.warning("Scraper stop timeout (12s) — devam ediliyor")
+        # Thread pool'u kapat (daemon thread'ler Python exit'te zaten ölür)
+        try:
+            scraper_manager._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 cancel_futures desteklemiyor
+            scraper_manager._executor.shutdown(wait=False)
+
+    # 3. WebSocket manager kapat (Redis Pub/Sub consumer + WS bağlantıları)
+    logger.info("WebSocket manager kapatılıyor...")
+    try:
+        from backend.routers.websocket import ws_manager
+        await asyncio.wait_for(ws_manager.shutdown(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"WebSocket shutdown hatası: {e}")
+
+    # 4. Stream service kapat (Redis Streams consumers)
+    logger.info("Stream service kapatılıyor...")
+    try:
+        from backend.services.stream_service import stream_service
+        await asyncio.wait_for(stream_service.close(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Stream service shutdown hatası: {e}")
+
+    # 5. Elasticsearch kapat
+    logger.info("Elasticsearch kapatılıyor...")
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        await asyncio.wait_for(elasticsearch_service.close(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Elasticsearch shutdown hatası: {e}")
+
+    # 6. Redis cache kapat
+    logger.info("Redis cache kapatılıyor...")
+    try:
+        await asyncio.wait_for(cache_service.disconnect(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Redis cache shutdown hatası: {e}")
+
+    # 7. Database kapat
+    logger.info("Database kapatılıyor...")
+    try:
+        await asyncio.wait_for(close_database(), timeout=5.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Database shutdown hatası: {e}")
+
+    # 8. Kalan asyncio task'lerini iptal et (leak önleme)
+    current = asyncio.current_task()
+    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+    if pending:
+        logger.info(f"Kalan {len(pending)} task iptal ediliyor...")
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
     logger.success("Backend kapatıldı")
 
 

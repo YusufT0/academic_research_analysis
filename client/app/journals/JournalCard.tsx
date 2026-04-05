@@ -16,6 +16,7 @@ interface JournalCardProps {
 
 export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highlightArticleId }: JournalCardProps) {
   const [expanded, setExpanded] = useState(false);
+  const [aimsExpanded, setAimsExpanded] = useState(false);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loadingIssues, setLoadingIssues] = useState(false);
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
@@ -181,6 +182,28 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
             </div>
           )}
         </div>
+
+        {/* Aims & Scope */}
+        {journal.aims_and_scope && (
+          <div className="mt-3 pt-3 border-t border-slate-100">
+            <button
+              onClick={() => setAimsExpanded(!aimsExpanded)}
+              className="flex items-center gap-1.5 text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors"
+            >
+              {aimsExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+              Amaç &amp; Kapsam
+            </button>
+            {aimsExpanded && (
+              <div
+                className="mt-2 text-xs text-slate-600 leading-relaxed max-h-64 overflow-y-auto pr-1
+                  [&_p]:my-1 [&_ul]:my-1 [&_ul]:list-disc [&_ul]:pl-4 [&_li]:my-0
+                  [&_h1]:font-semibold [&_h2]:font-semibold [&_h3]:font-semibold
+                  [&_a]:text-blue-600 [&_a]:underline"
+                dangerouslySetInnerHTML={{ __html: journal.aims_and_scope }}
+              />
+            )}
+          </div>
+        )}
 
         {/* Issues Accordion */}
         {expanded && (

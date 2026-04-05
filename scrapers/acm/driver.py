@@ -288,6 +288,83 @@ class SeleniumDriver:
             pass
         return ""
 
+    def _wait_for_render(self, url: str, max_attempts: int = 3) -> bool:
+        """
+        CSS/JS render kontrolü: sayfa tam render edilene kadar bekler/yeniden dener.
+
+        Tespit yöntemi:
+          1. cssRules: en az bir stylesheet'in gerçekten parse edilmiş rule'u var mı?
+             (document.styleSheets.length yanıltıcıdır — <link> tag DOM'da olunca
+              dosya fetch edilmese bile sheet nesnesi oluşur; cssRules.length ise
+              ancak dosya gerçekten indirildiyse > 0 olur)
+          2. resources: Performance API ile kaç ağ isteği yapıldı?
+             (CSS/JS yüklendiyse Chrome 30+ istek yapar; kırık sayfada < 5 olur)
+
+        Başarısız olursa sb.cdp.get(url) ile sayfayı yeniden yükler.
+
+        Returns:
+            bool: Render tamamlandıysa True, max_attempts sonunda hala yoksa False
+        """
+        if not (self._cdp_active and self._sb):
+            return True  # CDP modu değilse kontrol gerekmiyor
+
+        WAIT_BETWEEN = 3.0
+
+        # Tek bir cdp.evaluate çağrısıyla iki metriği birden al (round-trip azalt)
+        CHECK_JS = """
+        (function() {
+            var cssRulesOk = Array.from(document.styleSheets).some(function(s) {
+                try { return s.cssRules && s.cssRules.length > 50; }
+                catch(e) { return false; }
+            });
+            var resources = window.performance.getEntriesByType('resource').length;
+            var scripts = document.querySelectorAll('script[src]').length;
+            return [cssRulesOk, resources, scripts];
+        })()
+        """
+
+        for attempt in range(max_attempts):
+            try:
+                result = self._sb.cdp.evaluate(CHECK_JS)
+                css_rules_ok   = bool(result[0]) if result else False
+                resource_count = int(result[1]) if result else 0
+                script_count   = int(result[2]) if result else 0
+
+                # resource_count > 15: tarayıcı gerçekten CSS/JS/font istekleri yaptı
+                # css_rules_ok veya script_count > 5: içerik gerçekten parse edildi
+                loaded = resource_count > 15 and (css_rules_ok or script_count > 5)
+
+                if loaded:
+                    logger.info(
+                        f"CSS/JS render OK "
+                        f"(deneme {attempt + 1}, resources={resource_count}, "
+                        f"scripts={script_count}, css_rules_ok={css_rules_ok})"
+                    )
+                    return True
+
+                logger.warning(
+                    f"CSS/JS yüklenmedi "
+                    f"(resources={resource_count}, scripts={script_count}, css_rules_ok={css_rules_ok})"
+                )
+
+                if attempt < max_attempts - 1:
+                    logger.info(f"Sayfa yeniden yükleniyor ({attempt + 1}/{max_attempts - 1})...")
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
+                        future = executor.submit(self._sb.cdp.get, url)
+                        future.result(timeout=self.page_load_timeout)
+                    finally:
+                        executor.shutdown(wait=False)
+                    time.sleep(WAIT_BETWEEN)
+
+            except Exception as e:
+                logger.warning(f"CSS/JS render kontrolü hatası: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(WAIT_BETWEEN)
+
+        logger.warning(f"CSS/JS {max_attempts} denemede yüklenemedi, devam ediliyor...")
+        return False
+
     def _solve_cloudflare(self) -> bool:
         """
         Cloudflare challenge kontrolü ve çözümü.
@@ -401,6 +478,10 @@ class SeleniumDriver:
                         executor.shutdown(wait=False)
 
                 time.sleep(wait_after)
+
+                # CSS/JS render kontrolü — yüklenmemişse yeniden dene
+                self._wait_for_render(url)
+
                 cf_solved = self._solve_cloudflare()
                 if not cf_solved:
                     logger.warning("Cloudflare geçilemedi, sayfa içeriği eksik olabilir")

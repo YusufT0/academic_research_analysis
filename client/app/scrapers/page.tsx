@@ -85,29 +85,66 @@ function ConnectionBadge({ status }: { status: ConnectionStatus }) {
 
 // ==================== Journal Queue ====================
 
+import type { IssueProgress } from '@/lib/types';
+
+/** Tamamlanmış bir issue'nun makale listesini gösterir (accordion içi) */
+function IssueArticleList({ articles }: { articles: string[] }) {
+  if (articles.length === 0) return (
+    <p className="px-3 py-1.5 text-xs text-slate-400 italic">Makale başlığı kaydedilmedi</p>
+  );
+  return (
+    <ul className="px-3 py-1 space-y-0.5">
+      {articles.map((title, i) => (
+        <li key={i} className="flex items-start gap-1.5 text-xs text-slate-500">
+          <span className="text-slate-300 flex-shrink-0 mt-0.5">›</span>
+          <span className="line-clamp-2">{title}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Tamamlanmış bir issue satırı (tıklanabilir accordion) */
+function CompletedIssueRow({ issue, expanded, onToggle }: {
+  issue: IssueProgress;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-slate-100 transition-colors text-left"
+      >
+        <CheckCircle2 className="h-3 w-3 text-emerald-400 flex-shrink-0" />
+        <span className="flex-1 text-xs text-slate-600 truncate">{issue.title}</span>
+        {issue.articles_count > 0 && (
+          <span className="text-xs text-emerald-600 font-medium flex-shrink-0 flex items-center gap-0.5">
+            <FileText className="h-2.5 w-2.5" />{issue.articles_count}
+          </span>
+        )}
+        <ChevronDown className={`h-3 w-3 text-slate-400 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      </button>
+      <div className={`grid transition-all duration-200 ${expanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+        <div className="overflow-hidden bg-slate-50">
+          <IssueArticleList articles={issue.article_list ?? []} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  // Makale başlıklarını aktif dergi bazında biriktirir (state ile → React render tetiklenir)
-  const [articlesByJournal, setArticlesByJournal] = useState<Record<string, string[]>>({});
+  // expandedJournals: tamamlanan dergilerin accordion durumu
+  const [expandedJournals, setExpandedJournals] = useState<Set<string>>(new Set());
+  // expandedIssues: "journalName|issueTitle" key ile issue accordion durumu
+  const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
 
-  // current_article değiştiğinde aktif dergiye ekle
-  useEffect(() => {
-    if (!scraper.current_journal || !scraper.current_article) return;
-    const key = scraper.current_journal;
-    const title = scraper.current_article;
-    setArticlesByJournal(prev => {
-      const list = prev[key] ?? [];
-      if (list.includes(title)) return prev;           // zaten var, render tetikleme
-      return { ...prev, [key]: [...list, title] };
-    });
-  }, [scraper.current_article, scraper.current_journal]);
+  const toggleJournal = (name: string) =>
+    setExpandedJournals(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
 
-  const toggleExpand = (name: string) =>
-    setExpanded(prev => {
-      const next = new Set(prev);
-      next.has(name) ? next.delete(name) : next.add(name);
-      return next;
-    });
+  const toggleIssue = (key: string) =>
+    setExpandedIssues(prev => { const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s; });
 
   const completed = scraper.completed_journals ?? [];
   const pending   = scraper.pending_journals ?? [];
@@ -125,44 +162,53 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
       </div>
 
       {/* Scrollable list */}
-      <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+      <div className="max-h-96 overflow-y-auto divide-y divide-slate-100">
 
-        {/* Tamamlananlar */}
+        {/* ── Tamamlanan dergiler ── */}
         {completed.map((j, i) => {
-          const isOpen = expanded.has(j.name);
-          const localArticles = articlesByJournal[j.name] ?? j.article_list ?? [];
+          const isOpen = expandedJournals.has(j.name);
+          const issues = j.issues ?? [];
           return (
             <div key={`done-${i}`} className="bg-white">
+              {/* Dergi satırı */}
               <button
-                onClick={() => toggleExpand(j.name)}
+                onClick={() => toggleJournal(j.name)}
                 className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-slate-50 transition-colors duration-150 text-left"
               >
                 <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-shrink-0" />
                 <span className="flex-1 text-xs text-slate-600 truncate" title={j.name}>{j.name}</span>
+                {issues.length > 0 && (
+                  <span className="text-xs text-slate-400 flex-shrink-0 mr-1">
+                    {issues.length} sayı
+                  </span>
+                )}
                 {j.articles_count > 0 && (
                   <span className="text-xs text-emerald-600 font-medium flex-shrink-0 flex items-center gap-1">
                     <FileText className="h-3 w-3" />{j.articles_count}
                   </span>
                 )}
-                <ChevronDown
-                  className={`h-3.5 w-3.5 text-slate-400 flex-shrink-0 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}
-                />
+                <ChevronDown className={`h-3.5 w-3.5 text-slate-400 flex-shrink-0 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`} />
               </button>
 
-              {/* Accordion — CSS grid trick for smooth expand */}
+              {/* Issue accordion */}
               <div className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">
-                  {localArticles.length > 0 ? (
-                    <ul className="px-4 pb-2 pt-1 space-y-1 bg-slate-50">
-                      {localArticles.map((title, ti) => (
-                        <li key={ti} className="flex items-start gap-1.5 text-xs text-slate-500">
-                          <span className="text-slate-300 flex-shrink-0 mt-0.5">›</span>
-                          <span className="line-clamp-2">{title}</span>
-                        </li>
-                      ))}
-                    </ul>
+                  {issues.length > 0 ? (
+                    <div className="bg-slate-50 border-t border-slate-100 divide-y divide-slate-100">
+                      {issues.map((issue, ii) => {
+                        const issueKey = `${j.name}|${issue.title}`;
+                        return (
+                          <CompletedIssueRow
+                            key={ii}
+                            issue={issue}
+                            expanded={expandedIssues.has(issueKey)}
+                            onToggle={() => toggleIssue(issueKey)}
+                          />
+                        );
+                      })}
+                    </div>
                   ) : (
-                    <p className="px-4 pb-2 pt-1 text-xs text-slate-400 bg-slate-50">Makale başlığı kaydedilmedi</p>
+                    <p className="px-4 py-2 text-xs text-slate-400 bg-slate-50">Issue bilgisi kaydedilmedi</p>
                   )}
                 </div>
               </div>
@@ -170,26 +216,56 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
           );
         })}
 
-        {/* Aktif dergi */}
+        {/* ── Aktif dergi ── */}
         {isActive && scraper.current_journal && (
           <div className="bg-blue-50">
-            {/* Journal header */}
+            {/* Dergi header */}
             <div className="flex items-center gap-2 px-4 py-2.5">
               <Loader2 className="h-3.5 w-3.5 text-blue-500 flex-shrink-0 animate-spin" />
               <span className="flex-1 text-xs font-semibold text-blue-800 truncate" title={scraper.current_journal}>
                 {scraper.current_journal}
               </span>
-              {scraper.total_articles > 0 && (
+              {scraper.total_issues > 0 && (
                 <span className="text-xs text-blue-400 flex-shrink-0">
-                  {scraper.current_article_index}/{scraper.total_articles}
+                  {scraper.current_issue_index}/{scraper.total_issues} sayı
                 </span>
               )}
             </div>
 
-            {/* Article list accordion — shown as soon as article_list arrives */}
+            {/* Tamamlanan issue'lar (aktif dergide) */}
+            {(scraper.completed_issues ?? []).length > 0 && (
+              <div className="border-t border-blue-100 divide-y divide-blue-100">
+                {(scraper.completed_issues ?? []).map((issue, ii) => {
+                  const issueKey = `active|${issue.title}`;
+                  return (
+                    <CompletedIssueRow
+                      key={ii}
+                      issue={issue}
+                      expanded={expandedIssues.has(issueKey)}
+                      onToggle={() => toggleIssue(issueKey)}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Aktif issue */}
+            {scraper.current_issue && (
+              <div className="border-t border-blue-100 px-3 py-1.5 flex items-center gap-2 bg-blue-100">
+                <Loader2 className="h-3 w-3 text-blue-500 flex-shrink-0 animate-spin" />
+                <span className="flex-1 text-xs font-medium text-blue-700 truncate">{scraper.current_issue}</span>
+                {scraper.total_articles > 0 && (
+                  <span className="text-xs text-blue-500 flex-shrink-0">
+                    {scraper.current_article_index}/{scraper.total_articles}
+                  </span>
+                )}
+              </div>
+            )}
+
+            {/* Aktif issue'nun makale listesi */}
             {(() => {
               const artList = scraper.article_list ?? [];
-              const curIdx = scraper.current_article_index; // 1-based
+              const curIdx = scraper.current_article_index;
               if (artList.length === 0 && scraper.total_articles === 0) return null;
 
               const displayList = artList.length > 0
@@ -197,7 +273,7 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
                 : Array.from({ length: scraper.total_articles }, (_, i) => `Makale ${i + 1}`);
 
               return (
-                <ul className="pb-2 space-y-0.5 max-h-48 overflow-y-auto">
+                <ul className="pb-2 space-y-0.5 max-h-40 overflow-y-auto">
                   {displayList.map((title, i) => {
                     const oneBasedIdx = i + 1;
                     const isDone    = oneBasedIdx < curIdx;
@@ -209,8 +285,8 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
                     return (
                       <li
                         key={i}
-                        className={`flex items-start gap-2 px-4 py-1 text-xs transition-colors duration-300 ${
-                          isLoading ? 'bg-blue-100' : isDone ? 'opacity-60' : 'opacity-40'
+                        className={`flex items-start gap-2 px-4 py-0.5 text-xs transition-colors duration-300 ${
+                          isLoading ? 'bg-blue-200' : isDone ? 'opacity-60' : 'opacity-40'
                         }`}
                       >
                         {isDone ? (
@@ -232,12 +308,11 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
           </div>
         )}
 
-        {/* Bekleyenler */}
+        {/* ── Bekleyen dergiler ── */}
         {pending.map((name, i) => (
           <div
             key={`pending-${i}`}
             className="flex items-center gap-2 px-4 py-2 bg-white"
-            style={{ animationDelay: `${i * 30}ms` }}
           >
             <Clock className="h-3 w-3 text-slate-300 flex-shrink-0" />
             <span className="text-xs text-slate-400 truncate flex-1" title={name}>{name}</span>
@@ -614,6 +689,7 @@ function LogRow({ log }: { log: LogEntry }) {
 function useSplitLogPanel(scraperType: string) {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [connected, setConnected] = useState(false);
+  const clearedAtRef = useRef<string | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pingRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -628,6 +704,23 @@ function useSplitLogPanel(scraperType: string) {
     let ws: WebSocket;
     let destroyed = false;
 
+    // Geçmiş logları REST API'den çek
+    const loadHistory = async () => {
+      try {
+        const data = await getScraperLogs(scraperType, 500);
+        const entries: LogEntry[] = (data.logs || []).map((l: LogEntry & { scraper_type?: string }) => ({
+          ...l,
+          scraper_type: l.scraper_type ?? scraperType,
+        }));
+        setLogs((prev) => {
+          // WS ile gelen yeniler + eski REST logları, duplike olmadan birleştir
+          const existing = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
+          const fresh = entries.filter((e) => !existing.has(`${e.timestamp}|${e.message}`));
+          return [...prev, ...fresh].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 1000);
+        });
+      } catch { /* ignore */ }
+    };
+
     const connect = () => {
       if (destroyed) return;
       ws = new WebSocket(wsUrl);
@@ -636,6 +729,7 @@ function useSplitLogPanel(scraperType: string) {
       ws.onopen = () => {
         if (destroyed) { ws.close(); return; }
         setConnected(true);
+        loadHistory();
         pingRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) ws.send('ping');
         }, 15000);
@@ -646,7 +740,9 @@ function useSplitLogPanel(scraperType: string) {
           const event: ScraperEvent = JSON.parse(e.data);
           if (event.type === 'pong' || event.type === 'connected' || event.type === 'subscribed') return;
           if (event.type === 'log' || event.type === 'error') {
-            setLogs((prev) => [wsEventToLogEntry(event), ...prev].slice(0, 100));
+            const entry = wsEventToLogEntry(event);
+            if (clearedAtRef.current && entry.timestamp <= clearedAtRef.current) return;
+            setLogs((prev) => [entry, ...prev].slice(0, 1000));
           }
         } catch { /* ignore */ }
       };
@@ -667,11 +763,21 @@ function useSplitLogPanel(scraperType: string) {
     };
   }, [scraperType]);
 
-  return { logs, connected };
+  const clearLogs = useCallback(() => {
+    clearedAtRef.current = new Date().toISOString();
+    setLogs([]);
+  }, []);
+
+  return { logs, connected, clearLogs };
 }
 
 function SplitPanel({ scraperType, label }: { scraperType: string; label: string }) {
-  const { logs, connected } = useSplitLogPanel(scraperType);
+  const { logs, connected, clearLogs } = useSplitLogPanel(scraperType);
+  const [search, setSearch] = useState('');
+
+  const filtered = search.trim()
+    ? logs.filter((l) => l.message.toLowerCase().includes(search.toLowerCase()))
+    : logs;
 
   return (
     <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden bg-white min-h-[300px]">
@@ -680,16 +786,38 @@ function SplitPanel({ scraperType, label }: { scraperType: string; label: string
           <Badge variant={scraperBadgeVariant(scraperType)} className="text-xs">{label}</Badge>
           <span className="text-xs text-slate-500">Loglar</span>
         </div>
-        <span className={`flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
-          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
-          {connected ? 'Canlı' : 'Bağlanıyor...'}
-        </span>
+        <div className="flex items-center gap-2">
+          <span className={`flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
+            {connected ? 'Canlı' : 'Bağlanıyor...'}
+          </span>
+          {logs.length > 0 && (
+            <button
+              onClick={clearLogs}
+              className="text-xs text-slate-400 hover:text-red-500 transition-colors px-1.5 py-0.5 rounded hover:bg-red-50"
+              title="Logları temizle"
+            >
+              Temizle
+            </button>
+          )}
+        </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-3 space-y-1 max-h-80">
-        {logs.length === 0 ? (
-          <p className="text-slate-400 text-xs text-center py-6">Henüz log yok</p>
+      <div className="px-3 py-2 border-b border-slate-100 flex-shrink-0">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Logda ara..."
+          className="w-full px-2 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-slate-400 bg-white"
+        />
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-1 max-h-[500px]">
+        {filtered.length === 0 ? (
+          <p className="text-slate-400 text-xs text-center py-6">
+            {logs.length === 0 ? 'Henüz log yok' : 'Arama sonucu bulunamadı'}
+          </p>
         ) : (
-          logs.map((log, i) => <LogRow key={i} log={log} />)
+          filtered.map((log, i) => <LogRow key={i} log={log} />)
         )}
       </div>
     </div>
@@ -703,11 +831,13 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
   const [viewMode, setViewMode] = useState<'combined' | 'split'>('combined');
   const [polledLogs, setPolledLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [clearedAt, setClearedAt] = useState<string | null>(null);
 
   const fetchLogs = useCallback(async () => {
     try {
       const scraperParam = subscribedScrapers.length === 3 ? 'all' : subscribedScrapers[0] ?? 'all';
-      const data = await getScraperLogs(scraperParam, 30);
+      const data = await getScraperLogs(scraperParam, 500);
       setPolledLogs(data.logs || []);
     } catch (err) {
       console.error(err);
@@ -741,12 +871,22 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
     }
   }, [subscribe]);
 
+  const handleClear = useCallback(() => {
+    const now = new Date().toISOString();
+    setClearedAt(now);
+    setPolledLogs([]);
+  }, []);
+
   // Combined mod: WS events + polled logs merge
   const wsLogEntries: LogEntry[] = wsEvents
     .filter((e) => (e.type === 'log' || e.type === 'error') && subscribedScrapers.includes(e.scraper_type))
-    .map(wsEventToLogEntry);
+    .map(wsEventToLogEntry)
+    .filter((e) => !clearedAt || e.timestamp > clearedAt);
 
-  const combinedLogs = [...wsLogEntries, ...polledLogs].slice(0, 50);
+  const combinedLogs = [...wsLogEntries, ...polledLogs]
+    .filter((l, i, arr) => arr.findIndex((x) => x.timestamp === l.timestamp && x.message === l.message) === i)
+    .slice(0, 500)
+    .filter((l) => !search.trim() || l.message.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <Card>
@@ -794,6 +934,25 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
             )}
           </div>
         </div>
+
+        {/* Arama + Temizle (combined modda) */}
+        {viewMode === 'combined' && (
+          <div className="flex items-center gap-2 mt-3">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Logda ara..."
+              className="flex-1 px-3 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 bg-white"
+            />
+            <button
+              onClick={handleClear}
+              className="px-3 py-1.5 text-xs text-slate-500 border border-slate-200 rounded-lg hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors whitespace-nowrap"
+            >
+              Temizle
+            </button>
+          </div>
+        )}
       </CardHeader>
 
       <CardContent>
@@ -812,10 +971,12 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
             ))}
           </div>
         ) : combinedLogs.length === 0 ? (
-          <p className="text-slate-500 text-sm text-center py-4">Henüz log yok</p>
+          <p className="text-slate-500 text-sm text-center py-4">
+            {search.trim() ? 'Arama sonucu bulunamadı' : 'Henüz log yok'}
+          </p>
         ) : (
           // ── COMBINED MOD loglar ──
-          <div className="space-y-1 max-h-80 overflow-y-auto">
+          <div className="space-y-1 max-h-[500px] overflow-y-auto">
             {combinedLogs.map((log, idx) => (
               <LogRow key={idx} log={log} />
             ))}
@@ -833,34 +994,6 @@ export default function ScrapersPage() {
   const [loading, setLoading] = useState(true);
   const [openAlexExpanded, setOpenAlexExpanded] = useState(false);
 
-  // Global WebSocket connection
-  const { connectionStatus, events: wsEvents, isConnected } = useGlobalScraperEvents({
-    onEvent: (event) => {
-      // WS event'ı geldiğinde gönderilen payload'ı kullanarak durumu LOKAL olarak güncelle!
-      // ESKİ KOD: fetchStatus() çağırıyordu. Bu da saniyede onlarca HTTP isteğine yol açıp backend'i çökertiyordu.
-      if (event.type === 'status_update' || event.type === 'progress') {
-        if (event.data) {
-          setStatus(prev => {
-            if (!prev) return prev;
-
-            // Mevcut state'in klonunu al ve sadece güncellenen scraper'ı değiştir
-            const newState = { ...prev };
-            const sType = event.scraper_type;
-
-            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
-              newState[sType] = {
-                ...newState[sType],
-                ...event.data
-              };
-            }
-
-            return newState;
-          });
-        }
-      }
-    },
-  });
-
   const fetchStatus = useCallback(async () => {
     try {
       const data = await getScrapersStatus();
@@ -871,6 +1004,46 @@ export default function ScrapersPage() {
       setLoading(false);
     }
   }, []);
+
+  // fetchStatus ref — onEvent closure'ında stale olmadan kullanmak için
+  const fetchStatusRef = useRef(fetchStatus);
+  useEffect(() => { fetchStatusRef.current = fetchStatus; }, [fetchStatus]);
+
+  // Global WebSocket connection
+  const { connectionStatus, events: wsEvents, isConnected } = useGlobalScraperEvents({
+    onEvent: (event) => {
+      if (event.type === 'status_update' || event.type === 'progress') {
+        if (event.data) {
+          setStatus(prev => {
+            if (!prev) return prev;
+
+            const newState = { ...prev };
+            const sType = event.scraper_type;
+
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
+              newState[sType] = {
+                ...newState[sType],
+                ...event.data
+              };
+            }
+
+            // any_running / all_completed'ı yeniden hesapla
+            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status];
+            newState.any_running = statuses.some(s => s === 'running' || s === 'starting' || s === 'paused');
+            newState.all_completed = statuses.every(s => s === 'completed' || s === 'stopped' || s === 'idle' || s === 'error');
+
+            return newState;
+          });
+
+          // Scraper terminal state'e geçince REST'ten kesin status çek
+          const terminal = ['completed', 'stopped', 'error'];
+          if (terminal.includes((event.data as Record<string, unknown>)?.status as string)) {
+            setTimeout(() => fetchStatusRef.current(), 1500);
+          }
+        }
+      }
+    },
+  });
 
   useEffect(() => {
     fetchStatus();

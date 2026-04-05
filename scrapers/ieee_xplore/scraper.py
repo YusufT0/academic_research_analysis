@@ -34,16 +34,18 @@ class ScraperStoppedException(Exception):
 class IEEEXploreScraper:
     """IEEE Xplore scraper ana sınıfı"""
     
-    def __init__(self, use_proxy: bool = None, headless: bool = False, stop_flag=None):
+    def __init__(self, use_proxy: bool = None, headless: bool = False, stop_flag=None, pause_flag=None):
         """
         IEEE Xplore scraper'ı başlatır
-        
+
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
             stop_flag: threading.Event - durdurma sinyali için
+            pause_flag: threading.Event - duraklatma sinyali için
         """
         self.stop_flag = stop_flag
+        self.pause_flag = pause_flag
         self.config = IEEEXploreConfig()
         
         # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
@@ -85,6 +87,20 @@ class IEEEXploreScraper:
         if self.stop_flag and self.stop_flag.is_set():
             logger.warning("Stop sinyali alındı, scraper durduruluyor...")
             raise ScraperStoppedException("Scraper durduruldu")
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Stop/pause flag kontrolü yaparak bekle. Stop flag set ise exception fırlatır."""
+        end = time.time() + seconds
+        while True:
+            self.check_stop_flag()
+            if self.pause_flag and self.pause_flag.is_set():
+                while self.pause_flag.is_set():
+                    self.check_stop_flag()
+                    time.sleep(0.3)
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.3, remaining))
     
     def initialize(self):
         """Scraper'ı başlatır"""
@@ -119,8 +135,6 @@ class IEEEXploreScraper:
             # Sayfanın tamamen yüklenmesini bekle
             logger.loading("Sayfa yükleniyor")
             wait_for_page_load(self.driver)
-            time.sleep(2)
-            
             logger.success("Sayfa hazır!")
             return True
             
@@ -174,7 +188,7 @@ class IEEEXploreScraper:
                 logger.warning("Sonraki sayfaya geçilemedi!")
                 break
             
-            time.sleep(2)  # Rate limiting
+            self._interruptible_sleep(2)  # Rate limiting
             current_page += 1
         
         logger.section(f"TOPLAM {len(self.all_journals)} JOURNAL BULUNDU")
@@ -221,7 +235,6 @@ class IEEEXploreScraper:
                 return None, []
 
             wait_for_page_load(self.driver)
-            time.sleep(2)
             self.rate_limiter.check_and_handle_rate_limit()
 
             page_source = self.driver.page_source
@@ -251,7 +264,6 @@ class IEEEXploreScraper:
                 return aims_and_scope, []
 
             wait_for_page_load(self.driver)
-            time.sleep(2)
             self.rate_limiter.check_and_handle_rate_limit()
 
             # 5. Decade sekmeleri var mı?
@@ -279,7 +291,7 @@ class IEEEXploreScraper:
                                     "arguments[0].scrollIntoView({block:'center'});", link
                                 )
                                 self.driver.execute_script("arguments[0].click();", link)
-                                time.sleep(1.5)
+                                self._interruptible_sleep(1.5)
                                 break
                     except Exception as e:
                         logger.warning(f"Decade sekmesi tıklanamadı ({decade}): {e}")
@@ -347,7 +359,7 @@ class IEEEXploreScraper:
                                     ))
                                 )
                             except TimeoutException:
-                                time.sleep(2)
+                                self._interruptible_sleep(2)
                             clicked = True
                             break
 
@@ -400,7 +412,6 @@ class IEEEXploreScraper:
             return {'issue_info': {'url': full_issue_url}, 'articles': []}
 
         wait_for_page_load(self.driver)
-        time.sleep(2)
         self.rate_limiter.check_and_handle_rate_limit()
 
         page_source = self.driver.page_source
@@ -456,7 +467,6 @@ class IEEEXploreScraper:
                     continue
 
                 wait_for_page_load(self.driver)
-                time.sleep(1)
                 self.rate_limiter.check_and_handle_rate_limit()
 
                 article_data = ArticleParser.extract_article_details(
@@ -476,7 +486,7 @@ class IEEEXploreScraper:
                     except Exception:
                         pass
 
-                time.sleep(1)
+                self._interruptible_sleep(1)
 
             except RateLimitException:
                 raise
@@ -497,6 +507,8 @@ class IEEEXploreScraper:
         article_progress_callback=None,
         article_list_callback=None,
         existing_issue_urls: set = None,
+        issue_start_callback=None,
+        issue_complete_callback=None,
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın issue'larını ve makalelerini toplar.
@@ -559,6 +571,16 @@ class IEEEXploreScraper:
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
+                if issue_start_callback:
+                    try:
+                        issue_start_callback(
+                            issue_idx,
+                            len(issues_to_process),
+                            issue_stub.get('title', f'Issue {issue_idx}'),
+                        )
+                    except Exception:
+                        pass
+
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
@@ -570,6 +592,16 @@ class IEEEXploreScraper:
                 for article in result['articles']:
                     article['journal_name'] = journal_name
                 issue_results.append(result)
+
+                if issue_complete_callback:
+                    try:
+                        issue_complete_callback(
+                            issue_idx,
+                            len(result['articles']),
+                            [a.get('title', '') for a in result['articles']],
+                        )
+                    except Exception:
+                        pass
 
             logger.found(
                 sum(len(r['articles']) for r in issue_results),
