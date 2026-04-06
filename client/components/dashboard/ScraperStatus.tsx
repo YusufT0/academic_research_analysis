@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { Play, Pause, Square, RefreshCw, CheckCircle, XCircle, Clock } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { getScrapersStatus, startAllScrapers, stopAllScrapers } from '@/lib/api';
+import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
 
 const statusConfig: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info'; icon: React.ReactNode }> = {
@@ -20,8 +21,27 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'succes
 };
 
 function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string }) {
+  const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
   const config = statusConfig[scraper.status] || statusConfig.idle;
-  
+
+  // Gelen scraper nesnesindeki süre güncellendiğinde local state'i senkronize et
+  useEffect(() => {
+    setLocalElapsed(scraper.elapsed_seconds);
+  }, [scraper.elapsed_seconds]);
+
+  // Scraper çalışıyorsa her saniye süreyi artır
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (scraper.status === 'running') {
+      interval = setInterval(() => {
+        setLocalElapsed((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [scraper.status]);
+
   return (
     <div className="rounded-lg border border-slate-200 p-4">
       <div className="flex items-center justify-between mb-3">
@@ -31,7 +51,7 @@ function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string
           {config.label}
         </Badge>
       </div>
-      
+
       {/* Progress Bar */}
       <div className="mb-3">
         <div className="flex justify-between text-xs text-slate-500 mb-1">
@@ -39,13 +59,13 @@ function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string
           <span>{scraper.progress_percent.toFixed(1)}%</span>
         </div>
         <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-          <div 
+          <div
             className="h-full bg-emerald-500 transition-all duration-500"
             style={{ width: `${scraper.progress_percent}%` }}
           />
         </div>
       </div>
-      
+
       {/* Stats */}
       <div className="grid grid-cols-2 gap-2 text-sm">
         <div>
@@ -67,7 +87,7 @@ function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string
           </span>
         </div>
       </div>
-      
+
       {/* Current Journal */}
       {scraper.current_journal && (
         <div className="mt-3 pt-3 border-t border-slate-100">
@@ -75,7 +95,7 @@ function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string
           <p className="text-sm font-medium text-slate-700 truncate">{scraper.current_journal}</p>
         </div>
       )}
-      
+
       {/* Last Error */}
       {scraper.last_error && (
         <div className="mt-2 p-2 bg-red-50 rounded text-xs text-red-600">
@@ -91,7 +111,25 @@ export default function ScraperStatusComponent() {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
 
-  const fetchStatus = async () => {
+  const { isConnected } = useGlobalScraperEvents({
+    onEvent: (event) => {
+      if (event.type === 'status_update' || event.type === 'progress') {
+        if (event.data) {
+          setStatus((prev: any) => {
+            if (!prev) return prev;
+            const newState = { ...prev };
+            const sType = event.scraper_type;
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
+              newState[sType] = { ...newState[sType], ...event.data };
+            }
+            return newState;
+          });
+        }
+      }
+    },
+  });
+
+  const fetchStatus = useCallback(async () => {
     try {
       const data = await getScrapersStatus();
       setStatus(data);
@@ -100,14 +138,18 @@ export default function ScraperStatusComponent() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchStatus();
-    // Her 3 saniyede güncelle
-    const interval = setInterval(fetchStatus, 3000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [fetchStatus]);
+
+  useEffect(() => {
+    if (!isConnected) {
+      const interval = setInterval(fetchStatus, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchStatus, isConnected]);
 
   const handleStartAll = async () => {
     setActionLoading(true);
@@ -143,6 +185,7 @@ export default function ScraperStatusComponent() {
           <div className="animate-pulse space-y-4">
             <div className="h-24 bg-slate-100 rounded"></div>
             <div className="h-24 bg-slate-100 rounded"></div>
+            <div className="h-24 bg-slate-100 rounded"></div>
           </div>
         </CardContent>
       </Card>
@@ -155,9 +198,9 @@ export default function ScraperStatusComponent() {
         <CardTitle>Scraper Durumu</CardTitle>
         <div className="flex gap-2">
           {status?.any_running ? (
-            <Button 
-              variant="danger" 
-              size="sm" 
+            <Button
+              variant="danger"
+              size="sm"
               onClick={handleStopAll}
               isLoading={actionLoading}
             >
@@ -165,9 +208,9 @@ export default function ScraperStatusComponent() {
               Tümünü Durdur
             </Button>
           ) : (
-            <Button 
-              variant="primary" 
-              size="sm" 
+            <Button
+              variant="primary"
+              size="sm"
               onClick={handleStartAll}
               isLoading={actionLoading}
             >
@@ -178,11 +221,14 @@ export default function ScraperStatusComponent() {
         </div>
       </CardHeader>
       <CardContent>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-4">
           {status && (
             <>
-              <ScraperCard scraper={status.ieee} title="IEEE Xplore" />
-              <ScraperCard scraper={status.sciencedirect} title="ScienceDirect" />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ScraperCard scraper={status.ieee} title="IEEE Xplore" />
+                <ScraperCard scraper={status.sciencedirect} title="ScienceDirect" />
+              </div>
+              <ScraperCard scraper={status.acm} title="ACM Digital Library" />
             </>
           )}
         </div>

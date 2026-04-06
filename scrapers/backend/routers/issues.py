@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from database.models import Issue, Article
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
+from backend.schemas.issue import IssueListResponse, IssueResponse
 from utils.logger import get_logger
 
 logger = get_logger('issues_router')
@@ -20,7 +21,7 @@ logger = get_logger('issues_router')
 router = APIRouter(prefix="/issues", tags=["Issues"])
 
 
-@router.get("/", summary="Tüm sayıları listele")
+@router.get("/", summary="Tüm sayıları listele", response_model=IssueListResponse)
 async def list_issues(
     # Pagination
     page: int = Query(1, ge=1, description="Sayfa numarası"),
@@ -102,7 +103,7 @@ async def list_issues(
     }
 
 
-@router.get("/{issue_id}", summary="Sayı detayı")
+@router.get("/{issue_id}", summary="Sayı detayı", response_model=IssueResponse)
 async def get_issue(issue_id: str):
     """Belirli bir sayının detaylarını getir (cached)"""
     try:

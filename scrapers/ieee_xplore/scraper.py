@@ -177,9 +177,11 @@ class IEEEXploreScraper:
         return self.all_journals
     
     def scrape_journal_articles(
-        self, 
-        journal: Dict[str, Any], 
-        max_articles: int = 100
+        self,
+        journal: Dict[str, Any],
+        max_articles: int = 100,
+        article_progress_callback=None,
+        article_list_callback=None,
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın makalelerini toplar
@@ -240,12 +242,26 @@ class IEEEXploreScraper:
                 article_urls = article_urls[:max_articles]
             
             logger.info(f"{len(article_urls)} makale detayı toplanacak...")
-            
+
+            # Makale listesini UI'a bildir (başlıklar yok, placeholder gönder)
+            if article_list_callback:
+                try:
+                    article_list_callback(['' for _ in article_urls])
+                except Exception:
+                    pass
+
             # Her makale için detay sayfasına git
             for idx, article_url in enumerate(article_urls, 1):
                 # Stop flag kontrolü - her makale öncesi
                 self.check_stop_flag()
-                
+
+                # Makale başlamadan önce UI'a bildir (anlık güncelleme)
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_urls), None)
+                    except Exception:
+                        pass
+
                 try:
                     # Full URL yap
                     if article_url.startswith('/'):
@@ -273,6 +289,12 @@ class IEEEXploreScraper:
                     if article_data and article_data.get('title'):
                         articles.append(article_data)
                         logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
+
+                    if article_progress_callback:
+                        try:
+                            article_progress_callback(idx, len(article_urls), article_data.get('title') if article_data else None)
+                        except Exception:
+                            pass
                     
                     # Rate limiting
                     time.sleep(1)

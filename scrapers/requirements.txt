@@ -1,5 +1,6 @@
+# SeleniumBase (local patched version — rsplit fix for @ in proxy username)
+./libs/seleniumbase
 selenium>=4.28.0
-selenium-wire>=5.1.0
 undetected-chromedriver>=3.5.0
 python-dotenv>=1.0.0
 beautifulsoup4>=4.12.0
@@ -16,15 +17,36 @@ pydantic-settings>=2.1.0
 # FastAPI Backend
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
-PyMuPDF
 
 # NLP Related
 sentence-transformers
 umap-learn
 hdbscan
+keybert
 numpy
 scikit-learn
 nltk
+spacy
 
 # Redis Cache
 redis[hiredis]>=5.0.0
+
+# Enterprise Middleware & Resilience
+structlog>=23.0.0
+tenacity>=8.2.0
+psutil>=5.9.0
+websockets>=12.0
+
+# Monitoring
+prometheus-fastapi-instrumentator>=6.0.0
+
+# Search
+elasticsearch[async]>=8.0.0,<9.0.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+httpx>=0.27.0
+mongomock-motor>=0.0.29
+fakeredis[lua]>=2.21.0

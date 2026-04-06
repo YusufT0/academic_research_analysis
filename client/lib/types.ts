@@ -15,6 +15,12 @@ export interface Journal {
   eissn: string | null;
   impact_factor: number | null;
   subjects: string[];
+  openalex_id?: string | null;
+  h_index?: number | null;
+  i10_index?: number | null;
+  average_citation_count?: number | null;
+  total_citation_count?: number;
+  last_citation_update_date?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -45,6 +51,7 @@ export interface Article {
   url: string;
   doi: string | null;
   abstract: string | null;
+  introduction: string | null;
   keywords: string[];
   authors: string[];
   publication_date: string | null;
@@ -55,6 +62,12 @@ export interface Article {
   open_access: boolean;
   pdf_url: string | null;
   citation_count: number;
+  openalex_id?: string | null;
+  is_openalex_indexed?: boolean;
+  citation_percentile?: number | null;
+  fwci?: number | null;
+  last_citation_update_date?: string | null;
+  references?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -75,6 +88,12 @@ export interface ScraperStatus {
   current_journal: string | null;
   current_journal_index: number;
   total_journals: number;
+  pending_journals: string[];
+  completed_journals: Array<{ name: string; articles_count: number; article_list?: string[] }>;
+  article_list: string[];
+  current_article: string | null;
+  current_article_index: number;
+  total_articles: number;
   journals_scraped: number;
   issues_scraped: number;
   articles_scraped: number;
@@ -90,6 +109,7 @@ export interface ScraperStatus {
 export interface AllScrapersStatus {
   ieee: ScraperStatus;
   sciencedirect: ScraperStatus;
+  acm: ScraperStatus;
   any_running: boolean;
   all_completed: boolean;
 }
@@ -105,6 +125,7 @@ export interface GeneralStats {
   scrapers: {
     ieee_status: string;
     sciencedirect_status: string;
+    acm_status: string;
     any_running: boolean;
   };
 }
@@ -123,10 +144,37 @@ export interface ArticleStats {
   top_authors: Array<{ _id: string; count: number }>;
 }
 
+export interface CitationStats {
+  citation_distribution: Array<{ _id: number | string; count: number }>;
+  top_cited_articles: Array<{
+    _id: string;
+    title: string;
+    authors: string[];
+    citation_count: number;
+    publication_year: number | null;
+  }>;
+  citations_by_pub_year: Array<{
+    _id: number;
+    total_citations: number;
+    article_count: number;
+  }>;
+  top_h_index_journals: Array<{
+    _id: string;
+    name: string;
+    h_index: number;
+    i10_index: number;
+    total_citation_count: number;
+  }>;
+}
+
 export interface SearchResult {
   query: string;
   search_type: string;
   count: number;
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
   items: Array<{
     id: string;
     title: string;
@@ -138,5 +186,160 @@ export interface SearchResult {
     abstract: string | null;
     keywords: string[];
   }>;
+}
+
+// ==================== Elasticsearch Types ====================
+
+export interface ElasticSearchHit {
+  id: string;
+  title: string;
+  journal_name: string;
+  authors: string[];
+  publication_year: number | null;
+  doi: string | null;
+  url: string;
+  abstract: string | null;
+  keywords: string[];
+  source_website: string;
+  score: number;
+  highlights?: {
+    title?: string[];
+    abstract?: string[];
+    keywords?: string[];
+    authors?: string[];
+  };
+}
+
+export interface SearchFacetBucket {
+  key: string;
+  count: number;
+}
+
+export interface SearchFacets {
+  sources: SearchFacetBucket[];
+  years: SearchFacetBucket[];
+  journals: SearchFacetBucket[];
+  keywords: SearchFacetBucket[];
+}
+
+export interface ElasticSearchResult {
+  query: string;
+  total: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
+  items: ElasticSearchHit[];
+  facets?: SearchFacets;
+}
+
+export interface SearchSuggestion {
+  text: string;
+  score?: number;
+}
+
+// ==================== Citation Graph Types ====================
+
+export interface CitationGraphNode {
+  id: string;
+  title: string | null;
+  doi: string | null;
+  cited_by_count: number | null;
+  publication_year: number | null;
+  is_root: boolean;
+  is_internal: boolean;
+  internal_article_id: string | null;
+  depth: number;
+}
+
+export interface CitationGraphEdge {
+  source: string;
+  target: string;
+  depth: number;
+}
+
+export interface CitationGraphData {
+  root_article_id: string;
+  root_openalex_id: string;
+  max_depth: number;
+  node_count: number;
+  edge_count: number;
+  computed_at: string;
+  nodes: CitationGraphNode[];
+  edges: CitationGraphEdge[];
+}
+
+export interface CitationExpandData {
+  expanded_node_id: string;
+  node_count: number;
+  edge_count: number;
+  nodes: CitationGraphNode[];
+  edges: CitationGraphEdge[];
+}
+
+// ==================== NLP / AI Analysis Types ====================
+
+export interface NlpSearchArticle {
+  id: string;
+  title: string;
+  abstract?: string;
+  doi?: string;
+  url?: string;
+  keywords?: string[];
+  similarity_score?: number;
+  cluster_id?: number;
+}
+
+export interface NlpSearchResponse {
+  query: string;
+  model_version: string;
+  similarity_score: number;
+  cluster_id: number | null;
+  cluster_label: string | null;
+  total_in_cluster: number | null;
+  articles: NlpSearchArticle[];
+}
+
+export type NlpBarChartData = Record<string, number>;
+
+export type NlpPieChartData = Record<string, number>;
+
+export interface NlpScatterPoint {
+  x: number;
+  y: number;
+}
+
+export interface NlpStatus {
+  has_trained_model: boolean;
+  latest_model_version: string | null;
+  latest_training_date: string | null;
+  latest_stats: Record<string, unknown> | null;
+  is_training: boolean;
+  running_version: string | null;
+  cache_loaded: boolean;
+  cached_version: string | null;
+  pkl_model_available: boolean;
+  pkl_model_loaded: boolean;
+  pkl_model_path: string | null;
+}
+
+export interface JournalCitationMetrics {
+  id: string;
+  name: string;
+  openalex_id: string | null;
+  h_index: number | null;
+  i10_index: number | null;
+  average_citation_count: number | null;
+  total_citation_count: number;
+  historical_citation_data: Record<string, number>;
+  last_citation_update_date: string | null;
+}
+
+// ==================== WebSocket Types ====================
+
+export interface ScraperEvent {
+  type: 'status_update' | 'progress' | 'log' | 'error' | 'completed' | 'started' | 'stopped' | 'pong' | 'connected' | 'subscribed';
+  scraper_type: string;
+  timestamp: string;
+  data: Record<string, unknown>;
 }
 

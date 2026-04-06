@@ -4,8 +4,9 @@ import { useEffect, useState } from 'react';
 import { TrendingUp, BarChart3, PieChart, Users } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
-import { getArticleStats } from '@/lib/api';
-import type { ArticleStats } from '@/lib/types';
+import { getArticleStats, getCitationStats } from '@/lib/api';
+import type { ArticleStats, CitationStats } from '@/lib/types';
+import { CitationsSection } from './CitationsSection';
 
 function YearlyTrendChart({ data }: { data: Record<string, number> }) {
   const years = Object.entries(data)
@@ -81,11 +82,13 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
   const colors: Record<string, string> = {
     ieeexplore: 'bg-blue-500',
     sciencedirect: 'bg-orange-500',
+    acm: 'bg-amber-500',
   };
 
   const labels: Record<string, string> = {
     ieeexplore: 'IEEE Xplore',
     sciencedirect: 'ScienceDirect',
+    acm: 'ACM Digital Library',
   };
 
   return (
@@ -102,9 +105,9 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
       </div>
       
       {/* Legend */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div className="flex flex-wrap gap-4">
         {sources.map(([source, info]) => (
-          <div key={source} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg">
+          <div key={source} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg flex-1 min-w-[calc(50%-0.5rem)]">
             <div className={`w-4 h-4 rounded ${colors[source] || 'bg-slate-400'}`} />
             <div className="flex-1">
               <p className="font-medium text-slate-900">{labels[source] || source}</p>
@@ -120,23 +123,27 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
       </div>
 
       {/* Additional Stats */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4 pt-4 border-t border-slate-100">
-        {sources.map(([source, info]) => (
-          <div key={`${source}-abstract`} className="text-center">
-            <p className="text-xs text-slate-500 mb-1">{labels[source] || source} - Özet</p>
-            <p className="font-semibold text-slate-900">
-              {info.with_abstract} <span className="text-xs text-slate-400">/ {info.count}</span>
-            </p>
-          </div>
-        ))}
-        {sources.map(([source, info]) => (
-          <div key={`${source}-doi`} className="text-center">
-            <p className="text-xs text-slate-500 mb-1">{labels[source] || source} - DOI</p>
-            <p className="font-semibold text-slate-900">
-              {info.with_doi} <span className="text-xs text-slate-400">/ {info.count}</span>
-            </p>
-          </div>
-        ))}
+      <div className="mt-4 pt-4 border-t border-slate-100 space-y-3">
+        <div className="flex flex-wrap justify-center gap-3">
+          {sources.map(([source, info]) => (
+            <div key={`${source}-abstract`} className="text-center flex-1 min-w-[100px]">
+              <p className="text-xs text-slate-500 mb-1">{labels[source] || source} - Özet</p>
+              <p className="font-semibold text-slate-900">
+                {info.with_abstract} <span className="text-xs text-slate-400">/ {info.count}</span>
+              </p>
+            </div>
+          ))}
+        </div>
+        <div className="flex flex-wrap justify-center gap-3">
+          {sources.map(([source, info]) => (
+            <div key={`${source}-doi`} className="text-center flex-1 min-w-[100px]">
+              <p className="text-xs text-slate-500 mb-1">{labels[source] || source} - DOI</p>
+              <p className="font-semibold text-slate-900">
+                {info.with_doi} <span className="text-xs text-slate-400">/ {info.count}</span>
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -170,13 +177,18 @@ function TopAuthors({ authors }: { authors: Array<{ _id: string; count: number }
 
 export default function TrendsPage() {
   const [stats, setStats] = useState<ArticleStats | null>(null);
+  const [citationStats, setCitationStats] = useState<CitationStats | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function fetchStats() {
       try {
-        const data = await getArticleStats();
-        setStats(data);
+        const [articleData, citationData] = await Promise.all([
+          getArticleStats(),
+          getCitationStats()
+        ]);
+        setStats(articleData);
+        setCitationStats(citationData);
       } catch (err) {
         console.error(err);
       } finally {
@@ -309,6 +321,9 @@ export default function TrendsPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Citations Section */}
+      {citationStats && <CitationsSection data={citationStats} />}
     </div>
   );
 }

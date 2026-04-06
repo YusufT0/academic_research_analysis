@@ -1,13 +1,15 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Search, Filter, ExternalLink, ChevronLeft, ChevronRight, BookOpen, FileText } from 'lucide-react';
+import { Suspense, useEffect, useState, useRef } from 'react';
+import { useSearchParams } from 'next/navigation';
+import { Search, Filter, ExternalLink, ChevronLeft, ChevronRight, BookOpen, FileText, Unlock, Star, Presentation, Activity } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { getJournals, type JournalFilters } from '@/lib/api';
+import { getJournals, getJournal, type JournalFilters } from '@/lib/api';
 import type { Journal, PaginatedResponse } from '@/lib/types';
+import { JournalCard } from './JournalCard';
 
 // Relative URL'leri tam URL'ye çevir
 function getFullUrl(url: string, sourceWebsite: string): string {
@@ -23,15 +25,25 @@ function getFullUrl(url: string, sourceWebsite: string): string {
     return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (sourceWebsite === 'sciencedirect') {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'acm') {
+    return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   }
-  
+
   return url;
 }
 
-export default function JournalsPage() {
+function JournalsContent() {
+  const searchParams = useSearchParams();
+  const journalIdParam = searchParams.get('journal_id');
+  const issueIdParam = searchParams.get('issue_id');
+  const articleIdParam = searchParams.get('article_id');
+
   const [data, setData] = useState<PaginatedResponse<Journal> | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const initializedUrlParam = useRef(false);
+  const skipSearchTrigger = useRef(false);
+
   const [filters, setFilters] = useState<JournalFilters>({
     page: 1,
     page_size: 12,
@@ -43,18 +55,36 @@ export default function JournalsPage() {
     async function fetchJournals() {
       setLoading(true);
       try {
+        if (journalIdParam && !initializedUrlParam.current) {
+          initializedUrlParam.current = true;
+          const journal = await getJournal(journalIdParam);
+          if (journal) {
+            skipSearchTrigger.current = true;
+            setSearchTerm(journal.name);
+            setData({ items: [journal], total: 1, page: 1, page_size: 1, total_pages: 1, has_next: false, has_prev: false });
+            return;
+          }
+        }
+
+        if (skipSearchTrigger.current) {
+          skipSearchTrigger.current = false;
+          return;
+        }
+
         const result = await getJournals({ ...filters, search: searchTerm || undefined });
         setData(result);
       } catch (err) {
         console.error(err);
       } finally {
-        setLoading(false);
+        if (!skipSearchTrigger.current) {
+          setLoading(false);
+        }
       }
     }
     
     const debounce = setTimeout(fetchJournals, 300);
     return () => clearTimeout(debounce);
-  }, [filters, searchTerm]);
+  }, [filters, searchTerm, journalIdParam]);
 
   const handlePageChange = (newPage: number) => {
     setFilters((prev) => ({ ...prev, page: newPage }));
@@ -95,6 +125,7 @@ export default function JournalsPage() {
                 <option value="">Tüm Kaynaklar</option>
                 <option value="ieeexplore">IEEE Xplore</option>
                 <option value="sciencedirect">ScienceDirect</option>
+                <option value="acm">ACM Digital Library</option>
               </select>
               <select
                 className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
@@ -105,6 +136,9 @@ export default function JournalsPage() {
                 }}
               >
                 <option value="article_count-desc">Makale Sayısı</option>
+                <option value="total_citation_count-desc">Toplam Atıf Sayısı</option>
+                <option value="h_index-desc">H-Index</option>
+                <option value="i10_index-desc">i10-Index</option>
                 <option value="name-asc">İsim (A → Z)</option>
                 <option value="name-desc">İsim (Z → A)</option>
                 <option value="issue_count-desc">Sayı Sayısı</option>
@@ -138,63 +172,13 @@ export default function JournalsPage() {
           </div>
         ) : (
           data?.items.map((journal) => (
-            <Card key={journal.id} className="hover:shadow-md transition-shadow">
-              <CardContent className="pt-6">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-semibold text-slate-900 line-clamp-2">{journal.name}</h3>
-                    <div className="flex items-center gap-2 mt-2">
-                      <Badge variant={journal.source_website === 'ieeexplore' ? 'info' : 'success'}>
-                        {journal.source_website === 'ieeexplore' ? 'IEEE' : 'ScienceDirect'}
-                      </Badge>
-                      {journal.open_access && (
-                        <Badge variant="success">Open Access</Badge>
-                      )}
-                    </div>
-                  </div>
-                  {journal.url && (
-                    <a
-                      href={getFullUrl(journal.url, journal.source_website)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-slate-400 hover:text-emerald-600"
-                    >
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
-                  )}
-                </div>
-                
-                {journal.publisher && (
-                  <p className="text-sm text-slate-500 mt-2">{journal.publisher}</p>
-                )}
-                
-                <div className="flex items-center gap-4 mt-4 pt-4 border-t border-slate-100">
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <BookOpen className="h-4 w-4 text-slate-400" />
-                    <span className="font-medium">{journal.issue_count}</span>
-                    <span className="text-slate-500">sayı</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-sm">
-                    <FileText className="h-4 w-4 text-slate-400" />
-                    <span className="font-medium">{journal.article_count}</span>
-                    <span className="text-slate-500">makale</span>
-                  </div>
-                </div>
-                
-                {journal.subjects.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-3">
-                    {journal.subjects.slice(0, 3).map((subject) => (
-                      <span
-                        key={subject}
-                        className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded"
-                      >
-                        {subject}
-                      </span>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
+            <JournalCard 
+              key={journal.id} 
+              journal={journal} 
+              getFullUrl={getFullUrl} 
+              defaultExpandedIssueId={journal.id === journalIdParam ? issueIdParam : null}
+              highlightArticleId={journal.id === journalIdParam ? articleIdParam : null}
+            />
           ))
         )}
       </div>
@@ -231,3 +215,10 @@ export default function JournalsPage() {
   );
 }
 
+export default function JournalsPage() {
+  return (
+    <Suspense fallback={<div className="p-8 text-center text-slate-500">Yükleniyor...</div>}>
+      <JournalsContent />
+    </Suspense>
+  );
+}

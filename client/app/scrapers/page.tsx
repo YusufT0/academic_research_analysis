@@ -1,23 +1,30 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { 
-  Play, 
-  Pause, 
-  Square, 
-  RefreshCw, 
-  CheckCircle, 
-  XCircle, 
+import { useEffect, useState, useCallback, useRef } from 'react';
+import {
+  Play,
+  Pause,
+  Square,
+  RefreshCw,
+  AlertTriangle,
+  Wifi,
+  WifiOff,
+  Radio,
+  ChevronDown,
+  ChevronUp,
+  CheckCircle2,
   Clock,
-  Settings,
-  AlertTriangle
+  Loader2,
+  FileText,
+  Columns2,
+  AlignJustify,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { 
-  getScrapersStatus, 
-  startIeeeScraper, 
+import {
+  getScrapersStatus,
+  startIeeeScraper,
   stopIeeeScraper,
   pauseIeeeScraper,
   resumeIeeeScraper,
@@ -25,9 +32,18 @@ import {
   stopScienceDirectScraper,
   pauseScienceDirectScraper,
   resumeScienceDirectScraper,
+  startAcmScraper,
+  stopAcmScraper,
+  pauseAcmScraper,
+  resumeAcmScraper,
   getScraperLogs
 } from '@/lib/api';
+import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
+import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
+import { OpenAlexScanner } from '@/components/dashboard/OpenAlexScanner';
+
+// ==================== Status Config ====================
 
 const statusConfig: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info'; color: string }> = {
   idle: { label: 'Bekliyor', variant: 'default', color: 'text-slate-500' },
@@ -40,11 +56,205 @@ const statusConfig: Record<string, { label: string; variant: 'default' | 'succes
   completed: { label: 'Tamamlandı', variant: 'success', color: 'text-emerald-500' },
 };
 
+// ==================== Connection Status Badge ====================
+
+function ConnectionBadge({ status }: { status: ConnectionStatus }) {
+  if (status === 'connected') {
+    return (
+      <Badge variant="success" className="text-xs gap-1">
+        <Wifi className="h-3 w-3" />
+        Canlı
+      </Badge>
+    );
+  }
+  if (status === 'reconnecting') {
+    return (
+      <Badge variant="warning" className="text-xs gap-1 animate-pulse">
+        <Radio className="h-3 w-3" />
+        Bağlanıyor...
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="default" className="text-xs gap-1">
+      <WifiOff className="h-3 w-3" />
+      Çevrimdışı
+    </Badge>
+  );
+}
+
+// ==================== Journal Queue ====================
+
+function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  // Makale başlıklarını aktif dergi bazında biriktirir (state ile → React render tetiklenir)
+  const [articlesByJournal, setArticlesByJournal] = useState<Record<string, string[]>>({});
+
+  // current_article değiştiğinde aktif dergiye ekle
+  useEffect(() => {
+    if (!scraper.current_journal || !scraper.current_article) return;
+    const key = scraper.current_journal;
+    const title = scraper.current_article;
+    setArticlesByJournal(prev => {
+      const list = prev[key] ?? [];
+      if (list.includes(title)) return prev;           // zaten var, render tetikleme
+      return { ...prev, [key]: [...list, title] };
+    });
+  }, [scraper.current_article, scraper.current_journal]);
+
+  const toggleExpand = (name: string) =>
+    setExpanded(prev => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+
+  const completed = scraper.completed_journals ?? [];
+  const pending   = scraper.pending_journals ?? [];
+  const isActive  = !!scraper.current_journal && ['running', 'paused'].includes(scraper.status);
+  const totalVisible = completed.length + (isActive ? 1 : 0) + pending.length;
+
+  if (totalVisible === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-slate-200 overflow-hidden">
+      {/* Header */}
+      <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+        <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Dergi Kuyruğu</span>
+        <span className="text-xs text-slate-400">{scraper.current_journal_index}/{scraper.total_journals}</span>
+      </div>
+
+      {/* Scrollable list */}
+      <div className="max-h-72 overflow-y-auto divide-y divide-slate-100">
+
+        {/* Tamamlananlar */}
+        {completed.map((j, i) => {
+          const isOpen = expanded.has(j.name);
+          const localArticles = articlesByJournal[j.name] ?? j.article_list ?? [];
+          return (
+            <div key={`done-${i}`} className="bg-white">
+              <button
+                onClick={() => toggleExpand(j.name)}
+                className="w-full flex items-center gap-2 px-4 py-2.5 hover:bg-slate-50 transition-colors duration-150 text-left"
+              >
+                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 flex-shrink-0" />
+                <span className="flex-1 text-xs text-slate-600 truncate" title={j.name}>{j.name}</span>
+                {j.articles_count > 0 && (
+                  <span className="text-xs text-emerald-600 font-medium flex-shrink-0 flex items-center gap-1">
+                    <FileText className="h-3 w-3" />{j.articles_count}
+                  </span>
+                )}
+                <ChevronDown
+                  className={`h-3.5 w-3.5 text-slate-400 flex-shrink-0 transition-transform duration-300 ${isOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {/* Accordion — CSS grid trick for smooth expand */}
+              <div className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                <div className="overflow-hidden">
+                  {localArticles.length > 0 ? (
+                    <ul className="px-4 pb-2 pt-1 space-y-1 bg-slate-50">
+                      {localArticles.map((title, ti) => (
+                        <li key={ti} className="flex items-start gap-1.5 text-xs text-slate-500">
+                          <span className="text-slate-300 flex-shrink-0 mt-0.5">›</span>
+                          <span className="line-clamp-2">{title}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="px-4 pb-2 pt-1 text-xs text-slate-400 bg-slate-50">Makale başlığı kaydedilmedi</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Aktif dergi */}
+        {isActive && scraper.current_journal && (
+          <div className="bg-blue-50">
+            {/* Journal header */}
+            <div className="flex items-center gap-2 px-4 py-2.5">
+              <Loader2 className="h-3.5 w-3.5 text-blue-500 flex-shrink-0 animate-spin" />
+              <span className="flex-1 text-xs font-semibold text-blue-800 truncate" title={scraper.current_journal}>
+                {scraper.current_journal}
+              </span>
+              {scraper.total_articles > 0 && (
+                <span className="text-xs text-blue-400 flex-shrink-0">
+                  {scraper.current_article_index}/{scraper.total_articles}
+                </span>
+              )}
+            </div>
+
+            {/* Article list accordion — shown as soon as article_list arrives */}
+            {(() => {
+              const artList = scraper.article_list ?? [];
+              const curIdx = scraper.current_article_index; // 1-based
+              if (artList.length === 0 && scraper.total_articles === 0) return null;
+
+              const displayList = artList.length > 0
+                ? artList
+                : Array.from({ length: scraper.total_articles }, (_, i) => `Makale ${i + 1}`);
+
+              return (
+                <ul className="pb-2 space-y-0.5 max-h-48 overflow-y-auto">
+                  {displayList.map((title, i) => {
+                    const oneBasedIdx = i + 1;
+                    const isDone    = oneBasedIdx < curIdx;
+                    const isLoading = oneBasedIdx === curIdx;
+                    const displayTitle = isLoading && scraper.current_article
+                      ? scraper.current_article
+                      : (title || `Makale ${oneBasedIdx}`);
+
+                    return (
+                      <li
+                        key={i}
+                        className={`flex items-start gap-2 px-4 py-1 text-xs transition-colors duration-300 ${
+                          isLoading ? 'bg-blue-100' : isDone ? 'opacity-60' : 'opacity-40'
+                        }`}
+                      >
+                        {isDone ? (
+                          <CheckCircle2 className="h-3 w-3 text-emerald-400 flex-shrink-0 mt-0.5" />
+                        ) : isLoading ? (
+                          <Loader2 className="h-3 w-3 text-blue-500 flex-shrink-0 mt-0.5 animate-spin" />
+                        ) : (
+                          <Clock className="h-3 w-3 text-slate-300 flex-shrink-0 mt-0.5" />
+                        )}
+                        <span className={`line-clamp-2 ${isLoading ? 'text-blue-700 font-medium' : isDone ? 'text-slate-500' : 'text-slate-400'}`}>
+                          {displayTitle}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* Bekleyenler */}
+        {pending.map((name, i) => (
+          <div
+            key={`pending-${i}`}
+            className="flex items-center gap-2 px-4 py-2 bg-white"
+            style={{ animationDelay: `${i * 30}ms` }}
+          >
+            <Clock className="h-3 w-3 text-slate-300 flex-shrink-0" />
+            <span className="text-xs text-slate-400 truncate flex-1" title={name}>{name}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ==================== Scraper Control Card ====================
+
 interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: () => Promise<void>;
+  onStart: (limit: number) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
@@ -52,7 +262,27 @@ interface ScraperControlProps {
 
 function ScraperControl({ scraper, title, description, onStart, onStop, onPause, onResume }: ScraperControlProps) {
   const [actionLoading, setActionLoading] = useState(false);
+  const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
+  const [limit, setLimit] = useState<number>(25);
   const config = statusConfig[scraper.status] || statusConfig.idle;
+
+  // Gelen scraper nesnesindeki süre güncellendiğinde local state'i senkronize et
+  useEffect(() => {
+    setLocalElapsed(scraper.elapsed_seconds);
+  }, [scraper.elapsed_seconds]);
+
+  // Scraper çalışıyorsa her saniye süreyi artır
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (scraper.status === 'running') {
+      interval = setInterval(() => {
+        setLocalElapsed((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [scraper.status]);
 
   const handleAction = async (action: () => Promise<void>) => {
     setActionLoading(true);
@@ -90,12 +320,11 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
             <span className="font-semibold">{scraper.progress_percent.toFixed(1)}%</span>
           </div>
           <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
-            <div 
-              className={`h-full rounded-full transition-all duration-500 ${
-                scraper.status === 'error' ? 'bg-red-500' :
+            <div
+              className={`h-full rounded-full transition-all duration-500 ${scraper.status === 'error' ? 'bg-red-500' :
                 scraper.status === 'completed' ? 'bg-emerald-500' :
-                'bg-gradient-to-r from-emerald-500 to-teal-400'
-              }`}
+                  'bg-gradient-to-r from-emerald-500 to-teal-400'
+                }`}
               style={{ width: `${scraper.progress_percent}%` }}
             />
           </div>
@@ -123,15 +352,9 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           </div>
         </div>
 
-        {/* Current Journal */}
-        {scraper.current_journal && (
-          <div className="bg-blue-50 rounded-lg p-4">
-            <p className="text-xs text-blue-600 font-medium mb-1">Şu an işleniyor</p>
-            <p className="text-sm font-semibold text-blue-900">{scraper.current_journal}</p>
-            <p className="text-xs text-blue-600 mt-1">
-              {scraper.current_journal_index} / {scraper.total_journals}
-            </p>
-          </div>
+        {/* Journal Queue */}
+        {(scraper.current_journal || (scraper.completed_journals?.length ?? 0) > 0) && (
+          <JournalQueue scraper={scraper} />
         )}
 
         {/* Last Error */}
@@ -150,134 +373,431 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           {scraper.started_at && (
             <span>Başlangıç: {new Date(scraper.started_at).toLocaleTimeString('tr-TR')}</span>
           )}
-          {scraper.elapsed_seconds > 0 && (
-            <span>Geçen süre: {Math.floor(scraper.elapsed_seconds / 60)} dk {Math.floor(scraper.elapsed_seconds % 60)} sn</span>
+          {localElapsed > 0 && (
+            <span>Geçen süre: {Math.floor(localElapsed / 60)} dk {Math.floor(localElapsed % 60)} sn</span>
           )}
         </div>
 
-        {/* Actions */}
-        <div className="flex gap-3 pt-4 border-t border-slate-100">
+        {/* Actions Menu */}
+        <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
           {canStart && (
-            <Button
-              variant="primary"
-              onClick={() => handleAction(onStart)}
-              isLoading={actionLoading}
-              className="flex-1"
-            >
-              <Play className="h-4 w-4 mr-2" />
-              Başlat
-            </Button>
-          )}
-          {isRunning && (
-            <>
-              <Button
-                variant="secondary"
-                onClick={() => handleAction(onPause)}
-                isLoading={actionLoading}
-                className="flex-1"
-              >
-                <Pause className="h-4 w-4 mr-2" />
-                Duraklat
-              </Button>
-              <Button
-                variant="danger"
-                onClick={() => handleAction(onStop)}
-                isLoading={actionLoading}
-                className="flex-1"
-              >
-                <Square className="h-4 w-4 mr-2" />
-                Durdur
-              </Button>
-            </>
-          )}
-          {isPaused && (
-            <>
+            <div className="flex items-center gap-3 w-full">
+              <div className="flex items-center gap-2">
+                <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                  Makale Limiti:
+                </label>
+                <input
+                  id={`limit-${title}`}
+                  type="number"
+                  min="1"
+                  max="5000"
+                  value={limit}
+                  onChange={(e) => setLimit(parseInt(e.target.value) || 25)}
+                  className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                />
+              </div>
+
               <Button
                 variant="primary"
-                onClick={() => handleAction(onResume)}
+                onClick={() => handleAction(() => onStart(limit))}
                 isLoading={actionLoading}
                 className="flex-1"
               >
                 <Play className="h-4 w-4 mr-2" />
-                Devam Et
+                Başlat
               </Button>
-              <Button
-                variant="danger"
-                onClick={() => handleAction(onStop)}
-                isLoading={actionLoading}
-                className="flex-1"
-              >
-                <Square className="h-4 w-4 mr-2" />
-                Durdur
-              </Button>
-            </>
+            </div>
           )}
+
+          <div className="flex gap-3 w-full">
+            {isRunning && (
+              <>
+                <Button variant="warning" onClick={() => handleAction(onPause)} isLoading={actionLoading} className="flex-1">
+                  <Pause className="h-4 w-4 mr-2" />
+                  Duraklat
+                </Button>
+                <Button variant="secondary" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
+                  <Square className="h-4 w-4 mr-2" />
+                  Durdur
+                </Button>
+              </>
+            )}
+            {isPaused && (
+              <>
+                <Button variant="primary" onClick={() => handleAction(onResume)} isLoading={actionLoading} className="flex-1">
+                  <Play className="h-4 w-4 mr-2" />
+                  Devam Et
+                </Button>
+                <Button variant="danger" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
+                  <Square className="h-4 w-4 mr-2" />
+                  Durdur
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </CardContent>
     </Card>
   );
 }
 
-function ScraperLogs() {
-  const [logs, setLogs] = useState<Array<{timestamp: string; level: string; message: string; scraper_type: string}>>([]);
-  const [loading, setLoading] = useState(true);
+// ==================== Log Types & Helpers ====================
+
+interface LogEntry {
+  timestamp: string;
+  level: string;
+  message: string;
+  scraper_type: string;
+}
+
+const SCRAPER_OPTIONS = [
+  { value: 'ieee', label: 'IEEE Xplore', variant: 'info' as const },
+  { value: 'sciencedirect', label: 'ScienceDirect', variant: 'success' as const },
+  { value: 'acm', label: 'ACM Digital Library', variant: 'warning' as const },
+];
+
+function scraperLabel(type: string) {
+  if (type === 'ieee') return 'IEEE';
+  if (type === 'acm') return 'ACM';
+  return 'SD';
+}
+
+function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' {
+  if (type === 'ieee') return 'info';
+  if (type === 'acm') return 'warning';
+  return 'success';
+}
+
+function getLevelColor(level: string) {
+  switch (level) {
+    case 'error': return 'text-red-600 bg-red-50';
+    case 'warning': return 'text-amber-600 bg-amber-50';
+    case 'success': return 'text-emerald-600 bg-emerald-50';
+    default: return 'text-blue-600 bg-blue-50';
+  }
+}
+
+function wsEventToLogEntry(e: ScraperEvent): LogEntry {
+  return {
+    timestamp: e.timestamp,
+    level: e.type === 'error' ? 'error' : (e.data?.level as string) || 'info',
+    message: (e.data?.message as string) || JSON.stringify(e.data),
+    scraper_type: e.scraper_type,
+  };
+}
+
+// ==================== Multi-Select Dropdown ====================
+
+interface ScraperMultiSelectProps {
+  selected: string[];
+  onChange: (selected: string[]) => void;
+}
+
+function ScraperMultiSelect({ selected, onChange }: ScraperMultiSelectProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    async function fetchLogs() {
-      try {
-        const data = await getScraperLogs('all', 30);
-        setLogs(data.logs || []);
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoading(false);
+    function handleClickOutside(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
       }
     }
-    
-    fetchLogs();
-    const interval = setInterval(fetchLogs, 5000);
-    return () => clearInterval(interval);
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  const getLevelColor = (level: string) => {
-    switch (level) {
-      case 'error': return 'text-red-600 bg-red-50';
-      case 'warning': return 'text-amber-600 bg-amber-50';
-      case 'success': return 'text-emerald-600 bg-emerald-50';
-      default: return 'text-blue-600 bg-blue-50';
+  const toggle = (value: string) => {
+    if (selected.includes(value)) {
+      if (selected.length === 1) return; // en az 1 seçili kalmalı
+      onChange(selected.filter((v) => v !== value));
+    } else {
+      onChange([...selected, value]);
     }
   };
+
+  const allSelected = selected.length === SCRAPER_OPTIONS.length;
+
+  const toggleAll = () => {
+    onChange(allSelected ? [SCRAPER_OPTIONS[0].value] : SCRAPER_OPTIONS.map((o) => o.value));
+  };
+
+  const displayLabel = allSelected
+    ? 'Tüm Scraperlar'
+    : selected.map((v) => scraperLabel(v)).join(', ');
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2 px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white hover:bg-slate-50 transition-colors min-w-[160px] justify-between"
+      >
+        <span className="text-slate-700 truncate">{displayLabel}</span>
+        <ChevronDown className={`h-4 w-4 text-slate-400 flex-shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 mt-1 w-52 bg-white border border-slate-200 rounded-lg shadow-lg z-20 py-1">
+          {/* Tümünü seç / kaldır */}
+          <button
+            onClick={toggleAll}
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 transition-colors text-slate-600"
+          >
+            <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${allSelected ? 'bg-slate-700 border-slate-700' : 'border-slate-300'}`}>
+              {allSelected && <CheckCircle2 className="h-3 w-3 text-white" />}
+            </span>
+            Tümü
+          </button>
+          <div className="border-t border-slate-100 my-1" />
+          {SCRAPER_OPTIONS.map((opt) => {
+            const isChecked = selected.includes(opt.value);
+            return (
+              <button
+                key={opt.value}
+                onClick={() => toggle(opt.value)}
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-slate-50 transition-colors"
+              >
+                <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 ${isChecked ? 'bg-slate-700 border-slate-700' : 'border-slate-300'}`}>
+                  {isChecked && <CheckCircle2 className="h-3 w-3 text-white" />}
+                </span>
+                <Badge variant={opt.variant} className="text-xs">{opt.label}</Badge>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== Single Log Row ====================
+
+function LogRow({ log }: { log: LogEntry }) {
+  return (
+    <div className="flex items-start gap-2 text-sm py-0.5">
+      <span className="text-xs text-slate-400 w-16 flex-shrink-0 pt-0.5">
+        {new Date(log.timestamp).toLocaleTimeString('tr-TR')}
+      </span>
+      <Badge variant={scraperBadgeVariant(log.scraper_type)} className="text-xs flex-shrink-0">
+        {scraperLabel(log.scraper_type)}
+      </Badge>
+      <span className={`px-1.5 py-0.5 rounded text-xs flex-shrink-0 ${getLevelColor(log.level)}`}>
+        {log.level}
+      </span>
+      <span className="text-slate-700 flex-1 break-words">{log.message}</span>
+    </div>
+  );
+}
+
+// ==================== Split Panel (kendi WS bağlantısı) ====================
+
+function useSplitLogPanel(scraperType: string) {
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [connected, setConnected] = useState(false);
+  const wsRef = useRef<WebSocket | null>(null);
+  const pingRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+    const baseUrl = apiUrl
+      .replace('/api/v1', '')
+      .replace('http://', 'ws://')
+      .replace('https://', 'wss://');
+    const wsUrl = `${baseUrl}/ws/scrapers/events?scrapers=${scraperType}`;
+
+    let ws: WebSocket;
+    let destroyed = false;
+
+    const connect = () => {
+      if (destroyed) return;
+      ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (destroyed) { ws.close(); return; }
+        setConnected(true);
+        pingRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+        }, 15000);
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const event: ScraperEvent = JSON.parse(e.data);
+          if (event.type === 'pong' || event.type === 'connected' || event.type === 'subscribed') return;
+          if (event.type === 'log' || event.type === 'error') {
+            setLogs((prev) => [wsEventToLogEntry(event), ...prev].slice(0, 100));
+          }
+        } catch { /* ignore */ }
+      };
+
+      ws.onclose = () => {
+        setConnected(false);
+        if (pingRef.current) { clearInterval(pingRef.current); pingRef.current = null; }
+        if (!destroyed) setTimeout(connect, 5000);
+      };
+    };
+
+    connect();
+
+    return () => {
+      destroyed = true;
+      if (pingRef.current) clearInterval(pingRef.current);
+      if (wsRef.current) wsRef.current.close();
+    };
+  }, [scraperType]);
+
+  return { logs, connected };
+}
+
+function SplitPanel({ scraperType, label }: { scraperType: string; label: string }) {
+  const { logs, connected } = useSplitLogPanel(scraperType);
+
+  return (
+    <div className="flex flex-col border border-slate-200 rounded-xl overflow-hidden bg-white min-h-[300px]">
+      <div className="flex items-center justify-between px-4 py-2.5 bg-slate-50 border-b border-slate-200 flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <Badge variant={scraperBadgeVariant(scraperType)} className="text-xs">{label}</Badge>
+          <span className="text-xs text-slate-500">Loglar</span>
+        </div>
+        <span className={`flex items-center gap-1 text-xs ${connected ? 'text-emerald-600' : 'text-slate-400'}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${connected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-300'}`} />
+          {connected ? 'Canlı' : 'Bağlanıyor...'}
+        </span>
+      </div>
+      <div className="flex-1 overflow-y-auto p-3 space-y-1 max-h-80">
+        {logs.length === 0 ? (
+          <p className="text-slate-400 text-xs text-center py-6">Henüz log yok</p>
+        ) : (
+          logs.map((log, i) => <LogRow key={i} log={log} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ==================== Live Event Log ====================
+
+function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; isWsConnected: boolean }) {
+  const { subscribe, subscribedScrapers } = useGlobalScraperEvents();
+  const [viewMode, setViewMode] = useState<'combined' | 'split'>('combined');
+  const [polledLogs, setPolledLogs] = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const fetchLogs = useCallback(async () => {
+    try {
+      const scraperParam = subscribedScrapers.length === 3 ? 'all' : subscribedScrapers[0] ?? 'all';
+      const data = await getScraperLogs(scraperParam, 30);
+      setPolledLogs(data.logs || []);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [subscribedScrapers]);
+
+  useEffect(() => {
+    if (viewMode === 'combined') fetchLogs();
+  }, [fetchLogs, viewMode]);
+
+  useEffect(() => {
+    if (!isWsConnected && viewMode === 'combined') {
+      const interval = setInterval(fetchLogs, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [isWsConnected, fetchLogs, viewMode]);
+
+  // Subscription değişince backend'e bildir (combined modda)
+  const handleSelectionChange = useCallback((selected: string[]) => {
+    subscribe(selected);
+  }, [subscribe]);
+
+  // Mod değişince subscription'ı sıfırla
+  const handleModeChange = useCallback((mode: 'combined' | 'split') => {
+    setViewMode(mode);
+    if (mode === 'split') {
+      // Split modda global WS tüm scraper'ları alır (status/progress için)
+      subscribe(['ieee', 'sciencedirect', 'acm']);
+    }
+  }, [subscribe]);
+
+  // Combined mod: WS events + polled logs merge
+  const wsLogEntries: LogEntry[] = wsEvents
+    .filter((e) => (e.type === 'log' || e.type === 'error') && subscribedScrapers.includes(e.scraper_type))
+    .map(wsEventToLogEntry);
+
+  const combinedLogs = [...wsLogEntries, ...polledLogs].slice(0, 50);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Son Loglar</CardTitle>
-        <CardDescription>Scraper aktivite logları</CardDescription>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <CardTitle>Son Loglar</CardTitle>
+            <CardDescription>
+              {isWsConnected ? 'Canlı takip (WebSocket)' : 'Scraper aktivite logları (polling)'}
+            </CardDescription>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Mod toggle */}
+            <div className="flex items-center border border-slate-200 rounded-lg overflow-hidden">
+              <button
+                onClick={() => handleModeChange('combined')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${viewMode === 'combined' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              >
+                <AlignJustify className="h-3.5 w-3.5" />
+                Birleşik
+              </button>
+              <button
+                onClick={() => handleModeChange('split')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 text-xs transition-colors ${viewMode === 'split' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+              >
+                <Columns2 className="h-3.5 w-3.5" />
+                Bölünmüş
+              </button>
+            </div>
+
+            {/* Multi-select (yalnızca combined modda) */}
+            {viewMode === 'combined' && (
+              <ScraperMultiSelect
+                selected={subscribedScrapers}
+                onChange={handleSelectionChange}
+              />
+            )}
+
+            {/* Canlı indikatör */}
+            {isWsConnected && (
+              <span className="flex items-center gap-1.5 text-xs text-emerald-600">
+                <span className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                Canlı
+              </span>
+            )}
+          </div>
+        </div>
       </CardHeader>
+
       <CardContent>
-        {loading ? (
+        {viewMode === 'split' ? (
+          // ── SPLIT MOD ──
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <SplitPanel scraperType="ieee" label="IEEE Xplore" />
+            <SplitPanel scraperType="sciencedirect" label="ScienceDirect" />
+            <SplitPanel scraperType="acm" label="ACM Digital Library" />
+          </div>
+        ) : loading ? (
+          // ── COMBINED MOD yükleniyor ──
           <div className="animate-pulse space-y-2">
             {[...Array(5)].map((_, i) => (
-              <div key={i} className="h-8 bg-slate-100 rounded"></div>
+              <div key={i} className="h-8 bg-slate-100 rounded" />
             ))}
           </div>
-        ) : logs.length === 0 ? (
+        ) : combinedLogs.length === 0 ? (
           <p className="text-slate-500 text-sm text-center py-4">Henüz log yok</p>
         ) : (
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {logs.map((log, idx) => (
-              <div key={idx} className="flex items-start gap-2 text-sm">
-                <span className="text-xs text-slate-400 w-16 flex-shrink-0">
-                  {new Date(log.timestamp).toLocaleTimeString('tr-TR')}
-                </span>
-                <Badge variant={log.scraper_type === 'ieee' ? 'info' : 'success'} className="text-xs">
-                  {log.scraper_type === 'ieee' ? 'IEEE' : 'SD'}
-                </Badge>
-                <span className={`px-2 py-0.5 rounded text-xs ${getLevelColor(log.level)}`}>
-                  {log.level}
-                </span>
-                <span className="text-slate-700 flex-1">{log.message}</span>
-              </div>
+          // ── COMBINED MOD loglar ──
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {combinedLogs.map((log, idx) => (
+              <LogRow key={idx} log={log} />
             ))}
           </div>
         )}
@@ -286,11 +806,42 @@ function ScraperLogs() {
   );
 }
 
+// ==================== Main Page ====================
+
 export default function ScrapersPage() {
   const [status, setStatus] = useState<AllScrapersStatus | null>(null);
   const [loading, setLoading] = useState(true);
+  const [openAlexExpanded, setOpenAlexExpanded] = useState(false);
 
-  const fetchStatus = async () => {
+  // Global WebSocket connection
+  const { connectionStatus, events: wsEvents, isConnected } = useGlobalScraperEvents({
+    onEvent: (event) => {
+      // WS event'ı geldiğinde gönderilen payload'ı kullanarak durumu LOKAL olarak güncelle!
+      // ESKİ KOD: fetchStatus() çağırıyordu. Bu da saniyede onlarca HTTP isteğine yol açıp backend'i çökertiyordu.
+      if (event.type === 'status_update' || event.type === 'progress') {
+        if (event.data) {
+          setStatus(prev => {
+            if (!prev) return prev;
+
+            // Mevcut state'in klonunu al ve sadece güncellenen scraper'ı değiştir
+            const newState = { ...prev };
+            const sType = event.scraper_type;
+
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
+              newState[sType] = {
+                ...newState[sType],
+                ...event.data
+              };
+            }
+
+            return newState;
+          });
+        }
+      }
+    },
+  });
+
+  const fetchStatus = useCallback(async () => {
     try {
       const data = await getScrapersStatus();
       setStatus(data);
@@ -299,13 +850,19 @@ export default function ScrapersPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 2000);
-    return () => clearInterval(interval);
-  }, []);
+  }, [fetchStatus]);
+
+  useEffect(() => {
+    // WS bağlıysa poll yapma (event'lere güven), değilse 5 saniyede bir poll yap
+    if (!isConnected) {
+      const interval = setInterval(fetchStatus, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [fetchStatus, isConnected]);
 
   if (loading) {
     return (
@@ -314,14 +871,14 @@ export default function ScrapersPage() {
           <h1 className="text-3xl font-bold text-slate-900">Scraper Kontrol</h1>
           <p className="mt-1 text-slate-500">Web scraper yönetimi ve izleme</p>
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[...Array(2)].map((_, i) => (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {[...Array(3)].map((_, i) => (
             <Card key={i}>
               <CardContent className="pt-6">
                 <div className="animate-pulse space-y-4">
-                  <div className="h-6 bg-slate-200 rounded w-1/3"></div>
-                  <div className="h-4 bg-slate-100 rounded w-full"></div>
-                  <div className="h-32 bg-slate-50 rounded"></div>
+                  <div className="h-6 bg-slate-200 rounded w-1/3" />
+                  <div className="h-4 bg-slate-100 rounded w-full" />
+                  <div className="h-32 bg-slate-50 rounded" />
                 </div>
               </CardContent>
             </Card>
@@ -340,9 +897,10 @@ export default function ScrapersPage() {
           <p className="mt-1 text-slate-500">Web scraper yönetimi ve izleme</p>
         </div>
         <div className="flex items-center gap-2">
+          <ConnectionBadge status={connectionStatus} />
           {status?.any_running && (
             <Badge variant="success" className="animate-pulse">
-              <span className="w-2 h-2 bg-emerald-500 rounded-full mr-2"></span>
+              <span className="w-2 h-2 bg-emerald-500 rounded-full mr-2" />
               Aktif
             </Badge>
           )}
@@ -352,15 +910,41 @@ export default function ScrapersPage() {
         </div>
       </div>
 
+      {/* OpenAlex Tarayıcısı - Collapsible */}
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+        <button
+          onClick={() => setOpenAlexExpanded(!openAlexExpanded)}
+          className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-indigo-100 text-indigo-700 rounded-lg">
+              <FileText className="h-5 w-5" />
+            </div>
+            <div className="text-left">
+              <h2 className="font-semibold text-slate-900">Eksik Veri Taraması (OpenAlex)</h2>
+              <p className="text-sm text-slate-500">Atıf metriği olmayan makaleleri ve dergileri OpenAlex üzerinden tarayın</p>
+            </div>
+          </div>
+          <ChevronUp
+            className={`h-5 w-5 text-slate-400 transition-transform ${openAlexExpanded ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {openAlexExpanded && (
+          <div className="p-4 border-t border-slate-200">
+            <OpenAlexScanner />
+          </div>
+        )}
+      </div>
+
       {/* Scraper Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {status && (
           <>
             <ScraperControl
               scraper={status.ieee}
               title="IEEE Xplore Scraper"
               description="IEEE akademik makalelerini toplar"
-              onStart={async () => { await startIeeeScraper(false, 10); await fetchStatus(); }}
+              onStart={async (limit) => { await startIeeeScraper(false, limit); await fetchStatus(); }}
               onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
@@ -369,18 +953,26 @@ export default function ScrapersPage() {
               scraper={status.sciencedirect}
               title="ScienceDirect Scraper"
               description="Elsevier ScienceDirect makalelerini toplar"
-              onStart={async () => { await startScienceDirectScraper(false, 5); await fetchStatus(); }}
+              onStart={async (limit) => { await startScienceDirectScraper(false, limit); await fetchStatus(); }}
               onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
+            />
+            <ScraperControl
+              scraper={status.acm}
+              title="ACM Digital Library Scraper"
+              description="ACM akademik makalelerini toplar"
+              onStart={async (limit) => { await startAcmScraper(false, limit); await fetchStatus(); }}
+              onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
+              onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
+              onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
             />
           </>
         )}
       </div>
 
-      {/* Logs */}
-      <ScraperLogs />
+      {/* Logs with WebSocket */}
+      <ScraperLogs wsEvents={wsEvents} isWsConnected={isConnected} />
     </div>
   );
 }
-

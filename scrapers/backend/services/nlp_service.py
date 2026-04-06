@@ -4,18 +4,11 @@ Clustering ve embedding iş mantığı
 """
 
 import re
-import pickle
-import numpy as np
+# import pickle
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING
 from beanie import PydanticObjectId
 from collections import Counter
-
-from sentence_transformers import SentenceTransformer
-import umap
-import hdbscan
-from sklearn.metrics.pairwise import cosine_similarity
-
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -31,6 +24,42 @@ from backend.core.config import settings
 from utils.logger import get_logger
 
 logger = get_logger('nlp_service')
+
+# Ağır kütüphaneler lazy import edilir — modül yüklenirken değil,
+# NLPService ilk kullanıldığında yüklenir.
+np = None
+spacy = None
+SentenceTransformer = None
+CrossEncoder = None
+umap = None
+hdbscan = None
+cosine_similarity = None
+KeyBERT = None
+TfidfVectorizer = None
+
+def _ensure_nlp_imports():
+    """Ağır NLP/ML kütüphanelerini ilk ihtiyaç anında yükle."""
+    global np, spacy, SentenceTransformer, CrossEncoder, umap, hdbscan, cosine_similarity, KeyBERT, TfidfVectorizer
+    if np is not None:
+        return  # Zaten yüklendi
+    import numpy as _np
+    import spacy as _spacy
+    from sentence_transformers import SentenceTransformer as _ST, CrossEncoder as _CE
+    import umap as _umap
+    import hdbscan as _hdbscan
+    from sklearn.metrics.pairwise import cosine_similarity as _cs
+    from sklearn.feature_extraction.text import TfidfVectorizer as _tv
+    from keybert import KeyBERT as _KB
+    np = _np
+    spacy = _spacy
+    SentenceTransformer = _ST
+    CrossEncoder = _CE
+    umap = _umap
+    hdbscan = _hdbscan
+    cosine_similarity = _cs
+    KeyBERT = _KB
+    TfidfVectorizer = _tv
+    logger.info("NLP kütüphaneleri yüklendi")
 
 
 class NLPService:
@@ -52,151 +81,100 @@ class NLPService:
     def __init__(self):
         if self._initialized:
             return
-            
+
         # Repositories
         self.article_repo = ArticleRepository()
         self.embedding_repo = EmbeddingRepository()
         self.cluster_repo = ClusterRepository()
         self.analysis_repo = AnalysisRunRepository()
-        
+
         # Models (lazy loading)
-        self._embedder: Optional[SentenceTransformer] = None
-        self._reducer: Optional[umap.UMAP] = None
-        
+        self._embedder = None
+        self._cross_encoder = None
+        self.encoded_query = None
+        self.query = None
+        self.relevant_keywords = None
+        self._cleaner_guy = None
+        self._kw_model = None
         # Cached data for fast search
-        self._cached_version: Optional[str] = None
-        self._cached_centroids: Optional[np.ndarray] = None
-        self._cached_cluster_ids: Optional[List[int]] = None
-        
-        # Legacy PKL model cache
-        self._pkl_loaded: bool = False
-        self._pkl_reducer: Optional[umap.UMAP] = None
-        self._pkl_clusters: Optional[np.ndarray] = None
-        self._pkl_clustered_data: Optional[Dict] = None
-        self._pkl_embedded: Optional[np.ndarray] = None
-        
+        self._cached_version = None
+        self._cached_centroids = None
+        self._cached_cluster_ids = None
+        self.articles = None
         self._initialized = True
-        logger.info("NLP Service initialized")
+
+        if not settings.nlp_lazy_init:
+            logger.info("NLP Service tam ön yükleme yapıyor (NLP_LAZY_INIT=False)")
+            _ensure_nlp_imports()
+            try:
+                _ = self.embedder
+                _ = self.cross_encoder
+                _ = self.cleaner_guy
+                _ = self.kw_model
+            except Exception as e:
+                logger.warning(f"NLP Service ön yükleme hatası: {e}")
+        else:
+            logger.info("NLP Service initialized (lazy mode — kütüphaneler ilk kullanımda yüklenecek)")
     
     @property
-    def embedder(self) -> SentenceTransformer:
+    def embedder(self) -> "SentenceTransformer":
         """Lazy load embedder model"""
         if self._embedder is None:
+            _ensure_nlp_imports()
             logger.info(f"Loading embedder: {settings.nlp_embedder_model}")
-            self._embedder = SentenceTransformer(settings.nlp_embedder_model)
+            try:
+                self._embedder = SentenceTransformer(settings.nlp_embedder_model, device = "cuda")
+            except:
+                print("Cannot link to GPU. Switching to CPU")
+                self._embedder = SentenceTransformer(settings.nlp_embedder_model)
+                
         return self._embedder
-    
+
+    @property
+    def cross_encoder(self) -> "CrossEncoder":
+        """Lazy load cross encoder model"""
+        if self._cross_encoder is None:
+            _ensure_nlp_imports()
+            logger.info("Loading cross encoder: cross-encoder/ms-marco-MiniLM-L-6-v2")
+            self._cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
+        return self._cross_encoder
+
+    @cross_encoder.setter
+    def cross_encoder(self, value):
+        self._cross_encoder = value
+
+    @property
+    def cleaner_guy(self):
+        """Lazy load spacy model"""
+        if self._cleaner_guy is None:
+            _ensure_nlp_imports()
+            logger.info("Loading spacy model: en_core_web_sm")
+            self._cleaner_guy = spacy.load("en_core_web_sm")
+        return self._cleaner_guy
+
+    @cleaner_guy.setter
+    def cleaner_guy(self, value):
+        self._cleaner_guy = value
+
+    @property
+    def kw_model(self):
+        """Lazy load KeyBERT model"""
+        if self._kw_model is None:
+            _ensure_nlp_imports()
+            logger.info(f"Loading KeyBERT model: {settings.nlp_embedder_model}")
+            self._kw_model = KeyBERT(model=settings.nlp_embedder_model)
+        return self._kw_model
+
+    @kw_model.setter
+    def kw_model(self, value):
+        self._kw_model = value
+
     def _clean_text(self, text: str) -> str:
         """Metni NLP için temizle"""
         text = str(text).lower()
         text = re.sub(r'[^a-zçğıöşü\s]', ' ', text)
         return " ".join(text.split())
-    
-    def _load_pkl_model(self) -> bool:
-        """
-        Mevcut PKL model dosyasını yükle (legacy support)
         
-        Returns:
-            bool: Yükleme başarılı ise True
-        """
-        if self._pkl_loaded:
-            return True
-        
-        pkl_path = settings.nlp_model_full_path
-        
-        if not pkl_path.exists():
-            logger.warning(f"PKL model bulunamadı: {pkl_path}")
-            return False
-        
-        try:
-            logger.info(f"Loading legacy PKL model: {pkl_path}")
-            with open(pkl_path, "rb") as f:
-                state = pickle.load(f)
-            
-            self._pkl_reducer = state.get("reducer")
-            self._pkl_clusters = state.get("clusters")
-            self._pkl_clustered_data = state.get("clustered_data", {})
-            self._pkl_embedded = state.get("embedded_384")
-            self._pkl_loaded = True
-            
-            n_clusters = len(set(self._pkl_clusters)) - (1 if -1 in self._pkl_clusters else 0)
-            logger.success(f"PKL model loaded: {n_clusters} clusters, {len(self._pkl_clustered_data)} data groups")
-            return True
-            
-        except Exception as e:
-            logger.error(f"PKL model yüklenemedi: {e}")
-            return False
-    
-    def _search_with_pkl(self, query: str, top_k: int = 10) -> Tuple[List[str], float, int]:
-        """
-        PKL model ile arama yap (legacy method)
-        
-        Returns:
-            Tuple[data, similarity_score, cluster_id]
-        """
-        if not self._pkl_loaded:
-            if not self._load_pkl_model():
-                raise ValueError("PKL model yüklenemedi")
-        
-        query_cleaned = self._clean_text(query)
-        query_vec = self.embedder.encode([query_cleaned])
-        
-        # UMAP transform
-        query_reduced = self._pkl_reducer.transform(query_vec)
-        
-        # En yakın cluster'ı bul
-        unique_labels = [l for l in set(self._pkl_clusters) if l != -1]
-        
-        if not unique_labels:
-            return self._pkl_clustered_data.get(-1, []), 0.0, -1
-        
-        best_cluster = -1
-        max_sim = -1
-        
-        for label in unique_labels:
-            indices = np.where(self._pkl_clusters == label)[0]
-            cluster_vectors = self._pkl_embedded[indices]
-            centroid = np.mean(cluster_vectors, axis=0).reshape(1, -1)
-            similarity = cosine_similarity(query_reduced, centroid)[0][0]
-            
-            if similarity > max_sim:
-                max_sim = similarity
-                best_cluster = label
-        
-        return self._pkl_clustered_data.get(best_cluster, []), float(max_sim), best_cluster
-    
-    async def _resolve_model_pkl_first(self, auto_train: bool = False) -> Optional[str]:
-        """
-        Model kaynağını belirle - PKL öncelikli
-        
-        1. PKL varsa -> "pkl_legacy" döndür
-        2. DB'de analiz varsa -> model_version döndür
-        3. auto_train=True ise -> eğitim başlat
-        4. Hata fırlat
-        """
-        # 1. Önce PKL'yi dene
-        if self._load_pkl_model():
-            logger.info("PKL model kullanılıyor (prefer_pkl=true)")
-            return "pkl_legacy"
-        
-        # 2. PKL yoksa DB'ye bak
-        latest_run = await self.analysis_repo.get_latest_completed()
-        if latest_run:
-            logger.info(f"PKL bulunamadı, DB modeli kullanılıyor: {latest_run.model_version}")
-            return latest_run.model_version
-        
-        # 3. İkisi de yoksa
-        if auto_train:
-            logger.info("Model bulunamadı, otomatik eğitim başlatılıyor...")
-            train_result = await self.train_clustering()
-            return train_result["model_version"]
-        
-        raise ValueError(
-            "Model bulunamadı. PKL dosyası veya DB'de analiz yok. "
-            "auto_train=True ile otomatik eğitim başlatabilirsiniz "
-            "veya /nlp/analyze endpoint'ini kullanın."
-        )
-    
     async def _resolve_model_db_first(self, auto_train: bool = False) -> Optional[str]:
         """
         Model kaynağını belirle - DB öncelikli
@@ -213,9 +191,9 @@ class NLPService:
             return latest_run.model_version
         
         # 2. DB'de yoksa PKL'yi dene
-        if self._load_pkl_model():
-            logger.info("DB'de analiz yok, PKL model kullanılıyor (prefer_pkl=false)")
-            return "pkl_legacy"
+        # if self._load_pkl_model():
+        #     logger.info("DB'de analiz yok, PKL model kullanılıyor (prefer_pkl=false)")
+        #     return "pkl_legacy"
         
         # 3. İkisi de yoksa
         if auto_train:
@@ -228,37 +206,6 @@ class NLPService:
             "auto_train=True ile otomatik eğitim başlatabilirsiniz "
             "veya /nlp/analyze endpoint'ini kullanın."
         )
-    
-    async def _search_with_pkl_fallback(self, query: str, top_k: int = 10) -> Dict[str, Any]:
-        """
-        PKL model ile arama yap ve DB formatında sonuç döndür
-        
-        Returns:
-            SearchResponse formatında sonuç
-        """
-        data, similarity, cluster_id = self._search_with_pkl(query, top_k)
-        
-        # PKL'den gelen data temizlenmiş abstract metinleri içeriyor
-        # Bu metinleri başlık olarak döndürelim (legacy format)
-        return {
-            "query": query,
-            "model_version": "pkl_legacy",
-            "similarity_score": similarity,
-            "cluster_id": cluster_id,
-            "cluster_label": f"PKL Cluster {cluster_id}",
-            "total_in_cluster": len(data),
-            "articles": [
-                {
-                    "id": f"pkl_{i}",
-                    "title": text[:100] + "..." if len(text) > 100 else text,
-                    "abstract": text,
-                    "doi": None,
-                    "url": None,
-                    "keywords": []
-                }
-                for i, text in enumerate(data[:top_k])
-            ]
-        }
     
     async def train_clustering(
         self,
@@ -276,6 +223,7 @@ class NLPService:
             Eğitim sonuç istatistikleri
         """
         # Version oluştur
+        _ensure_nlp_imports()
         if not model_version:
             model_version = f"v{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         
@@ -335,6 +283,7 @@ class NLPService:
             
             # 3. UMAP ile boyut indirgeme
             logger.info("Reducing dimensions with UMAP...")
+            import umap
             reducer = umap.UMAP(
                 n_neighbors=settings.nlp_umap_n_neighbors,
                 n_components=settings.nlp_umap_n_components,
@@ -346,6 +295,7 @@ class NLPService:
             
             # 4. HDBSCAN ile clustering
             logger.info("Clustering with HDBSCAN...")
+            import hdbscan
             clusterer = hdbscan.HDBSCAN(
                 min_cluster_size=settings.nlp_min_cluster_size,
                 min_samples=settings.nlp_min_samples
@@ -420,9 +370,9 @@ class NLPService:
     
     async def _create_cluster_documents(
         self,
-        cluster_labels: np.ndarray,
-        embeddings_full: np.ndarray,
-        embeddings_reduced: np.ndarray,
+        cluster_labels: "np.ndarray",
+        embeddings_full: "np.ndarray",
+        embeddings_reduced: "np.ndarray",
         article_ids: List[PydanticObjectId],
         valid_articles: List[Article],
         model_version: str
@@ -482,6 +432,326 @@ class NLPService:
         
         return cluster_docs
     
+    # searc_similar ve graph_input fonksiyonları _search_similar_clusters kullancak.
+    # Sadece return typeları farklı.
+    
+    async def get_date_graph_input(self):
+
+        """
+        Bu servis dökümanların yazıldığı tarihleri temizleyip datetime olarak frontend'e gönderir.
+        Bu fonksiyonun çalışabilmesi için self.articles boş olmamalı. Yani self._search_similar_articles en az 1 kez çalıştırılmalı.
+        """
+        prefix_dates = {
+            "january" : "1",
+            "february" : "2",
+            "march" : "3",
+            "april" : "4",
+            "may" : "5",
+            "june" : "6",
+            "july" : "7",
+            "august" : "8",
+            "september" : "9",
+            "october" : "10",
+            "november" : "11",
+            "december" : "12"
+            }
+        result = {
+
+        }
+        
+        dates =  [art.publication_date for art in self.articles]
+        for date in dates:
+            try:
+                dt_object = datetime.fromisoformat(date)
+                result[dt_object] = result.get(dt_object, 0) + 1
+            except:
+                print(f"{date} is not convertable to datetime")
+                print(f"Trying to fetch date from the string: {date}")
+                d = date.lower()
+                est_date = ""
+                for month, number in prefix_dates.items():
+                    if month in d:
+                        # [\D]*? -> Skip any number of non-digit characters 
+                        # (\d{4}) -> Capture exactly 4 digits 
+                        pattern = rf"{month}[\D]*?(\d{{4}})"
+                        match = re.search(pattern, d)
+                        
+                        if match:
+                            year = match.group(1) # This is the 4-digit year
+                            est_date = f"{year}-{number.zfill(2)}-01" # Adding -01 makes it a valid ISO date
+                            
+                            try:
+                                dt_object = datetime.fromisoformat(est_date)
+                                result[dt_object] = result.get(dt_object, 0) + 1
+                                print(f"Success: {est_date}")
+                            except ValueError:
+                                print(f"Failed to parse: {est_date}")
+                        else:
+                            print(f"Found {month}, but couldn't find a 4-digit year near it.")
+                        
+                        break
+                    
+        return result
+    
+    async def get_scatter_graph_input(self):
+        visualization_reducer = umap.UMAP(n_neighbors=5, n_components=2, metric='cosine', random_state=42)
+        embedded_words = [self.embedder.encode(word[0]) for word in self.relevant_keywords]
+        coords = visualization_reducer.fit_transform(embedded_words)
+
+        scatter_data = []
+        for idx, word_tuple in enumerate(self.relevant_keywords):
+            scatter_data.append({
+                "x": float(coords[idx][0]),
+                "y": float(coords[idx][1]),
+            })
+
+        return scatter_data
+        
+        pass
+
+    async def _extract_relevance_of_articles(self):
+        scores = []
+        article_ids = self.best_cluster.article_ids
+
+        all_embeddings = await self.embedding_repo.find_many_by_article_ids(article_ids)
+        emb_dict = {str(e.article_id): e.embedding_full for e in all_embeddings}
+        matrix_embeddings = np.vstack([np.array(emb_dict[str(art.id)]) for art in self.articles])
+        reshaped_query = np.array(self.encoded_query).reshape(1, -1)
+
+        reshaped_query = np.array(self.encoded_query).reshape(1, -1)
+        scores = cosine_similarity(reshaped_query, matrix_embeddings)[0] # Shape: (50,)
+        ranked_results = []
+        for i in range(len(self.articles)):
+            ranked_results.append({
+                "score": scores[i],
+                "abstract": self.articles[i].abstract
+            })
+
+        ranked_results.sort(key=lambda x: x["score"], reverse=True)
+        return ranked_results
+    
+    def _preprocess_scientific_text(self, text):
+
+        doc = self.cleaner_guy(text) 
+        
+        tokens = []
+        for token in doc:
+            is_person = token.ent_type_ == "PERSON"
+            
+            if (token.pos_ in ["NOUN", "ADJ"] 
+                and token.pos_ != "PROPN" 
+                and not is_person
+                and not token.is_stop 
+                and len(token.text) > 2):
+                
+                tokens.append(token.lemma_.lower())
+                
+        return " ".join(tokens)
+    
+    # async def _extract_cluster_keywords(self):
+    #     cleaned_abstracts = [self._preprocess_scientific_text(art.abstract) for art in self.articles]
+    
+    #     vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
+    #     tfidf_matrix = vectorizer.fit_transform(cleaned_abstracts)
+    #     feature_names = vectorizer.get_feature_names_out()
+
+    #     article_keywords = []
+    #     for i in range(len(cleaned_abstracts)):
+    #         row = tfidf_matrix[i].toarray()[0]
+    #         top_indices = np.argsort(row)[-5:][::-1]
+    #         keywords = [feature_names[idx] for idx in top_indices if row[idx] > 0]
+    #         article_keywords.append(keywords)
+        
+    #     return article_keywords
+
+    async def _eval_keywords(self, all_candidate_pairs):
+        """
+        Accepts a list of all [query, keyword] pairs across all abstracts
+        to process them in a single batch.
+        """
+        # Batch processing is significantly faster than looping
+        scores = self.cross_encoder.predict(all_candidate_pairs, batch_size=32)
+        return scores
+
+    async def _take_keywords_and_transform(self, words):
+        '''
+        
+        Bir grup kelimeyi alır bunları kümeler ve kümeleri
+        {cluster_idx : [words]}
+        olarak döndürür. 
+        
+        '''
+
+        embedded_words = [self.embedder.encode(word[0]) for word in words]
+        reducer = umap.UMAP(
+                n_neighbors=settings.nlp_umap_n_neighbors,
+                n_components=settings.nlp_umap_n_components,
+                metric='cosine',
+                random_state=42
+            )
+        embeddings_reduced = reducer.fit_transform(embedded_words)
+        
+        clusterer = hdbscan.HDBSCAN(
+                min_cluster_size=5,
+                min_samples=settings.nlp_min_samples
+            )
+        cluster_labels = clusterer.fit_predict(embeddings_reduced)
+
+        clusters = {}
+        
+        for idx, label in enumerate(cluster_labels):
+            # if label != -1:
+            if label not in clusters:
+                clusters[label] = []
+            
+            word_text = words[idx][0]
+            clusters[label].append(word_text)
+
+        return clusters
+        
+    async def _take_cluster_and_find_word(self, cluster_list):
+        '''
+        Bir {cluster_idx : [words]} alır ve burada kelimelerden en kapsayıcı olanını belirler.
+        Çıktı olarak en kapsayıcı kelimeyi döner. 
+        '''
+        
+        n = len(cluster_list)
+        
+        running_totals = [0.0] * n 
+        
+        max_score = -1.0
+        max_score_word = cluster_list[0]
+
+        for i in range(n):
+            for j in range(i+1, n):
+                score = float(self.cross_encoder.predict([(cluster_list[i], cluster_list[j])])[0])
+                
+                running_totals[i] += score
+                running_totals[j] += score
+
+                # Check and update the max on the fly for word 'i'
+                if running_totals[i] > max_score:
+                    max_score = running_totals[i]
+                    max_score_word = cluster_list[i]
+                
+                # Check and update the max on the fly for word 'j'
+                if running_totals[j] > max_score:
+                    max_score = running_totals[j]
+                    max_score_word = cluster_list[j]
+
+        return max_score_word
+
+
+    async def _extract_cluster_keywords(self):
+
+        '''
+        Fonksiyon, makalelerin abstractlarının içinden en önemli kelimeleri fetch ederek bizim sorgumuzla kıyaslar.
+        Sonuçta da bizim sorgumuza en çok benzeyen ve en önemli olan çıktılara ait bir liste verir.
+        '''
+        abstracts = [self._preprocess_scientific_text(art.abstract) for art in self.articles]
+        
+        all_keywords_per_abstract = []
+        all_pairs_to_score = []
+
+        for text in abstracts:
+            # Extract a few candidate keywords to compare against the query
+            extracted = self.kw_model.extract_keywords(
+                text, 
+                keyphrase_ngram_range=(1, 2), 
+                stop_words='english', 
+                use_mmr=True,
+                diversity=0.2,
+                top_n=5 # Extract top 5 candidates to evaluate
+            )
+            
+            # KeyBERT returns [('keyword', score), ...]. Extract just the text.
+            kws = [item[0] for item in extracted]
+            all_keywords_per_abstract.append(kws)
+            
+            for kw in kws:
+                all_pairs_to_score.append([self.query, kw])
+
+        if not all_pairs_to_score:
+            return []
+            
+        all_scores = await self._eval_keywords(all_pairs_to_score)
+
+        final_max_keywords = []
+        score_idx = 0
+        
+        for kws in all_keywords_per_abstract:
+            best_kw = None
+            max_score = float('-inf')
+            
+            for kw in kws:
+                score = all_scores[score_idx].item() 
+                if score > max_score:
+                    max_score = score
+                    best_kw = kw
+                score_idx += 1
+            
+            final_max_keywords.append((best_kw, max_score))
+        self.relevant_keywords = final_max_keywords
+        return self.relevant_keywords
+
+    async def word_finding_pipeline(self):
+        '''
+        Bu fonksiyonun çalışması için de benzer kümelerin oluşturulması gerekiyor.
+        search_similar fonksiyonu 1 kez çalıştırıldıktan sonra bu fonksiyon kullanılabilir.
+
+
+        '''
+        words_and_counts = {}
+        final_max_keywords = await self._extract_cluster_keywords()
+        clusters = await self._take_keywords_and_transform(final_max_keywords)
+        
+        for key in clusters.keys():
+            if key == -1:
+                word = "Other"
+            else:
+                word = await self._take_cluster_and_find_word(clusters[key])
+            
+            words_and_counts[word] = words_and_counts.get(word, 0) + len(clusters[key])
+
+        return words_and_counts
+        
+    async def _search_similar_clusters(self,
+            query: str,
+            model_version: Optional[str] = None,
+            top_k: int = 10,
+            auto_train: bool = False
+        ):
+
+        _ensure_nlp_imports()
+        if not model_version:
+            model_version = await self._resolve_model_db_first(auto_train)
+
+        print("WE ARE SO BACK")
+        if self._cached_version != model_version:
+            await self._load_cache(model_version)
+
+        if self._cached_centroids is None or len(self._cached_centroids) == 0:
+            raise ValueError(f"Model versiyonu için cluster bulunamadı: {model_version}")
+        self.query = query
+        query_cleaned = self._clean_text(query)
+        query_embedding = self.embedder.encode([query_cleaned])
+        self.encoded_query = query_embedding
+        clusters = await self.cluster_repo.find_by_model_version(model_version, include_noise=False)
+
+       
+        best_cluster = None
+        max_similarity = -1
+        centroid_list = [cluster.centroid_full for cluster in clusters]
+        centroid_matrix = np.vstack(centroid_list)
+        similarities = cosine_similarity(query_embedding, centroid_matrix)[0]
+
+        best_index = np.argmax(similarities)
+        max_similarity = similarities[best_index]
+        best_cluster = clusters[best_index]
+
+        self.best_cluster = best_cluster
+        return best_cluster, max_similarity
+   
     async def _load_cache(self, model_version: str) -> bool:
         """Hızlı arama için cluster centroid'lerini cache'le"""
         try:
@@ -509,85 +779,35 @@ class NLPService:
         model_version: Optional[str] = None,
         top_k: int = 10,
         auto_train: bool = False
+
     ) -> Dict[str, Any]:
-        """
-        Query'ye benzer makaleleri bul
-        
-        Args:
-            query: Arama sorgusu
-            model_version: Model versiyonu (None ise en son)
-            top_k: Döndürülecek makale sayısı
-            auto_train: Analiz yoksa otomatik eğitim başlat
-            
-        Returns:
-            Benzer makaleler ve similarity skoru
-        """
-        # Model versiyonunu belirle
-        if not model_version:
-            # Tercih ayarına göre öncelik belirle
-            if settings.nlp_prefer_pkl:
-                # Önce PKL'yi dene
-                model_version = await self._resolve_model_pkl_first(auto_train)
-            else:
-                # Önce DB'yi dene
-                model_version = await self._resolve_model_db_first(auto_train)
-        
-        # PKL model kullanılacaksa direkt PKL ile ara
-        if model_version == "pkl_legacy":
-            return await self._search_with_pkl_fallback(query, top_k)
-        
-        # Cache kontrol
-        if self._cached_version != model_version:
-            await self._load_cache(model_version)
-        
-        if self._cached_centroids is None or len(self._cached_centroids) == 0:
-            raise ValueError(f"Model versiyonu için cluster bulunamadı: {model_version}")
-        
-        # Query embedding
-        query_cleaned = self._clean_text(query)
-        query_embedding = self.embedder.encode([query_cleaned])
-        
-        # UMAP transform için mevcut reducer'ı kullanmamız gerekiyor
-        # Şimdilik full embedding ile centroid karşılaştırması yapalım
-        # Ya da reduced centroid yerine full centroid kullanalım
-        
-        # En yakın cluster'ı bul (full embedding ile)
-        clusters = await self.cluster_repo.find_by_model_version(model_version, include_noise=False)
-        
-        best_cluster = None
-        max_similarity = -1
-        
-        for cluster in clusters:
-            centroid = np.array(cluster.centroid_full).reshape(1, -1)
-            similarity = cosine_similarity(query_embedding, centroid)[0][0]
-            
-            if similarity > max_similarity:
-                max_similarity = similarity
-                best_cluster = cluster
-        
+        best_cluster, max_similarity = await self._search_similar_clusters(query, model_version, top_k, auto_train)
+
         if not best_cluster:
+            resolved_version = model_version or "unknown"
             return {
                 "query": query,
-                "model_version": model_version,
+                "model_version": resolved_version,
                 "similarity_score": 0,
                 "cluster_id": None,
                 "cluster_label": None,
+                "total_in_cluster": None,
                 "articles": []
             }
-        
-        # Cluster'daki makaleleri getir
-        articles = await Article.find(
-            {"_id": {"$in": best_cluster.article_ids[:top_k]}}
+
+        self.articles = await Article.find(
+            {"_id": {"$in": best_cluster.article_ids}}
         ).to_list()
-        
+
         return {
             "query": query,
-            "model_version": model_version,
+            "model_version": best_cluster.model_version,
             "similarity_score": float(max_similarity),
             "cluster_id": best_cluster.cluster_id,
             "cluster_label": best_cluster.label,
             "total_in_cluster": best_cluster.article_count,
             "articles": [
+
                 {
                     "id": str(a.id),
                     "title": a.title,
@@ -596,22 +816,17 @@ class NLPService:
                     "url": a.url,
                     "keywords": a.keywords
                 }
-                for a in articles
+                for a in self.articles[:top_k]
             ]
         }
-    
     async def get_status(self) -> Dict[str, Any]:
         """Mevcut NLP durumunu getir"""
         latest_run = await self.analysis_repo.get_latest_completed()
         running = await self.analysis_repo.get_running()
         
-        # PKL model kontrolü
-        pkl_available = settings.nlp_model_full_path.exists()
-        pkl_loaded = self._pkl_loaded
-        
         return {
-            "has_trained_model": latest_run is not None or pkl_available,
-            "latest_model_version": latest_run.model_version if latest_run else ("pkl_legacy" if pkl_available else None),
+            "has_trained_model": latest_run is not None,
+            "latest_model_version": latest_run.model_version if latest_run else None,
             "latest_training_date": latest_run.completed_at.isoformat() if latest_run and latest_run.completed_at else None,
             "latest_stats": {
                 "total_articles": latest_run.total_articles,
@@ -622,10 +837,6 @@ class NLPService:
             "running_version": running.model_version if running else None,
             "cache_loaded": self._cached_version is not None,
             "cached_version": self._cached_version,
-            # PKL bilgileri
-            "pkl_model_available": pkl_available,
-            "pkl_model_loaded": pkl_loaded,
-            "pkl_model_path": str(settings.nlp_model_full_path) if pkl_available else None
         }
     
     async def get_clusters(
@@ -649,6 +860,7 @@ class NLPService:
                 "id": str(c.id),
                 "cluster_id": c.cluster_id,
                 "label": c.label,
+                "centroid" : c.centroid_reduced,
                 "article_count": c.article_count,
                 "top_keywords": c.top_keywords,
                 "sample_titles": c.sample_titles,

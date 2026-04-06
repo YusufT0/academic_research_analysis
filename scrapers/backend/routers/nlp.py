@@ -57,6 +57,7 @@ class ClusterSummary(BaseModel):
     id: str
     cluster_id: int
     label: Optional[str]
+    centroid: float
     article_count: int
     top_keywords: List[str]
     sample_titles: List[str]
@@ -144,7 +145,35 @@ async def train_clustering(
     except Exception as e:
         logger.error(f"Training error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@router.get("/get_bar_chart_input")
+async def get_bar_chart_input():
+    try:        
+        return await nlp_service.get_date_graph_input()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph error: {e}")
+        raise HTTPException(status_code = 500, detail= str(e))    
 
+@router.get("/get_pie_chart_input")
+async def get_pie_chart_input():
+    try:        
+        return await nlp_service.word_finding_pipeline()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph error: {e}")
+        raise HTTPException(status_code = 500, detail= str(e))    
+
+@router.get("/get_scatter_chart_input")
+async def get_pie_chart_input():
+    try:        
+        return await nlp_service.get_scatter_graph_input()
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph error: {e}")
+        raise HTTPException(status_code = 500, detail= str(e))    
 
 @router.get("/search", response_model=SearchResponse, summary="Benzer makaleleri ara")
 async def search_similar_articles(
@@ -165,22 +194,22 @@ async def search_similar_articles(
     Cache desteği: Aynı sorgu için sonuçlar cache'lenir.
     """
     try:
-        # Önce cache'e bak
-        cache_params = {"model_version": model_version, "top_k": top_k}
-        cached_result = await cache_service.get_search_results(query, cache_params)
-        if cached_result:
-            logger.debug(f"Search cache HIT: {query}")
-            return SearchResponse(**cached_result)
-        
-        # Cache'de yoksa hesapla
+        # Her zaman nlp_service içindeki state'i güncelle (chart endpointleri buna bağımlı).
+        # Cache yalnızca HTTP response için kullanılır, state için değil.
         result = await nlp_service.search_similar(
             query=query,
             model_version=model_version,
             top_k=top_k,
             auto_train=auto_train
         )
-        
-        # Sonucu cache'le
+
+        cache_params = {"model_version": model_version, "top_k": top_k}
+        cached_result = await cache_service.get_search_results(query, cache_params)
+        if cached_result:
+            logger.debug(f"Search cache HIT (state updated): {query}")
+            return SearchResponse(**cached_result)
+
+        # Cache'de yoksa sonucu cache'le
         await cache_service.set_search_results(query, cache_params, result)
         logger.info(f"Cache MISS: search '{query[:30]}...' - cached")
         

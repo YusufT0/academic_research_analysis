@@ -102,21 +102,27 @@ class RateLimiter:
             logger.warning(f"  Content error kontrolü hatası: {e}")
             return False
     
-    def handle_content_error(self, url: str, wait_time: int = 180) -> bool:
+    def handle_content_error(self, url: str, wait_time: int = 180, force_restart: bool = False) -> bool:
         """
         Content error sayfası tespit edildiğinde bekler ve tekrar dener.
         Başarısız olursa yeni user agent ile tarayıcıyı yeniden başlatır.
+        Eğer force_restart True ise beklemenin ardından direkt yeni user agent ile başlatır.
         
         Args:
             url: Tekrar denenecek URL
             wait_time: Bekleme süresi (saniye) - varsayılan 3 dakika
+            force_restart: Bekledikten sonra doğrudan tarayıcıyı yeniden başlat
             
         Returns:
             bool: Başarılı ise True, başarısız ise False
         """
         try:
-            logger.section(f"CONTENT ERROR - {wait_time // 60} DAKİKA BEKLEME")
-            logger.info(f"ScienceDirect erişim sorunu tespit edildi, {wait_time} saniye ({wait_time // 60} dakika) bekleniyor...")
+            action_desc = "TARAYICI YENİDEN BAŞLATILACAK" if force_restart else f"{wait_time // 60} DAKİKA BEKLEME"
+            if force_restart and wait_time < 60:
+                action_desc = f"{wait_time} SANİYE BEKLEME VE YENİDEN BAŞLATMA"
+                
+            logger.section(f"CONTENT ERROR - {action_desc}")
+            logger.info(f"ScienceDirect erişim sorunu tespit edildi, {wait_time} saniye bekleniyor...")
             
             # Geri sayım ile bekle
             remaining = wait_time
@@ -129,9 +135,13 @@ class RateLimiter:
                 time.sleep(sleep_interval)
                 remaining -= sleep_interval
             
-            logger.success("Bekleme tamamlandı, sayfa yeniden deneniyor...")
+            logger.success("Bekleme tamamlandı...")
             
-            # Sayfayı yeniden yükle
+            # Eğer force_restart True ise direkt tarayıcıyı yeniden başlatmayı dene
+            if force_restart and self.selenium_driver:
+                return self._restart_browser_and_retry(url)
+            
+            # force_restart False ise mevcut tarayıcıyla sayfayı yeniden yükle
             self.driver.get(url)
             time.sleep(3)
             

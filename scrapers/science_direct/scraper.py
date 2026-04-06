@@ -401,9 +401,11 @@ class ScienceDirectScraper:
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
                 logger.warning("Content error tespit edildi!")
+                
                 if retry_attempt == 0:
-                    # İlk deneme - 3 dakika bekle (başarısız olursa yeni user agent ile tarayıcı açılır)
-                    if self.rate_limiter.handle_content_error(full_url, wait_time=180):
+                    # İlk deneme - 30 saniye bekle ve YENİ USER AGENT ile tarayıcıyı yeniden başlat
+                    logger.info("İlk content error - Tarayıcı yeni User Agent ile başlatılacak (30 saniye bekleme)...")
+                    if self.rate_limiter.handle_content_error(full_url, wait_time=30, force_restart=True):
                         # Başarılı - driver değişmiş olabilir, güncelle
                         self._update_driver_references()
                         self.rate_limiter.reset_consecutive_failures()
@@ -414,8 +416,9 @@ class ScienceDirectScraper:
                         self.rate_limiter.add_to_retry_queue(article_url)
                         return None
                 elif retry_attempt == 1:
-                    # İkinci deneme - 3 dakika daha bekle
-                    if self.rate_limiter.handle_content_error(full_url, wait_time=180):
+                    # İkinci deneme - Bu sefer sabit 3 dakika bekle
+                    logger.info("İkinci content error - Sabit 3 dakika bekleme...")
+                    if self.rate_limiter.handle_content_error(full_url, wait_time=180, force_restart=False):
                         self._update_driver_references()
                         self.rate_limiter.reset_consecutive_failures()
                     else:
@@ -484,7 +487,7 @@ class ScienceDirectScraper:
             self.navigator.driver = updated_driver
             logger.success("Driver referansları güncellendi")
     
-    def scrape_journal_articles(self, journal_info: dict, max_articles: int = None) -> list:
+    def scrape_journal_articles(self, journal_info: dict, max_articles: int = None, article_progress_callback=None, article_list_callback=None) -> list:
         """
         Bir journal'ın tüm makalelerini tarar
         
@@ -522,14 +525,28 @@ class ScienceDirectScraper:
             if max_articles:
                 article_urls = article_urls[:max_articles]
                 logger.info(f"İlk {max_articles} makale taranacak")
-            
+
+            # Makale listesini UI'a bildir (başlıklar yok, placeholder gönder)
+            if article_list_callback:
+                try:
+                    article_list_callback(['' for _ in article_urls])
+                except Exception:
+                    pass
+
             # 2. Her makale için detayları al
             all_articles = []
-            
+
             for idx, article_url in enumerate(article_urls, 1):
                 # Stop flag kontrolü - her makale öncesi
                 self.check_stop_flag()
-                
+
+                # Makale başlamadan önce UI'a bildir (anlık güncelleme)
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_urls), None)
+                    except Exception:
+                        pass
+
                 logger.section(f"Makale {idx}/{len(article_urls)}")
                 
                 article_details = self.extract_article_details(article_url)
@@ -540,16 +557,22 @@ class ScienceDirectScraper:
                     article_details['journal_url'] = journal_info['url']
                     article_details['issue_number'] = issue_info.get('issue_number')
                     article_details['issue_date'] = issue_info.get('date')
-                    
+
                     all_articles.append(article_details)
-                    
+
                     # Başarılı, ardışık başarısızlık sayısını sıfırla
                     self.rate_limiter.reset_consecutive_failures()
-                    
+
                     # Özet bilgi göster
                     print_article_summary(article_details, idx)
                 else:
                     logger.warning("  Makale detayları alınamadı")
+
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_urls), article_details.get('title') if article_details else None)
+                    except Exception:
+                        pass
                 
                 # Ardışık 5 başarısızlık kontrolü
                 if self.rate_limiter.should_wait_for_failures():

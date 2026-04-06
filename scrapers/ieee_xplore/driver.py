@@ -26,7 +26,10 @@ from utils.logger import get_logger
 logger = get_logger('ieee_xplore')
 
 from .config import ProxyConfig
+import random
 
+# Farklı User Agent'lar utils altından import ediliyor
+from utils.user_agents import USER_AGENTS
 
 class SeleniumDriver:
     """Selenium WebDriver'ı yöneten sınıf"""
@@ -42,6 +45,31 @@ class SeleniumDriver:
         self.proxy_config = proxy_config
         self.headless = headless
         self.driver = None
+        self.current_user_agent = None
+        self._used_user_agents = []
+
+    def get_random_user_agent(self, exclude_current: bool = True) -> str:
+        """Rastgele bir user agent seçer"""
+        available_agents = USER_AGENTS.copy()
+        
+        if exclude_current and self.current_user_agent:
+            if self.current_user_agent in available_agents:
+                available_agents.remove(self.current_user_agent)
+        
+        for used_agent in self._used_user_agents:
+            if used_agent in available_agents:
+                available_agents.remove(used_agent)
+        
+        if not available_agents:
+            available_agents = USER_AGENTS.copy()
+            self._used_user_agents.clear()
+            if self.current_user_agent in available_agents:
+                available_agents.remove(self.current_user_agent)
+        
+        new_agent = random.choice(available_agents)
+        self._used_user_agents.append(new_agent)
+        
+        return new_agent
     
     def _configure_chrome_options(self, use_uc: bool = False) -> ChromeOptions:
         """
@@ -83,6 +111,9 @@ class SeleniumDriver:
         options.add_argument('--disable-web-security')
         options.add_argument('--allow-running-insecure-content')
         
+        # Proxy loopback (kendi selenium-wire proxy trafiği ile çakışmaması için)
+        options.add_argument('--proxy-bypass-list=<-loopback>')
+        
         # Undetected-chromedriver için
         if use_uc:
             return options
@@ -110,13 +141,18 @@ class SeleniumDriver:
             logger.info("WebDriver başlatılıyor...")
             logger.info(f"  - Headless: {self.headless}")
             
+            # Yeni User Agent seç
+            self.current_user_agent = self.get_random_user_agent()
+            logger.info(f"  - User Agent: {self.current_user_agent[:60]}...")
+            
             # Her zaman undetected-chromedriver kullan
             options = self._configure_chrome_options(use_uc=True)
-            
             # Selenium-wire options
             seleniumwire_options = {
                 'verify_ssl': False,
-                'suppress_connection_errors': True
+                'suppress_connection_errors': True,
+                'connection_timeout': 60,  # Proxy yavaşsa bağlantı kopmaması için artırıldı
+                'connection_keep_alive': True # Bağlantıyı canlı tut
             }
             
             # Proxy varsa proxy ayarlarını ekle
@@ -132,33 +168,92 @@ class SeleniumDriver:
             else:
                 logger.info("Proxy kullanılmıyor")
             
+            # Sistemdeki Chrome versiyonunu tespit etmeye çalış
+            import subprocess
+            import re
+            import sys
+            
+            client_version = None
+            try:
+                output = ""
+                if sys.platform == "win32":
+                    # Windows Chrome path'leri
+                    paths = [
+                        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+                    ]
+                    for path in paths:
+                        if os.path.exists(path):
+                            cmd = f'(Get-Item "{path}").VersionInfo.ProductVersion'
+                            result = subprocess.run(["powershell", "-command", cmd], capture_output=True, text=True)
+                            output = result.stdout.strip()
+                            if output:
+                                break
+                elif sys.platform.startswith("linux"):
+                    # Linux için komut satırından versiyon oku
+                    for cmd_name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]:
+                        try:
+                            result = subprocess.run([cmd_name, "--version"], capture_output=True, text=True)
+                            if result.stdout:
+                                output = result.stdout.strip()
+                                break
+                        except Exception:
+                            continue
+                elif sys.platform == "darwin":
+                    # macOS için
+                    path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                    if os.path.exists(path):
+                        result = subprocess.run([path, "--version"], capture_output=True, text=True)
+                        output = result.stdout.strip()
+                            
+                if output:
+                    match = re.search(r'(\d+)\.', output)
+                    if match:
+                        client_version = int(match.group(1))
+                        logger.info(f"Oto-tespit edilen Chrome sürümü ({sys.platform}): {client_version}")
+            except Exception as e:
+                logger.debug(f"Chrome sürümü tespit edilemedi: {e}")
+            
             # selenium-wire + undetected-chromedriver kullan (proxy desteği için)
             if SELENIUM_WIRE_AVAILABLE and WireChrome is not None:
-                logger.info("  - Driver: selenium-wire + undetected-chromedriver")
+                logger.info(f"  - Driver: selenium-wire + undetected-chromedriver (v{client_version or 'auto'})")
                 try:
-                    self.driver = WireChrome(
-                        options=options,
-                        seleniumwire_options=seleniumwire_options,
-                        version_main=142
-                    )
+                    kwargs = {
+                        "options": options,
+                        "seleniumwire_options": seleniumwire_options
+                    }
+                    if client_version:
+                        kwargs["version_main"] = client_version
+                        
+                    self.driver = WireChrome(**kwargs)
                     logger.success("selenium-wire + undetected-chromedriver aktif")
                 except Exception as e:
                     logger.warning(f"WireChrome başlatılamadı, normal uc.Chrome deneniyor: {e}")
                     # Fallback: normal undetected-chromedriver (proxy çalışmayabilir)
-                    self.driver = uc.Chrome(
-                        options=options,
-                        version_main=142,
-                        use_subprocess=True
-                    )
+                    # uc.ChromeOptions yeniden oluşturulmalı çünkü WireChrome içerde kullanılmış/tüketilmiş olabilir
+                    fallback_options = self._configure_chrome_options(use_uc=True)
+                    
+                    fallback_kwargs = {
+                        "options": fallback_options,
+                        "use_subprocess": True
+                    }
+                    if client_version:
+                        fallback_kwargs["version_main"] = client_version
+                        
+                    self.driver = uc.Chrome(**fallback_kwargs)
                     logger.warning("Normal undetected-chromedriver kullanılıyor (proxy desteği yok!)")
             else:
                 logger.warning("selenium-wire bulunamadı, proxy desteği olmadan başlatılıyor")
-                logger.info("  - Driver: undetected-chromedriver (proxy yok)")
-                self.driver = uc.Chrome(
-                    options=options,
-                    version_main=142,
-                    use_subprocess=True
-                )
+                logger.info(f"  - Driver: undetected-chromedriver (proxy yok, v{client_version or 'auto'})")
+                
+                kwargs = {
+                    "options": options,
+                    "use_subprocess": True
+                }
+                if client_version:
+                    kwargs["version_main"] = client_version
+                    
+                self.driver = uc.Chrome(**kwargs)
             
             # Timeout ayarları
             self.driver.set_page_load_timeout(60)
@@ -166,6 +261,14 @@ class SeleniumDriver:
             
             # Pencere boyutu
             self.driver.set_window_size(1920, 1080)
+            
+            # User Agent'ı CDP ile ayarla
+            try:
+                self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                    "userAgent": self.current_user_agent
+                })
+            except Exception as e:
+                logger.warning(f"CDP User Agent ayarlanamadı: {e}")
             
             # Bot tespitini zorlaştıran JavaScript injection
             if self.headless:

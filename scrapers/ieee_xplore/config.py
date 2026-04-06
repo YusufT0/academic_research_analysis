@@ -4,11 +4,10 @@ Configuration management for IEEE Xplore scraper
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+from pathlib import Path
 
-# .env dosyasının yolunu belirle (scrapers klasöründe)
-_env_path = Path(__file__).parent.parent / ".env"
-load_dotenv(_env_path)
+# backend ayarlarını import et
+from backend.core.config import settings
 
 
 class ProxyConfig:
@@ -16,13 +15,11 @@ class ProxyConfig:
     
     def __init__(self):
         """Environment variables'dan proxy ayarlarını yükle"""
-        # .env zaten modül yüklenirken okundu
-        
-        self.use_proxy = os.getenv('USE_PROXY', 'false').lower() in ('true', '1', 'yes', 'on')
-        self.user = os.getenv('proxy_user', '')
-        self.password = os.getenv('proxy_pass', '')
-        self.host = os.getenv('proxy_host', '')
-        self.port = os.getenv('proxy_port', '')
+        self.use_proxy = settings.use_proxy
+        self.user = settings.proxy_user
+        self.password = settings.proxy_pass
+        self.host = settings.proxy_host
+        self.port = settings.proxy_port
     
     def is_configured(self) -> bool:
         """Proxy kullanılacak mı ve gerekli bilgiler var mı kontrol et"""
@@ -42,14 +39,9 @@ class IEEEXploreConfig:
     
     def __init__(self):
         """Environment variables'dan IEEE Xplore ayarlarını yükle"""
-        # .env zaten modül yüklenirken okundu
-        
-        self.base_url = os.getenv(
-            'IEEEXPLORE_BASE_URL',
-            'https://ieeexplore.ieee.org/browse/periodicals/title?contentType=periodicals&showActiveTitlesOnly=true&refinements=ContentType:Journals'
-        )
+        self.base_url = settings.ieeexplore_base_url
         
         # Rate limiting ayarları
-        self.min_wait = 4  # minimum bekleme süresi (saniye)
-        self.max_wait = 10  # maksimum bekleme süresi (saniye)
-        self.page_load_timeout = 90  # sayfa yükleme timeout (saniye)
+        self.min_wait = settings.ieee_min_wait
+        self.max_wait = settings.ieee_max_wait
+        self.page_load_timeout = settings.ieee_page_load_timeout

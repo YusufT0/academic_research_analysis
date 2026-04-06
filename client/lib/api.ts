@@ -9,6 +9,15 @@ import type {
   GeneralStats,
   ArticleStats,
   SearchResult,
+  ElasticSearchResult,
+  SearchSuggestion,
+  SearchFacets,
+  NlpSearchResponse,
+  NlpBarChartData,
+  NlpPieChartData,
+  NlpScatterPoint,
+  NlpStatus,
+  JournalCitationMetrics,
 } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -22,7 +31,7 @@ class ApiError extends Error {
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const url = `${API_URL}${endpoint}`;
-  
+
   const response = await fetch(url, {
     ...options,
     headers: {
@@ -48,6 +57,10 @@ export async function getArticleStats(): Promise<ArticleStats> {
   return fetchApi<ArticleStats>('/stats/articles');
 }
 
+export async function getCitationStats(): Promise<import('./types').CitationStats> {
+  return fetchApi<import('./types').CitationStats>('/stats/citations');
+}
+
 export async function getScraperStats() {
   return fetchApi('/stats/scraper');
 }
@@ -67,7 +80,7 @@ export interface JournalFilters {
 
 export async function getJournals(filters: JournalFilters = {}): Promise<PaginatedResponse<Journal>> {
   const params = new URLSearchParams();
-  
+
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.source_website) params.set('source_website', filters.source_website);
@@ -76,7 +89,7 @@ export async function getJournals(filters: JournalFilters = {}): Promise<Paginat
   if (filters.search) params.set('search', filters.search);
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
-  
+
   return fetchApi<PaginatedResponse<Journal>>(`/journals?${params.toString()}`);
 }
 
@@ -92,9 +105,14 @@ export async function getJournalArticles(journalId: string, page = 1, pageSize =
   return fetchApi(`/journals/${journalId}/articles?page=${page}&page_size=${pageSize}`);
 }
 
+export async function getJournalCitationMetrics(journalId: string): Promise<JournalCitationMetrics> {
+  return fetchApi<JournalCitationMetrics>(`/journals/${journalId}/citation-metrics`);
+}
+
 // ==================== Articles ====================
 
 export interface ArticleFilters {
+  id?: string;
   page?: number;
   page_size?: number;
   journal_id?: string;
@@ -111,7 +129,8 @@ export interface ArticleFilters {
 
 export async function getArticles(filters: ArticleFilters = {}): Promise<PaginatedResponse<Article>> {
   const params = new URLSearchParams();
-  
+
+  if (filters.id) params.set('id', filters.id);
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.journal_id) params.set('journal_id', filters.journal_id);
@@ -124,7 +143,7 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.has_abstract !== undefined) params.set('has_abstract', filters.has_abstract.toString());
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
-  
+
   return fetchApi<PaginatedResponse<Article>>(`/articles?${params.toString()}`);
 }
 
@@ -132,17 +151,37 @@ export async function getArticle(id: string): Promise<Article> {
   return fetchApi<Article>(`/articles/${id}`);
 }
 
+export async function getArticleCitationMetrics(id: string) {
+  return fetchApi(`/articles/${id}/citation-metrics`);
+}
+
+// ==================== OpenAlex ====================
+
+export async function getOpenAlexStatus() {
+  return fetchApi(`/openalex/status`);
+}
+
+export async function startOpenAlexScan() {
+  return fetchApi(`/openalex/start`, { method: 'POST' });
+}
+
+export async function stopOpenAlexScan() {
+  return fetchApi(`/openalex/stop`, { method: 'POST' });
+}
+
 export async function searchArticles(
   query: string,
   searchType: 'text' | 'title' | 'keyword' | 'author' = 'text',
-  limit = 50
+  page = 1,
+  pageSize = 20
 ): Promise<SearchResult> {
   const params = new URLSearchParams({
     q: query,
     search_type: searchType,
-    limit: limit.toString(),
+    page: page.toString(),
+    page_size: pageSize.toString(),
   });
-  
+
   return fetchApi<SearchResult>(`/articles/search?${params.toString()}`);
 }
 
@@ -160,7 +199,7 @@ export interface IssueFilters {
 
 export async function getIssues(filters: IssueFilters = {}): Promise<PaginatedResponse<Issue>> {
   const params = new URLSearchParams();
-  
+
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
   if (filters.journal_id) params.set('journal_id', filters.journal_id);
@@ -168,7 +207,7 @@ export async function getIssues(filters: IssueFilters = {}): Promise<PaginatedRe
   if (filters.year) params.set('year', filters.year.toString());
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
-  
+
   return fetchApi<PaginatedResponse<Issue>>(`/issues?${params.toString()}`);
 }
 
@@ -216,6 +255,25 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
+export async function startAcmScraper(headless = true, maxArticles = 10) {
+  return fetchApi('/scrapers/acm/start', {
+    method: 'POST',
+    body: JSON.stringify({ headless, max_articles: maxArticles }),
+  });
+}
+
+export async function stopAcmScraper() {
+  return fetchApi('/scrapers/acm/stop', { method: 'POST' });
+}
+
+export async function pauseAcmScraper() {
+  return fetchApi('/scrapers/acm/pause', { method: 'POST' });
+}
+
+export async function resumeAcmScraper() {
+  return fetchApi('/scrapers/acm/resume', { method: 'POST' });
+}
+
 export async function startAllScrapers(headless = true) {
   return fetchApi('/scrapers/start-all', {
     method: 'POST',
@@ -241,3 +299,124 @@ export async function getScraperLogs(scraperType = 'all', limit = 50): Promise<S
   return fetchApi<ScraperLogsResponse>(`/scrapers/logs?scraper_type=${scraperType}&limit=${limit}`);
 }
 
+// ==================== Elasticsearch Search ====================
+
+export interface ElasticSearchFilters {
+  query: string;
+  source_website?: string;
+  year?: number;
+  journal_name?: string;
+  page?: number;
+  page_size?: number;
+}
+
+export async function elasticSearch(filters: ElasticSearchFilters): Promise<ElasticSearchResult> {
+  const params = new URLSearchParams();
+  params.set('q', filters.query);
+  if (filters.source_website) params.set('source_website', filters.source_website);
+  if (filters.year) params.set('year', filters.year.toString());
+  if (filters.journal_name) params.set('journal_name', filters.journal_name);
+  if (filters.page) params.set('page', filters.page.toString());
+  if (filters.page_size) params.set('page_size', filters.page_size.toString());
+
+  return fetchApi<ElasticSearchResult>(`/search?${params.toString()}`);
+}
+
+export async function getSearchSuggestions(prefix: string, limit = 5): Promise<SearchSuggestion[]> {
+  const params = new URLSearchParams({ q: prefix, limit: limit.toString() });
+  const data = await fetchApi<{ query: string; suggestions: string[] }>(`/search/suggest?${params.toString()}`);
+  return (data.suggestions || []).map(text => ({ text }));
+}
+
+export async function getSearchFacets(): Promise<SearchFacets> {
+  return fetchApi<SearchFacets>('/search/facets');
+}
+
+// ==================== Citation Graph ====================
+
+export async function getCitationGraph(
+  articleId: string,
+  depth = 2,
+  forceRefresh = false,
+): Promise<import('./types').CitationGraphData> {
+  const params = new URLSearchParams({
+    article_id: articleId,
+    depth: String(depth),
+    force_refresh: String(forceRefresh),
+  });
+  return fetchApi<import('./types').CitationGraphData>(`/citation-graph?${params.toString()}`);
+}
+
+export async function expandCitationNode(
+  openalexId: string,
+  depth = 1,
+): Promise<import('./types').CitationExpandData> {
+  const params = new URLSearchParams({
+    openalex_id: openalexId,
+    depth: String(depth),
+  });
+  return fetchApi<import('./types').CitationExpandData>(`/citation-graph/expand?${params.toString()}`);
+}
+
+// ==================== Authors ====================
+
+export interface AuthorFilters {
+  page?: number;
+  page_size?: number;
+  sort_by?: string;
+  search?: string;
+  min_articles?: number;
+}
+
+export async function getAuthors(filters: AuthorFilters = {}) {
+  const params = new URLSearchParams();
+  if (filters.page) params.set('page', filters.page.toString());
+  if (filters.page_size) params.set('page_size', filters.page_size.toString());
+  if (filters.sort_by) params.set('sort_by', filters.sort_by);
+  if (filters.search) params.set('search', filters.search);
+  if (filters.min_articles) params.set('min_articles', filters.min_articles.toString());
+
+  return fetchApi<any>(`/authors?${params.toString()}`);
+}
+
+export async function getAuthorProfile(name: string) {
+  return fetchApi<any>(`/authors/${encodeURIComponent(name)}`);
+}
+
+export async function getAuthorArticles(name: string, page: number = 1, page_size: number = 15) {
+  const params = new URLSearchParams();
+  params.set('page', page.toString());
+  params.set('page_size', page_size.toString());
+  return fetchApi<any>(`/authors/${encodeURIComponent(name)}/articles?${params.toString()}`);
+}
+
+// ==================== NLP / AI Analysis ====================
+
+export async function getNlpStatus(): Promise<NlpStatus> {
+  return fetchApi<NlpStatus>('/nlp/status');
+}
+
+export async function nlpSearch(
+  query: string,
+  topK = 10,
+  autoTrain = false,
+): Promise<NlpSearchResponse> {
+  const params = new URLSearchParams({
+    query,
+    top_k: topK.toString(),
+    auto_train: autoTrain.toString(),
+  });
+  return fetchApi<NlpSearchResponse>(`/nlp/search?${params.toString()}`);
+}
+
+export async function getNlpBarChartInput(): Promise<NlpBarChartData> {
+  return fetchApi<NlpBarChartData>('/nlp/get_bar_chart_input');
+}
+
+export async function getNlpPieChartInput(): Promise<NlpPieChartData> {
+  return fetchApi<NlpPieChartData>('/nlp/get_pie_chart_input');
+}
+
+export async function getNlpScatterChartInput(): Promise<NlpScatterPoint[]> {
+  return fetchApi<NlpScatterPoint[]>('/nlp/get_scatter_chart_input');
+}

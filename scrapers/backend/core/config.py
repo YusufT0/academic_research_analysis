@@ -15,12 +15,20 @@ class Settings(BaseSettings):
     """Backend ayarları"""
     
     # API Settings
-    app_name: str = Field(default="Academic Research Scraper API")
-    app_version: str = Field(default="1.0.0")
-    debug: bool = Field(default=False)
+    app_name: str = Field(default="Academic Research Scraper API", alias="APP_NAME")
+    app_version: str = Field(default="1.0.0", alias="APP_VERSION")
+    app_description: str = Field(default="Academic Research Scraper API Documentation", alias="APP_DESCRIPTION")
+    debug: bool = Field(default=False, alias="DEBUG")
     
     # CORS
-    cors_origins: List[str] = Field(default=["*"])
+    cors_origins: List[str] = Field(default=["*"], alias="CORS_ORIGINS")
+    
+    # Proxy Settings
+    use_proxy: bool = Field(default=False, alias="USE_PROXY", description="Proxy kullanılsın mı")
+    proxy_user: str = Field(default="", env="proxy_user", alias="proxy_user", description="Proxy username")
+    proxy_pass: str = Field(default="", env="proxy_pass", alias="proxy_pass", description="Proxy password")
+    proxy_host: str = Field(default="", env="proxy_host", alias="proxy_host", description="Proxy host or IP")
+    proxy_port: str = Field(default="8080", env="proxy_port", alias="proxy_port", description="Proxy port")
     
     # MongoDB
     mongodb_uri: str = Field(default="mongodb://localhost:27017")
@@ -29,11 +37,14 @@ class Settings(BaseSettings):
     mongodb_password: Optional[str] = Field(default=None)
     
     # Scraper Settings
-    auto_start_scrapers: bool = Field(default=True, alias="AUTO_START_SCRAPERS", description="Backend başladığında scraper'ları otomatik başlat")
+    auto_start_scrapers: bool = Field(default=False, alias="AUTO_START_SCRAPERS")
+    scraper_lazy_load: bool = Field(default=True, alias="SCRAPER_LAZY_LOAD", description="Scraper modülleri başlangıçta değil ilk kullanımda yüklensin mi")
+    run_tests_on_startup: bool = Field(default=False, alias="RUN_TESTS_ON_STARTUP", description="Backend başlarken testler çalıştırılsın mı")
     scraper_headless: bool = Field(default=True, alias="SCRAPER_HEADLESS", description="Browser headless modda çalışsın mı")
     ieee_max_articles: int = Field(default=100, alias="IEEE_MAX_ARTICLES", description="IEEE scraper maksimum makale sayısı")
     sciencedirect_max_articles: int = Field(default=100, alias="SCIENCEDIRECT_MAX_ARTICLES", description="ScienceDirect scraper maksimum makale sayısı")
-    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect")
+    acm_max_articles: int = Field(default=100, alias="ACM_MAX_ARTICLES", description="ACM scraper maksimum makale sayısı")
+    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm")
     scraper_run_mode: str = Field(default="parallel", alias="SCRAPER_RUN_MODE", description="Scraper çalışma modu: 'parallel', 'sequential' veya 'round_robin'")
     round_robin_journals_per_switch: int = Field(default=3, alias="ROUND_ROBIN_JOURNALS_PER_SWITCH", description="Round robin modunda kaç journalda bir site değiştirileceği")
     
@@ -47,28 +58,52 @@ class Settings(BaseSettings):
         """ScienceDirect scraper etkin mi?"""
         return 'sciencedirect' in self.enabled_scrapers.lower()
     
-    # Rate Limiting
-    scrape_delay_min: float = Field(default=2.0, description="Minimum bekleme süresi (saniye)")
-    scrape_delay_max: float = Field(default=5.0, description="Maksimum bekleme süresi (saniye)")
+    @property
+    def acm_enabled(self) -> bool:
+        """ACM scraper etkin mi?"""
+        return 'acm' in self.enabled_scrapers.lower()
+    
+    # Scraper Base URLs
+    ieeexplore_base_url: str = Field(default="https://ieeexplore.ieee.org", alias="IEEEXPLORE_BASE_URL", description="IEEE Xplore base URL")
+    sciencedirect_base_url: str = Field(default="https://www.sciencedirect.com", alias="SCIENCEDIRECT_BASE_URL", description="ScienceDirect base URL")
+
+    # Scraper Timeouts & Delays
+    ieee_min_wait: int = Field(default=4, alias="IEEE_MIN_WAIT", description="IEEE scraper minimum bekleme süresi (sn)")
+    ieee_max_wait: int = Field(default=10, alias="IEEE_MAX_WAIT", description="IEEE scraper maksimum bekleme süresi (sn)")
+    ieee_page_load_timeout: int = Field(default=90, alias="IEEE_PAGE_LOAD_TIMEOUT", description="IEEE sayfa yükleme timeout (sn)")
+
+    sd_timeout: int = Field(default=90, alias="SD_TIMEOUT", description="Science Direct sayfa yükleme timeout (sn)")
+    sd_implicit_wait: int = Field(default=90, alias="SD_IMPLICIT_WAIT", description="Science Direct implicit wait (sn)")
+    
+    # ACM Timeouts & Delays
+    acm_base_url: str = Field(default="https://dl.acm.org/journals", alias="ACM_BASE_URL", description="ACM Digital Library base URL")
+    acm_min_wait: int = Field(default=4, alias="ACM_MIN_WAIT", description="ACM scraper minimum bekleme süresi (sn)")
+    acm_max_wait: int = Field(default=10, alias="ACM_MAX_WAIT", description="ACM scraper maksimum bekleme süresi (sn)")
+    acm_page_load_timeout: int = Field(default=90, alias="ACM_PAGE_LOAD_TIMEOUT", description="ACM sayfa yükleme timeout (sn)")
+    
+    # PDF Settings
+    pdf_download_timeout: int = Field(default=60, alias="PDF_DOWNLOAD_TIMEOUT", description="PDF indirme timeout süresi (sn)")
+    pdf_download_chunk_size: int = Field(default=8192, alias="PDF_DOWNLOAD_CHUNK_SIZE", description="PDF dosya yazma parça boyutu (byte)")
     
     # NLP/Clustering Settings
-    nlp_prefer_pkl: bool = Field(
-        default=True,
-        alias="NLP_PREFER_PKL",
-        description="True: Önce PKL kullan, False: Önce DB kullan"
-    )
-    nlp_model_path: str = Field(
-        default="analyzer/clustering_model_.pkl", 
-        alias="NLP_MODEL_PATH",
-        description="Clustering model dosya yolu"
-    )
+    # nlp_prefer_pkl: bool = Field(
+    #     default=True,
+    #     alias="NLP_PREFER_PKL",
+    #     description="True: Önce PKL kullan, False: Önce DB kullan"
+    # )
+    # nlp_model_path: str = Field(
+    #     default="analyzer/clustering_model_.pkl", 
+    #     alias="NLP_MODEL_PATH",
+    #     description="Clustering model dosya yolu"
+    # )
     nlp_model_version: str = Field(
         default="v1.0", 
         alias="NLP_MODEL_VERSION",
         description="Model versiyonu"
     )
     nlp_embedder_model: str = Field(
-        default="all-MiniLM-L6-v2", 
+        # default="all-MiniLM-L6-v2", 
+        default= "allenai/aspire-sentence-embedder",
         alias="NLP_EMBEDDER_MODEL",
         description="SentenceTransformer model adı"
     )
@@ -78,7 +113,7 @@ class Settings(BaseSettings):
         description="UMAP n_neighbors parametresi"
     )
     nlp_umap_n_components: int = Field(
-        default=10, 
+        default=15, 
         alias="NLP_UMAP_N_COMPONENTS",
         description="UMAP çıktı boyutu"
     )
@@ -91,6 +126,11 @@ class Settings(BaseSettings):
         default=1, 
         alias="NLP_MIN_SAMPLES",
         description="HDBSCAN min_samples"
+    )
+    nlp_lazy_init: bool = Field(
+        default=True,
+        alias="NLP_LAZY_INIT",
+        description="NLP modelleri başlangıçta değil ilk kullanımda yüklensin mi"
     )
     
     # Redis Cache Settings
@@ -177,6 +217,89 @@ class Settings(BaseSettings):
         default=30,
         alias="PREFETCH_NEIGHBOR_ARTICLES_LIMIT",
         description="Komşu cluster için kaç makale prefetch edilsin"
+    )
+    
+    # ==================== OpenAlex API Settings ====================
+    openalex_api_base_url: str = Field(
+        default="https://api.openalex.org",
+        alias="OPENALEX_API_BASE_URL",
+        description="OpenAlex API Base URL"
+    )
+    openalex_polite_email: Optional[str] = Field(
+        default=None,
+        alias="OPENALEX_POLITE_EMAIL",
+        description="Email address for polite pool access to bypass rate limits"
+    )
+    openalex_api_timeout: int = Field(
+        default=30,
+        alias="OPENALEX_API_TIMEOUT",
+        description="OpenAlex API timeout in seconds"
+    )
+    openalex_bulk_chunk_size: int = Field(
+        default=50,
+        alias="OPENALEX_BULK_CHUNK_SIZE",
+        description="Max chunk size for bulk requests"
+    )
+    citation_graph_max_depth: int = Field(
+        default=5,
+        alias="CITATION_GRAPH_MAX_DEPTH",
+        description="Maximum BFS traversal depth for citation graph collection"
+    )
+    citation_max_per_level: int = Field(
+        default=50,
+        alias="CITATION_MAX_PER_LEVEL",
+        description="Maximum citing works fetched per node per BFS level"
+    )
+    cache_ttl_citation_graph: int = Field(
+        default=3600,
+        alias="CACHE_TTL_CITATION_GRAPH",
+        description="Citation graph persistent cache TTL in seconds"
+    )
+    citation_graph_concurrency: int = Field(
+        default=8,
+        alias="CITATION_GRAPH_CONCURRENCY",
+        description="Max concurrent OpenAlex requests during citation graph BFS"
+    )
+
+    # ==================== Elasticsearch ====================
+    elasticsearch_url: str = Field(
+        default="http://localhost:9200",
+        alias="ELASTICSEARCH_URL",
+        description="Elasticsearch URL"
+    )
+    elasticsearch_index_prefix: str = Field(
+        default="academic",
+        alias="ELASTICSEARCH_INDEX_PREFIX",
+        description="Elasticsearch index prefix"
+    )
+    elasticsearch_auto_sync: bool = Field(
+        default=True,
+        alias="ELASTICSEARCH_AUTO_SYNC",
+        description="Elasticsearch otomatik senkronizasyon (startup ve live) yapılsın mı"
+    )
+    
+    # ==================== Redis Streams ====================
+    redis_streams_enabled: bool = Field(
+        default=True,
+        alias="REDIS_STREAMS_ENABLED",
+        description="Redis Streams event pipeline aktif mi"
+    )
+    redis_streams_consumer_group: str = Field(
+        default="academic-backend",
+        alias="REDIS_STREAMS_CONSUMER_GROUP",
+        description="Consumer group adı"
+    )
+    redis_streams_dlq_retry_interval: int = Field(
+        default=300,
+        alias="REDIS_STREAMS_DLQ_RETRY_INTERVAL",
+        description="DLQ retry aralığı (saniye)"
+    )
+    
+    # ==================== Logging ====================
+    log_format: str = Field(
+        default="pretty",
+        alias="LOG_FORMAT",
+        description="Log format: json (production) veya pretty (dev)"
     )
     
     @property

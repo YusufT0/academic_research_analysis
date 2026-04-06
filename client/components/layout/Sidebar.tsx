@@ -10,14 +10,19 @@ import {
   Settings,
   Database,
   Search,
+  BarChart2,
+  Network,
+  Users,
 } from 'lucide-react';
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Makaleler', href: '/articles', icon: FileText },
   { name: 'Dergiler', href: '/journals', icon: BookOpen },
+  { name: 'Yazarlar', href: '/authors', icon: Users },
   { name: 'Arama', href: '/search', icon: Search },
   { name: 'Trendler', href: '/trends', icon: TrendingUp },
+  { name: 'Atıf Haritası', href: '/citation-map', icon: Network },
   { name: 'Scraper', href: '/scrapers', icon: Database },
 ];
 
@@ -58,6 +63,20 @@ export default function Sidebar() {
           })}
         </ul>
       </nav>
+
+      {/* Monitoring */}
+      <div className="mt-6 px-3 border-t border-slate-700 pt-4">
+        <p className="text-[10px] font-semibold uppercase tracking-widest text-slate-500 px-3 mb-2">Monitoring</p>
+        <a
+          href="http://localhost:3001"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-300 hover:bg-slate-800 hover:text-white transition-colors"
+        >
+          <BarChart2 className="h-5 w-5" />
+          Grafana
+        </a>
+      </div>
 
       {/* Footer */}
       <div className="absolute bottom-0 left-0 right-0 border-t border-slate-700 p-4">

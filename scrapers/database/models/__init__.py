@@ -14,10 +14,11 @@ __all__ = [
     "TimestampMixin",
     "ScrapingMetaMixin",
     "Journal",
-    "Issue", 
+    "Issue",
     "Article",
     # Analysis Models
     "ArticleEmbedding",
     "Cluster",
     "AnalysisRun",
 ]
+

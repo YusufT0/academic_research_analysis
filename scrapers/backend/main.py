@@ -19,16 +19,26 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .core.config import settings
 from .core.dependencies import set_scraper_manager
+from .core.error_handlers import register_error_handlers
 from .services.scraper_manager import ScraperManager
 from .services.cache_service import cache_service
+from .middleware import RequestIdMiddleware, TimingMiddleware, RequestLoggingMiddleware
+from .routers import __all__ as index_all
+# Let's just import it cleanly below
 from .routers import (
     journals_router,
     issues_router,
     articles_router,
     scrapers_router,
     stats_router,
-    nlp_router
+    nlp_router,
+    websocket_router,
+    search_router,
+    openalex_router,
+    citation_graph_router,
+    authors_router,
 )
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from database import init_database, close_database
 from utils.logger import get_logger
@@ -91,6 +101,64 @@ async def delayed_scraper_start(manager: ScraperManager, delay: float = 2.0):
     logger.success("Scraper'lar arka planda başlatıldı")
 
 
+async def sync_es_on_startup():
+    """Uygulama başlatılırken veritabanı ile Elasticsearch'ü senkronize eder."""
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        if not elasticsearch_service.is_connected:
+            return
+            
+        from database.models import Article
+        
+        # Mongo makale sayısını al
+        mongo_count = await Article.count()
+        
+        # ES makale sayısını al
+        try:
+            es_count_res = await elasticsearch_service._client.count(index=elasticsearch_service.articles_index)
+            es_count = es_count_res.get("count", 0)
+        except Exception:
+            es_count = 0
+            
+        logger.info(f"Startup ES Sync Check: Mongo ({mongo_count}) vs ES ({es_count})")
+
+        if mongo_count > 0 and es_count == 0:
+            # İlk kurulum: ES tamamen boşsa bulk sync yap
+            logger.info("ES boş — ilk kurulum bulk sync başlatılıyor...")
+        elif mongo_count > 0 and mongo_count != es_count:
+            # Sayı uyuşmazlığı: sadece ufak fark varsa sync, büyük farkta uyar
+            diff = abs(mongo_count - es_count)
+            if diff > mongo_count * 0.1:  # %10'dan fazla fark varsa sync
+                logger.info(f"ES desync fazla ({diff} döküman) — bulk sync başlatılıyor...")
+            else:
+                logger.info(f"ES küçük uyuşmazlık ({diff} döküman) — event-driven sync devrede, atlanıyor")
+                return
+
+        if mongo_count > 0 and (es_count == 0 or abs(mongo_count - es_count) > mongo_count * 0.1):
+            logger.info("MongoDB -> ES senkronizasyonu başlatılıyor...")
+            articles = await Article.find_all().to_list()
+            
+            article_dicts = []
+            for a in articles:
+                d = a.model_dump()
+                d["id"] = str(a.id)
+                if a.journal_id: d["journal_id"] = str(a.journal_id)
+                if a.issue_id: d["issue_id"] = str(a.issue_id)
+                article_dicts.append(d)
+                
+            batch_size = 500
+            total_indexed = 0
+            for i in range(0, len(article_dicts), batch_size):
+                batch = article_dicts[i:i + batch_size]
+                count = await elasticsearch_service.bulk_index(batch)
+                total_indexed += count
+                
+            logger.success(f"ES Senkronizasyonu tamamlandı: {total_indexed} makale indexlendi")
+        else:
+            logger.info("ES Senkronizasyonu atlandı (Veriler güncel)")
+    except Exception as e:
+        logger.error(f"ES Startup Sync hatası: {e}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
@@ -109,6 +177,17 @@ async def lifespan(app: FastAPI):
     
     logger.header("BACKEND BAŞLATILIYOR")
     
+    # Run tests if enabled
+    if settings.run_tests_on_startup:
+        logger.info("Startup testleri çalıştırılıyor (RUN_TESTS_ON_STARTUP=true)...")
+        import pytest
+        loop = asyncio.get_running_loop()
+        exit_code = await loop.run_in_executor(None, pytest.main, ["tests/", "-q"])
+        if exit_code != 0:
+            logger.error(f"Testler başarısız oldu (Exit code: {exit_code}). Kurulum iptal ediliyor.")
+            raise RuntimeError("Test execution failed. Aborting startup.")
+        logger.success("Tüm startup testleri başarıyla geçti")
+    
     # Initialize database
     logger.info("Database bağlantısı kuruluyor...")
     db_success = await init_database()
@@ -125,6 +204,45 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("Redis cache bağlantısı kurulamadı - cache devre dışı")
     
+    # Initialize Elasticsearch
+    logger.info("Elasticsearch bağlantısı kuruluyor...")
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        await elasticsearch_service.connect()
+        if elasticsearch_service.is_connected:
+            logger.success("Elasticsearch bağlantısı kuruldu")
+            # Auto-sync datbase to ES in background
+            if settings.elasticsearch_auto_sync:
+                asyncio.create_task(sync_es_on_startup())
+            else:
+                logger.info("Elasticsearch otomatik senkronizasyon kapalı.")
+        else:
+            logger.warning("Elasticsearch bağlantısı kurulamadı - arama devre dışı")
+    except Exception as e:
+        logger.warning(f"Elasticsearch başlatılamadı: {e}")
+    
+    # Redis Streams Workers: ES indexleme + Citation Updates
+    try:
+        from backend.services.stream_service import stream_service
+        from backend.services.es_stream_handler import es_stream_handler
+        from backend.services.openalex.worker import citation_worker
+
+        await stream_service.connect()
+        es_stream_handler.register()
+        citation_worker.register_workers()
+        await stream_service.start_consumers()
+        logger.info("Stream service consumers başlatıldı (ES indexer + Citation worker).")
+    except Exception as e:
+        logger.error(f"Stream service başlatılamadı: {e}")
+
+    # Start WebSocket Redis Pub/Sub subscription (before first client connects)
+    try:
+        from backend.routers.websocket import ws_manager
+        await ws_manager.startup()
+        logger.success("WebSocket Redis Pub/Sub consumer başlatıldı")
+    except Exception as e:
+        logger.warning(f"WebSocket startup hatası: {e}")
+
     # Initialize scraper manager
     logger.info("Scraper manager başlatılıyor...")
     scraper_manager = ScraperManager()
@@ -177,19 +295,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="""
-## Academic Research Scraper API
-
-IEEE Xplore ve ScienceDirect'ten akademik makale toplayan scraper'ları yönetir.
-
-### Özellikler
-
-* **Scraper Yönetimi**: Başlatma, durdurma, duraklatma
-* **İlerleme Takibi**: Gerçek zamanlı scraping ilerleme durumu
-* **Database Erişimi**: Journals, Issues, Articles
-* **Filtreleme & Pagination**: Gelişmiş arama ve sıralama
-* **İstatistikler**: Database ve scraper metrikleri
-    """,
+    description=settings.app_description,
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -212,6 +318,23 @@ app.include_router(articles_router, prefix="/api/v1")
 app.include_router(scrapers_router, prefix="/api/v1")
 app.include_router(stats_router, prefix="/api/v1")
 app.include_router(nlp_router, prefix="/api/v1")
+app.include_router(websocket_router)  # WebSocket — prefix yok, /ws/scrapers/events
+app.include_router(search_router, prefix="/api/v1")
+app.include_router(openalex_router, prefix="/api/v1")
+app.include_router(citation_graph_router, prefix="/api/v1")
+app.include_router(authors_router, prefix="/api/v1")
+
+# Register global error handlers
+register_error_handlers(app)
+
+# Middleware zinciri (LIFO sıra — en son eklenen en dışta çalışır)
+# 1. RequestId → 2. Timing → 3. Logging
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(TimingMiddleware)
+app.add_middleware(RequestIdMiddleware)
+
+# Prometheus HTTP metrics (auto: request count, latency, status codes)
+Instrumentator().instrument(app).expose(app, endpoint="/metrics", tags=["Monitoring"])
 
 
 # Root endpoint
@@ -226,14 +349,98 @@ async def root():
     }
 
 
-@app.get("/health", tags=["Root"])
+@app.get("/health", tags=["Health"])
 async def health_check():
-    """Health check endpoint"""
+    """Health check (backward compatible — redirects to /health/ready logic)"""
+    return await health_ready()
+
+
+@app.get("/health/live", tags=["Health"])
+async def health_live():
+    """Liveness probe — uygulama ayakta mı"""
+    return {"status": "alive"}
+
+
+@app.get("/health/ready", tags=["Health"])
+async def health_ready():
+    """Readiness probe — tüm dependency'ler hazır mı"""
     from database.connection import get_database
     
-    db = get_database()
-    db_connected = db is not None
+    checks = {}
+    overall = True
     
+    # MongoDB check
+    try:
+        db = get_database()
+        if db and db.client:
+            await db.client.admin.command("ping")
+            checks["mongodb"] = {"status": "up"}
+        else:
+            checks["mongodb"] = {"status": "down", "error": "not connected"}
+            overall = False
+    except Exception as e:
+        checks["mongodb"] = {"status": "down", "error": str(e)}
+        overall = False
+    
+    # Redis check
+    try:
+        if cache_service and cache_service.redis:
+            await cache_service.redis.ping()
+            checks["redis"] = {"status": "up"}
+        else:
+            checks["redis"] = {"status": "down", "error": "not connected"}
+            overall = False
+    except Exception as e:
+        checks["redis"] = {"status": "down", "error": str(e)}
+        overall = False
+    
+    status_code = 200 if overall else 503
+    from fastapi.responses import JSONResponse
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "status": "healthy" if overall else "unhealthy",
+            "checks": checks,
+        }
+    )
+
+
+@app.get("/health/deep", tags=["Health"])
+async def health_deep():
+    """Deep health check — detaylı diagnostik bilgi"""
+    import time
+    import psutil
+    from database.connection import get_database
+    from .core.circuit_breaker import get_all_breaker_statuses
+    
+    checks = {}
+    
+    # MongoDB check with latency
+    try:
+        db = get_database()
+        if db and db.client:
+            start = time.perf_counter()
+            await db.client.admin.command("ping")
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            checks["mongodb"] = {"status": "up", "latency_ms": latency}
+        else:
+            checks["mongodb"] = {"status": "down"}
+    except Exception as e:
+        checks["mongodb"] = {"status": "down", "error": str(e)}
+    
+    # Redis check with latency
+    try:
+        if cache_service and cache_service.redis:
+            start = time.perf_counter()
+            await cache_service.redis.ping()
+            latency = round((time.perf_counter() - start) * 1000, 2)
+            checks["redis"] = {"status": "up", "latency_ms": latency}
+        else:
+            checks["redis"] = {"status": "down"}
+    except Exception as e:
+        checks["redis"] = {"status": "down", "error": str(e)}
+    
+    # Scrapers status
     scraper_status = {}
     if scraper_manager:
         status = scraper_manager.get_all_status()
@@ -242,10 +449,27 @@ async def health_check():
             "sciencedirect": status["sciencedirect"]["status"],
         }
     
+    # System info
+    process = psutil.Process()
+    system = {
+        "uptime_seconds": round(time.time() - process.create_time(), 1),
+        "memory_mb": round(process.memory_info().rss / 1024 / 1024, 1),
+        "cpu_percent": process.cpu_percent(),
+        "threads": process.num_threads(),
+    }
+    
+    # WebSocket connections
+    from .routers.websocket import ws_manager
+    
     return {
-        "status": "healthy" if db_connected else "unhealthy",
-        "database": "connected" if db_connected else "disconnected",
+        "status": "healthy" if all(
+            c.get("status") == "up" for c in checks.values()
+        ) else "degraded",
+        "checks": checks,
         "scrapers": scraper_status,
+        "circuit_breakers": get_all_breaker_statuses(),
+        "websocket_connections": ws_manager.connection_count,
+        "system": system,
     }
 
 

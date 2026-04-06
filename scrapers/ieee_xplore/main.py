@@ -137,7 +137,7 @@ async def main():
         journals_with_articles = [j for j in all_journals if j['most_recent_issue_url']]
         
         logger.header("ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA")
-        logger.info(f"{len(journals_with_articles)} journal için veritabanı kontrolü yapılıyor...")
+        logger.info(f"{len(journals_with_articles)} journal için veri tabanı kontrolü yapılıyor...")
         
         # Journal repository'yi başlat
         journal_repo = JournalRepository()
@@ -154,7 +154,7 @@ async def main():
             'Toplam Journal': len(journals_with_articles),
             'Yeni (DB\'de yok)': new_count,
             'Mevcut (DB\'de var)': existing_count
-        }, "Veritabanı Durumu")
+        }, "Veri Tabanı Durumu")
         
         # Journal'ları öncelik sistemine göre sırala
         journals_with_articles = JournalRepository.prioritize_journals(journals_with_articles, priority_info)
