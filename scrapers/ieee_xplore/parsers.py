@@ -4,6 +4,7 @@ HTML parsing functions for IEEE Xplore scraper
 
 import re
 import sys
+from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
@@ -13,7 +14,64 @@ logger = get_logger('ieee_xplore')
 
 class JournalParser:
     """Journal bilgilerini parse eden sınıf"""
-    
+
+    @staticmethod
+    def extract_aims_and_scope(page_source: str) -> Optional[str]:
+        """
+        Journal ana sayfasındaki <section class="aimsAndScope"> bileşeninden
+        Aims & Scope metnini çıkarır.
+
+        Args:
+            page_source: Sayfa HTML içeriği
+
+        Returns:
+            str: Aims & scope düz metin veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            section = soup.find('section', class_='aimsAndScope')
+            if not section:
+                return None
+            # col-21-24 sütununu bul (varsa), yoksa section'ın kendisini kullan
+            content_col = section.find('div', class_='col-21-24')
+            if not content_col:
+                content_col = section
+            # h2 başlığını çıkar
+            h2 = content_col.find('h2')
+            if h2:
+                h2.decompose()
+            text = content_col.get_text(separator=' ', strip=True)
+            return text if text else None
+        except Exception as e:
+            logger.warning(f"Aims & scope çıkarma hatası: {e}")
+            return None
+
+    @staticmethod
+    def extract_all_issues_tab_url(page_source: str) -> Optional[str]:
+        """
+        Navigasyon çubuğundan 'All Issues' tab linkini çıkarır.
+
+        Args:
+            page_source: Sayfa HTML içeriği
+
+        Returns:
+            str: All Issues sayfasının relative URL'i veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            # stats-jhp-AllIssues class'ına sahip link
+            link = soup.find('a', class_='stats-jhp-AllIssues')
+            if link and link.get('href'):
+                return link['href']
+            # Fallback: title="All Issues" olan link
+            link = soup.find('a', title='All Issues')
+            if link and link.get('href'):
+                return link['href']
+            return None
+        except Exception as e:
+            logger.warning(f"All Issues linki çıkarma hatası: {e}")
+            return None
+
     @staticmethod
     def extract_journals_from_page(page_source: str) -> list:
         """
@@ -486,11 +544,100 @@ class ArticleParser:
             
             if not article_details['introduction']:
                 logger.warning("Introduction bulunamadı")
-            
+
             return article_details
-            
+
         except Exception as e:
             logger.failed("Makale detay çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return None
+
+
+class IssuesPageParser:
+    """All Issues sayfasını parse eden sınıf"""
+
+    @staticmethod
+    def has_decade_tabs(page_source: str) -> bool:
+        """
+        Sayfada onlık (2020s, 2010s …) sekmeleri var mı kontrol eder.
+
+        Returns:
+            bool: Decade sekmeleri mevcutsa True
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' not in (div.get('class') or []):
+                return True
+        return False
+
+    @staticmethod
+    def extract_decade_tab_texts(page_source: str) -> List[str]:
+        """
+        Decade sekme metinlerini sırayla döndürür: ['2020s', '2010s', ...].
+        En üstteki (aktif) sekme ilk sıradadır.
+
+        Returns:
+            list[str]: Decade metinleri
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' not in (div.get('class') or []):
+                texts = []
+                for li in div.find_all('li'):
+                    text = li.get_text(strip=True)
+                    if text:
+                        texts.append(text)
+                return texts
+        return []
+
+    @staticmethod
+    def extract_year_items(page_source: str) -> List[Dict]:
+        """
+        Yıl listesini döndürür.
+
+        Yılda tek issue varsa <a href="..."> doğrudan issue linki içerir.
+        Birden fazla issue varsa <a> href'siz olup tıklanarak genişletilir.
+
+        Returns:
+            list[dict]: [{'year': str, 'href': str|None}, ...]
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        year_div = None
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' in (div.get('class') or []):
+                year_div = div
+                break
+        if not year_div:
+            return []
+
+        items = []
+        for li in year_div.find_all('li'):
+            a = li.find('a')
+            if a:
+                year_text = a.get_text(strip=True)
+                href = a.get('href')  # None → birden fazla issue (tıklanmalı)
+                if year_text:
+                    items.append({'year': year_text, 'href': href})
+        return items
+
+    @staticmethod
+    def extract_issue_list(page_source: str) -> List[Dict]:
+        """
+        Yıl tıklandıktan sonra beliren issue listesini parse eder.
+
+        Returns:
+            list[dict]: [{'url': str, 'title': str}, ...]
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        issues = []
+        for container in soup.find_all('section', class_='issue-container'):
+            volume_el = container.find('strong')
+            volume = volume_el.get_text(strip=True) if volume_el else ''
+            for issue_div in container.find_all('div', class_='issue-details'):
+                a = issue_div.find('a')
+                if a and a.get('href'):
+                    label = a.get_text(strip=True)
+                    title = f"{volume} {label}".strip() if volume else label
+                    issues.append({'url': a['href'], 'title': title})
+        return issues

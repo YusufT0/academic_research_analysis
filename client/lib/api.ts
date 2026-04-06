@@ -217,10 +217,10 @@ export async function getScrapersStatus(): Promise<AllScrapersStatus> {
   return fetchApi<AllScrapersStatus>('/scrapers/status');
 }
 
-export async function startIeeeScraper(headless = true, maxArticles = 10) {
+export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1) {
   return fetchApi('/scrapers/ieee/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
   });
 }
 
@@ -236,10 +236,10 @@ export async function resumeIeeeScraper() {
   return fetchApi('/scrapers/ieee/resume', { method: 'POST' });
 }
 
-export async function startScienceDirectScraper(headless = true, maxArticles = 5) {
+export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1) {
   return fetchApi('/scrapers/sciencedirect/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
   });
 }
 
@@ -255,10 +255,10 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
-export async function startAcmScraper(headless = true, maxArticles = 10) {
+export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1) {
   return fetchApi('/scrapers/acm/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
   });
 }
 
@@ -298,6 +298,66 @@ export interface ScraperLogsResponse {
 export async function getScraperLogs(scraperType = 'all', limit = 50): Promise<ScraperLogsResponse> {
   return fetchApi<ScraperLogsResponse>(`/scrapers/logs?scraper_type=${scraperType}&limit=${limit}`);
 }
+
+// ==================== Journal URL Scraper ====================
+
+export interface JournalUrlValidateResponse {
+  valid: boolean;
+  scraper_type: string | null;
+  message: string;
+}
+
+export interface JournalExistsResponse {
+  exists: boolean;
+  journal: {
+    id: string;
+    name: string;
+    url: string | null;
+    source_website: string;
+    article_count: number;
+    issue_count: number;
+    publisher: string | null;
+    issn: string | null;
+    updated_at: string | null;
+    created_at: string | null;
+  } | null;
+}
+
+export async function validateJournalUrl(url: string): Promise<JournalUrlValidateResponse> {
+  return fetchApi<JournalUrlValidateResponse>('/scrapers/journal/validate', {
+    method: 'POST',
+    body: JSON.stringify({ url }),
+  });
+}
+
+export async function checkJournalExists(url: string): Promise<JournalExistsResponse> {
+  const params = new URLSearchParams({ url });
+  return fetchApi<JournalExistsResponse>(`/scrapers/journal/check-exists?${params.toString()}`);
+}
+
+export async function startSingleJournalScraper(
+  url: string,
+  scraperType: string,
+  maxArticles = 50,
+  depth = 1,
+  headless = false,
+) {
+  return fetchApi('/scrapers/journal/start', {
+    method: 'POST',
+    body: JSON.stringify({
+      url,
+      scraper_type: scraperType,
+      max_articles: maxArticles,
+      depth,
+      headless,
+    }),
+  });
+}
+
+export async function getSingleJournalScraperStatus(scraperType: string) {
+  return fetchApi(`/scrapers/journal/status?scraper_type=${scraperType}`);
+}
+
 
 // ==================== Elasticsearch Search ====================
 

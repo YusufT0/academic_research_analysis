@@ -109,56 +109,127 @@ class JournalParser:
             return []
 
 
-class ArticleParser:
-    """Makale bilgilerini parse eden sınıf"""
-    
     @staticmethod
-    def extract_latest_issue_url(page_source: str) -> str:
+    def has_about_nav_item(page_source: str) -> bool:
         """
-        Journal ana sayfasından "Latest issue" linkini çıkarır
-        
+        Journal nav'ında 'About' sekmesinin olup olmadığını kontrol eder
+
         Args:
             page_source: Journal ana sayfası HTML içeriği
-            
+
         Returns:
-            str: Latest issue URL'i veya None
+            bool: About sekmesi varsa True
         """
         try:
             soup = BeautifulSoup(page_source, 'html.parser')
-            
-            # Articles & Issues accordion panel'ini bul
-            accordion_panels = soup.find_all('li', class_='accordion-panel')
-            
-            for panel in accordion_panels:
-                # Button'un text'ini kontrol et (Articles & Issues)
-                button = panel.find('button', class_='accordion-panel-title')
-                if button:
-                    button_text = button.get_text(strip=True)
-                    
-                    if 'Articles' in button_text and 'Issues' in button_text:
-                        # Bu panel içinde Latest issue linkini bul
-                        latest_link = panel.find('a', string=lambda x: x and 'Latest issue' in x)
-                        
-                        if latest_link and latest_link.get('href'):
-                            latest_url = latest_link['href']
-                            logger.success(f"Latest issue linki bulundu: {latest_url}")
-                            return latest_url
-            
-            # Alternatif: Doğrudan "Latest issue" text'i olan link'i ara
-            latest_link = soup.find('a', class_='link-anchor', string=lambda x: x and 'Latest issue' in str(x))
-            if latest_link and latest_link.get('href'):
-                latest_url = latest_link['href']
-                logger.success(f"Latest issue linki bulundu (alt): {latest_url}")
-                return latest_url
-            
-            logger.warning("Latest issue linki bulunamadı")
-            return None
-            
+            nav = soup.find('nav', attrs={'aria-label': 'journal'})
+            if nav:
+                for btn in nav.find_all('button'):
+                    if 'About' in btn.get_text():
+                        return True
+            return False
         except Exception as e:
-            logger.error(f"Latest issue URL çıkarma hatası: {e}")
+            logger.warning(f"Nav kontrolü hatası: {e}")
+            return False
+
+    @staticmethod
+    def extract_aims_scope_from_about_page(page_source: str) -> str:
+        """
+        /about/aims-and-scope sayfasından aims & scope içeriğini HTML olarak çıkarır
+
+        Args:
+            page_source: About/aims-and-scope sayfası HTML içeriği
+
+        Returns:
+            str: Aims and scope HTML içeriği veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            aims_div = soup.find('div', class_='js-aims-and-scope')
+            if aims_div:
+                logger.success("Aims & scope (about page) bulundu")
+                return str(aims_div)
+            logger.warning("js-aims-and-scope bulunamadı")
+            return None
+        except Exception as e:
+            logger.error(f"About page aims & scope çıkarma hatası: {e}")
+            return None
+
+    @staticmethod
+    def extract_aims_scope_from_journal_page(page_source: str) -> str:
+        """
+        Journal ana sayfasındaki about-content-wrapper'dan aims & scope içeriğini çıkarır
+
+        Args:
+            page_source: Journal ana sayfası HTML içeriği
+
+        Returns:
+            str: Aims and scope HTML içeriği veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            wrapper = soup.find('div', class_='about-content-wrapper')
+            if wrapper:
+                # slide-out panel içindeki tam içeriği al
+                spaced = wrapper.find('span', class_='spaced')
+                if spaced:
+                    logger.success("Aims & scope (journal page, spaced) bulundu")
+                    return str(spaced)
+            logger.warning("about-content-wrapper / spaced bulunamadı")
+            return None
+        except Exception as e:
+            logger.error(f"Journal page aims & scope çıkarma hatası: {e}")
+            return None
+
+    @staticmethod
+    def parse_issues_from_issues_page(page_source: str) -> list:
+        """
+        /issues sayfasındaki tüm accordion panellerinden issue bilgilerini çıkarır.
+        Sayfada tüm accordion'ların açık (expanded) olduğu varsayılır.
+
+        Returns:
+            list: [{'url': str, 'title': str, 'status': str}, ...]
+            En yeni issue önce (sayfadaki görünüm sırası).
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            issues = []
+
+            panels = soup.find_all('div', class_='accordion-panel-content')
+            for panel in panels:
+                section = panel.find('section', class_='js-issue-list-content')
+                if not section:
+                    continue
+
+                for item in section.find_all('div', class_='issue-item'):
+                    link = item.find('a', class_='js-issue-item-link')
+                    if not link or not link.get('href'):
+                        continue
+
+                    title_span = link.find('span', class_='anchor-text')
+                    title = title_span.get_text(strip=True) if title_span else link.get_text(strip=True)
+
+                    status_div = item.find('div', class_='js-issue-status')
+                    status = status_div.get_text(strip=True) if status_div else None
+
+                    issues.append({
+                        'url': link['href'],
+                        'title': title.strip(),
+                        'status': status,
+                    })
+
+            logger.found(len(issues), "issue (issues page)")
+            return issues
+
+        except Exception as e:
+            logger.error(f"Issues page parse hatası: {e}")
             import traceback
             traceback.print_exc()
-            return None
+            return []
+
+
+class ArticleParser:
+    """Makale bilgilerini parse eden sınıf"""
     
     @staticmethod
     def _parse_date_range(date_text: str) -> str:
@@ -364,58 +435,6 @@ class ArticleParser:
             
         except Exception as e:
             logger.error(f"Article URL çıkarma hatası: {e}")
-            import traceback
-            traceback.print_exc()
-            return []
-    
-    @staticmethod
-    def extract_article_urls(page_source: str) -> list:
-        """
-        Journal sayfasındaki 'latest-published-articles' div'inden makale URL'lerini çıkarır
-        (Eski yöntem - geriye uyumluluk için korundu)
-        
-        Args:
-            page_source: Sayfa HTML içeriği
-            
-        Returns:
-            list: Makale URL'lerinin listesi
-        """
-        try:
-            # BeautifulSoup ile parse et
-            soup = BeautifulSoup(page_source, 'html.parser')
-            
-            # Latest published articles div'ini bul
-            latest_articles_div = soup.find('div', id='latest-published-articles')
-            
-            if not latest_articles_div:
-                logger.not_found("latest-published-articles div")
-                return []
-            
-            # Tüm article item'ları bul
-            article_items = latest_articles_div.find_all('div', class_='js-article-item')
-            logger.found(len(article_items), "article item")
-            
-            article_urls = []
-            
-            for idx, item in enumerate(article_items, 1):
-                try:
-                    # Article title link'ini bul
-                    title_link = item.find('a', class_='js-article__item__title__link')
-                    
-                    if title_link and title_link.get('href'):
-                        article_url = title_link['href']
-                        article_urls.append(article_url)
-                        logger.debug(f"{idx}. {article_url}")
-                    
-                except Exception as e:
-                    logger.warning(f"Article {idx} parse hatası: {e}")
-                    continue
-            
-            logger.found(len(article_urls), "makale URL'i")
-            return article_urls
-            
-        except Exception as e:
-            logger.error(f"Latest articles çıkarma hatası: {e}")
             import traceback
             traceback.print_exc()
             return []

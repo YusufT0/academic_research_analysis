@@ -109,15 +109,18 @@ class DatabaseService:
         except ImportError:
             pass
         
+        _cache = _get_cache()
         if created:
             logger.success(f"Yeni dergi eklendi: {name}")
-            _cache = _get_cache()
             if _cache:
                 await _cache.invalidate_pattern("stats:*")
-                await _cache.invalidate_pattern("journals_list_*")
+                await _cache.invalidate_pattern("search:*")
         else:
             logger.info(f"Dergi güncellendi: {name}")
-        
+            if _cache:
+                await _cache.invalidate_pattern("search:*")
+                await _cache.invalidate_journal(str(journal.id))
+
         return journal, created
     
     async def get_journal(
@@ -128,6 +131,29 @@ class DatabaseService:
         """Dergi getir"""
         return await self.journal_repo.find_by_name(name, source_website)
     
+    async def recalculate_journal_counts(self, journal_id) -> Optional[Journal]:
+        """
+        Derginin sayı ve makale sayılarını gerçek DB verilerinden yeniden hesapla.
+        Yarım kalan scrape sonrası tutarsız sayıları düzeltir.
+        """
+        issue_count = await Issue.find({"journal_id": journal_id}).count()
+        article_count = await Article.find({"journal_id": journal_id}).count()
+
+        journal = await Journal.get(journal_id)
+        if journal:
+            journal.issue_count = issue_count
+            journal.article_count = article_count
+            journal.touch()
+            await journal.save()
+
+        _cache = _get_cache()
+        if _cache:
+            await _cache.invalidate_journal(str(journal_id))
+            await _cache.invalidate_pattern("search:*")
+            await _cache.invalidate_pattern("stats:*")
+
+        return journal
+
     async def get_all_journals(
         self,
         source_website: Optional[str] = None

@@ -13,7 +13,51 @@ logger = get_logger('acm')
 
 class JournalParser:
     """ACM Journal bilgilerini parse eden sınıf"""
-    
+
+    @staticmethod
+    def extract_aims_and_scope(page_source: str):
+        """
+        /journal/CODE sayfasındaki .item-meta__info > .truncate-text bölümünden
+        aims & scope içeriğini çıkarır.
+
+        (More) butonuna dışarıdan tıklandıktan sonra çağrılmalıdır; bu metot
+        sadece mevcut DOM'u parse eder.
+
+        Returns:
+            str: Temizlenmiş inner HTML içeriği veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+
+            # .item-meta__info altındaki .truncate-text div'ini bul
+            info_div = soup.find('div', class_='item-meta__info')
+            if not info_div:
+                logger.warning("Aims & scope: .item-meta__info bulunamadı")
+                return None
+
+            truncate_div = info_div.find('div', class_='truncate-text')
+            if not truncate_div:
+                logger.warning("Aims & scope: .truncate-text bulunamadı")
+                return None
+
+            # read-more ve read-less butonlarını kaldır
+            for btn in truncate_div.find_all(['span', 'button'], class_=['read-more', 'read-less']):
+                btn.decompose()
+
+            # Boş mu kontrol et
+            text_content = truncate_div.get_text(strip=True)
+            if not text_content:
+                logger.warning("Aims & scope: İçerik boş")
+                return None
+
+            html_content = truncate_div.decode_contents().strip()
+            logger.success("Aims & scope bulundu (.item-meta__info .truncate-text)")
+            return html_content
+
+        except Exception as e:
+            logger.error(f"ACM aims & scope çıkarma hatası: {e}")
+            return None
+
     @staticmethod
     def extract_journals_from_page(page_source: str) -> list:
         """
@@ -261,6 +305,129 @@ class ArticleParser:
             import traceback
             traceback.print_exc()
             return []
+
+
+class IssueListParser:
+    """ACM LOI (List of Issues / Archive) sayfasını parse eden sınıf"""
+
+    @staticmethod
+    def extract_decade_tabs(page_source: str) -> list:
+        """
+        LOI sayfasındaki decade sekme bilgilerini DOM sırasıyla döndürür.
+
+        Returns:
+            list: [{'text': '2000s', 'data_url': 'd2000', 'panel_id': 'pane-xxx-d2000', 'is_active': False}, ...]
+            Çağıran taraf en güncel decade'den başlamak için reversed() kullanmalıdır.
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        tabs = []
+        for a in soup.find_all('a', class_=lambda c: c and 'decade-item' in c):
+            data_url = a.get('data-url', '')
+            if not data_url:
+                continue
+            panel_id = a.get('aria-controls', '')
+            text = a.get_text(strip=True)
+            li = a.find_parent('li')
+            is_active = bool(li and 'active' in (li.get('class') or []))
+            tabs.append({
+                'text': text,
+                'data_url': data_url,
+                'panel_id': panel_id,
+                'is_active': is_active,
+            })
+        return tabs
+
+    @staticmethod
+    def extract_year_panel_info(page_source: str, decade_panel_id: str = None) -> list:
+        """
+        Belirli bir decade panelindeki year sekmelerini ve yüklenme durumlarını döndürür.
+
+        Args:
+            decade_panel_id: Sadece bu decade panel'inin içindeki year tab'ları aranır.
+                             None verilirse tüm sayfada arar (eski davranış, önerilmez).
+
+        Returns:
+            list: [{'text': '2024', 'panel_id': 'pane-xxx-y2024', 'has_issues': True}, ...]
+            DOM sırasıyla döner; çağıran reversed() ile en güncel yıldan başlamalıdır.
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+
+        if decade_panel_id:
+            scope = soup.find('div', id=decade_panel_id)
+            if not scope:
+                return []
+        else:
+            scope = soup
+
+        years = []
+        seen_panels = set()
+
+        for year_tab in scope.find_all('a', class_=lambda c: c and 'year-item' in c):
+            panel_id = year_tab.get('aria-controls', '')
+            if not panel_id or panel_id in seen_panels:
+                continue
+            seen_panels.add(panel_id)
+
+            text = year_tab.get_text(strip=True)
+            # Panel soup'un herhangi bir yerinde olabilir (scope dışında olsa bile)
+            panel = soup.find('div', id=panel_id)
+            has_issues = bool(panel and panel.find('a', class_='loi__issue')) if panel else False
+
+            years.append({
+                'text': text,
+                'panel_id': panel_id,
+                'has_issues': has_issues,
+            })
+
+        return years
+
+    @staticmethod
+    def extract_issues_from_panel(page_source: str, panel_id: str) -> list:
+        """
+        Belirli bir year panelindeki issue linklerini döndürür.
+
+        Returns:
+            list: [{'url': '/toc/CODE/YEAR/VOL/ISSUE', 'title': 'December 2024, Issue 4'}, ...]
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        panel = soup.find('div', id=panel_id)
+        if not panel:
+            return []
+        return IssueListParser._extract_issues_from_soup(panel)
+
+    @staticmethod
+    def extract_all_issues_from_page(page_source: str) -> list:
+        """
+        Sayfadaki TÜM issue linklerini döndürür (tüm panellerden).
+
+        Returns:
+            list: [{'url': ..., 'title': ...}, ...]
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        return IssueListParser._extract_issues_from_soup(soup)
+
+    @staticmethod
+    def _extract_issues_from_soup(soup) -> list:
+        """BeautifulSoup nesnesinden a.loi__issue linklerini çıkarır."""
+        issues = []
+        seen = set()
+        for link in soup.find_all('a', class_='loi__issue', href=True):
+            href = link.get('href', '')
+            if not href or href in seen:
+                continue
+            seen.add(href)
+
+            cover_date = link.find('span', class_='coverDate')
+            issue_span = link.find('span', class_='issue')
+            parts = []
+            if cover_date:
+                parts.append(cover_date.get_text(strip=True))
+            if issue_span:
+                parts.append(issue_span.get_text(strip=True))
+            title = ', '.join(parts) if parts else (link.get('title') or href)
+
+            issues.append({'url': href, 'title': title})
+        return issues
 
 
 class ArticleDetailParser:

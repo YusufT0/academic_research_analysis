@@ -56,8 +56,8 @@ class SeleniumDriver:
     Selenium WebDriver yönetici sınıfı.
     
     SeleniumBase SB (uc=True) + CDP mode kullanır.
-    Proxy varsa: activate_cdp_mode() → CDP modunda kalır (reconnect YOK)
-    Proxy yoksa: uc_open_with_reconnect() → Selenium modunda kalır
+    Her zaman CDP modu kullanılır (proxy olsun olmasın).
+    Proxy, browser başlatılırken sb_kwargs["proxy"] ile Chrome'a verilir.
     
     page_source, current_url gibi veriler property olarak sunulur
     ve aktif moda göre doğru API kullanılır.
@@ -94,7 +94,11 @@ class SeleniumDriver:
         """JavaScript çalıştır (CDP veya Selenium moduna göre)"""
         try:
             if self._cdp_active and self._sb:
-                return self._sb.cdp.evaluate(script)
+                # CDP evaluate expression bekler; "return X" → "X" olarak normalize et
+                expr = script.strip()
+                if expr.startswith("return "):
+                    expr = expr[len("return "):]
+                return self._sb.cdp.evaluate(expr)
             elif self.driver:
                 return self.driver.execute_script(script)
         except Exception as e:
@@ -273,45 +277,133 @@ class SeleniumDriver:
                 return False
         return False
     
+    def _get_title(self) -> str:
+        """Mevcut sayfa başlığını döndürür (CDP veya Selenium moduna göre)."""
+        try:
+            if self._cdp_active and self._sb:
+                return self._sb.cdp.evaluate("document.title") or ""
+            elif self.driver:
+                return self.driver.title or ""
+        except Exception:
+            pass
+        return ""
+
+    def _wait_for_render(self, url: str, max_attempts: int = 3) -> bool:
+        """
+        CSS/JS render kontrolü: sayfa tam render edilene kadar bekler/yeniden dener.
+
+        Tespit yöntemi:
+          1. cssRules: en az bir stylesheet'in gerçekten parse edilmiş rule'u var mı?
+             (document.styleSheets.length yanıltıcıdır — <link> tag DOM'da olunca
+              dosya fetch edilmese bile sheet nesnesi oluşur; cssRules.length ise
+              ancak dosya gerçekten indirildiyse > 0 olur)
+          2. resources: Performance API ile kaç ağ isteği yapıldı?
+             (CSS/JS yüklendiyse Chrome 30+ istek yapar; kırık sayfada < 5 olur)
+
+        Başarısız olursa sb.cdp.get(url) ile sayfayı yeniden yükler.
+
+        Returns:
+            bool: Render tamamlandıysa True, max_attempts sonunda hala yoksa False
+        """
+        if not (self._cdp_active and self._sb):
+            return True  # CDP modu değilse kontrol gerekmiyor
+
+        WAIT_BETWEEN = 3.0
+
+        # Tek bir cdp.evaluate çağrısıyla iki metriği birden al (round-trip azalt)
+        CHECK_JS = """
+        (function() {
+            var cssRulesOk = Array.from(document.styleSheets).some(function(s) {
+                try { return s.cssRules && s.cssRules.length > 50; }
+                catch(e) { return false; }
+            });
+            var resources = window.performance.getEntriesByType('resource').length;
+            var scripts = document.querySelectorAll('script[src]').length;
+            return [cssRulesOk, resources, scripts];
+        })()
+        """
+
+        for attempt in range(max_attempts):
+            try:
+                result = self._sb.cdp.evaluate(CHECK_JS)
+                css_rules_ok   = bool(result[0]) if result else False
+                resource_count = int(result[1]) if result else 0
+                script_count   = int(result[2]) if result else 0
+
+                # resource_count > 15: tarayıcı gerçekten CSS/JS/font istekleri yaptı
+                # css_rules_ok veya script_count > 5: içerik gerçekten parse edildi
+                loaded = resource_count > 15 and (css_rules_ok or script_count > 5)
+
+                if loaded:
+                    logger.info(
+                        f"CSS/JS render OK "
+                        f"(deneme {attempt + 1}, resources={resource_count}, "
+                        f"scripts={script_count}, css_rules_ok={css_rules_ok})"
+                    )
+                    return True
+
+                logger.warning(
+                    f"CSS/JS yüklenmedi "
+                    f"(resources={resource_count}, scripts={script_count}, css_rules_ok={css_rules_ok})"
+                )
+
+                if attempt < max_attempts - 1:
+                    logger.info(f"Sayfa yeniden yükleniyor ({attempt + 1}/{max_attempts - 1})...")
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
+                        future = executor.submit(self._sb.cdp.get, url)
+                        future.result(timeout=self.page_load_timeout)
+                    finally:
+                        executor.shutdown(wait=False)
+                    time.sleep(WAIT_BETWEEN)
+
+            except Exception as e:
+                logger.warning(f"CSS/JS render kontrolü hatası: {e}")
+                if attempt < max_attempts - 1:
+                    time.sleep(WAIT_BETWEEN)
+
+        logger.warning(f"CSS/JS {max_attempts} denemede yüklenemedi, devam ediliyor...")
+        return False
+
     def _solve_cloudflare(self) -> bool:
         """
-        Cloudflare challenge kontrolü ve çözümü (CDP modunda).
-        
+        Cloudflare challenge kontrolü ve çözümü.
+
         Returns:
             bool: Sayfa hazır ise True
         """
-        title = self._sb.get_title() or ""
+        title = self._get_title()
         cf_keywords = ["lütfen", "moment", "checking", "just a"]
-        
+
         if not any(kw in title.lower() for kw in cf_keywords):
             return True
-        
+
         # İlk bekleme — çoğu challenge otomatik çözülür
         logger.info("Cloudflare challenge algılandı, bekleniyor...")
         time.sleep(8)
-        title = self._sb.get_title() or ""
-        
+        title = self._get_title()
+
         if not any(kw in title.lower() for kw in cf_keywords):
             return True
-        
+
         # CDP-native captcha çözücü
         logger.info("Cloudflare hala aktif, solve_captcha() deneniyor...")
         try:
             self._sb.solve_captcha()
             time.sleep(3)
-            title = self._sb.get_title() or ""
+            title = self._get_title()
             if not any(kw in title.lower() for kw in cf_keywords):
                 logger.success("Cloudflare solve_captcha() ile çözüldü")
                 return True
         except Exception as e:
             logger.warning(f"solve_captcha() hatası: {e}")
-        
+
         # Fallback: uc_gui_click_captcha
         logger.info("Fallback: uc_gui_click_captcha() deneniyor...")
         try:
             self._sb.uc_gui_click_captcha()
             time.sleep(5)
-            title = self._sb.get_title() or ""
+            title = self._get_title()
             if not any(kw in title.lower() for kw in cf_keywords):
                 logger.success("Cloudflare uc_gui_click_captcha() ile çözüldü")
                 return True
@@ -323,13 +415,13 @@ class SeleniumDriver:
     
     def get(self, url: str, wait_after: int = 3, max_retries: int = 2) -> bool:
         """
-        Belirtilen URL'e git.
-        
-        Proxy varsa:
-        - İlk navigasyon: activate_cdp_mode(url) → CDP moduna geçer
-        - Sonraki navigasyonlar: sb.cdp.get(url) → CDP modunda kalır
-        Proxy yoksa:
-        - uc_open_with_reconnect(url) → Selenium modunda kalır
+        Belirtilen URL'e git (her zaman CDP modu).
+
+        İlk navigasyon: activate_cdp_mode(url) → CDP moduna geçer
+        Sonraki navigasyonlar: sb.cdp.get(url) → CDP modunda kalır
+
+        Proxy, browser başlatılırken sb_kwargs["proxy"] ile ayarlanır;
+        CDP seçimi proxy yönlendirmesini etkilemez.
         
         Args:
             url: Gidilecek URL
@@ -352,48 +444,48 @@ class SeleniumDriver:
                 
                 logger.url(url, "Açılıyor")
                 
-                use_proxy = self.proxy_config.use_proxy and self.proxy_config.is_configured()
-                
-                if use_proxy:
-                    if not self._cdp_active:
-                        # İlk navigasyon: CDP modunu aktifleştir (proxy auth)
-                        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                # ── Her zaman CDP modu ───────────────────────────────────────
+                # Proxy, browser başlatılırken sb_kwargs["proxy"] ile Chrome'a
+                # verilir; CDP vs Selenium seçimi proxy yönlendirmesini etkilemez.
+                # uc_open_with_reconnect WebDriver bağlantısını keserek JS runtime
+                # state'ini mahveder → CSS/JS yüklenmez. CDP bu sorunu yaşamaz.
+                if not self._cdp_active:
+                    # İlk navigasyon: CDP modunu aktifleştir
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
+                        future = executor.submit(self._sb.activate_cdp_mode, url)
                         try:
-                            future = executor.submit(self._sb.activate_cdp_mode, url)
-                            try:
-                                future.result(timeout=self.page_load_timeout)
-                                self._cdp_active = True
-                            except concurrent.futures.TimeoutError:
-                                raise TimeoutError(
-                                    f"CDP activate_cdp_mode timeout ({self.page_load_timeout}s): {url}"
-                                )
-                        finally:
-                            # wait=False: thread'i bırak, bloklama
-                            executor.shutdown(wait=False)
-                    else:
-                        # Sonraki navigasyonlar: CDP modunda kal
-                        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                        try:
-                            future = executor.submit(self._sb.cdp.get, url)
-                            try:
-                                future.result(timeout=self.page_load_timeout)
-                            except concurrent.futures.TimeoutError:
-                                raise TimeoutError(
-                                    f"CDP get timeout ({self.page_load_timeout}s): {url}"
-                                )
-                        finally:
-                            # wait=False: thread'i bırak, bloklama
-                            executor.shutdown(wait=False)
-
-                    time.sleep(wait_after)
-
-                    # Cloudflare challenge çöz
-                    self._solve_cloudflare()
+                            future.result(timeout=self.page_load_timeout)
+                            self._cdp_active = True
+                        except concurrent.futures.TimeoutError:
+                            raise TimeoutError(
+                                f"CDP activate_cdp_mode timeout ({self.page_load_timeout}s): {url}"
+                            )
+                    finally:
+                        executor.shutdown(wait=False)
                 else:
-                    self._sb.uc_open_with_reconnect(url, reconnect_time=5)
-                    self._cdp_active = False
-                    time.sleep(wait_after)
-                
+                    # Sonraki navigasyonlar: CDP modunda kal
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
+                        future = executor.submit(self._sb.cdp.get, url)
+                        try:
+                            future.result(timeout=self.page_load_timeout)
+                        except concurrent.futures.TimeoutError:
+                            raise TimeoutError(
+                                f"CDP get timeout ({self.page_load_timeout}s): {url}"
+                            )
+                    finally:
+                        executor.shutdown(wait=False)
+
+                time.sleep(wait_after)
+
+                # CSS/JS render kontrolü — yüklenmemişse yeniden dene
+                self._wait_for_render(url)
+
+                cf_solved = self._solve_cloudflare()
+                if not cf_solved:
+                    logger.warning("Cloudflare geçilemedi, sayfa içeriği eksik olabilir")
+
                 logger.success("Sayfa yüklendi")
                 return True
                 

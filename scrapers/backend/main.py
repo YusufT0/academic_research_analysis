@@ -37,6 +37,7 @@ from .routers import (
     openalex_router,
     citation_graph_router,
     authors_router,
+    journal_scraper_router,
 )
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -201,6 +202,28 @@ async def lifespan(app: FastAPI):
     redis_success = await cache_service.connect()
     if redis_success:
         logger.success("Redis cache bağlantısı kuruldu")
+
+        # Startup'ta scraper'a ait cache'leri temizle:
+        # 1. Distributed lock key'leri — önceki run crash olduysa lock asla release edilmemiş olabilir
+        # 2. Stats cache — eski istatistikler gösterilmesin
+        # 3. Search cache — eski arama sonuçları gösterilmesin
+        # 4. WebSocket event replay buffer — yeni bağlanan frontend eski progress/status_update
+        #    event'larını replay alıp ekranda eski Dergi Kuyruğu verilerini göstermesini önler
+        try:
+            from backend.routers.websocket import SCRAPER_LOG_BUFFER_KEY
+            prefix = cache_service._make_key("")  # "academic:"
+            lock_deleted   = await cache_service.delete_pattern(f"{prefix}lock:scraper:*")
+            stats_deleted  = await cache_service.delete_pattern(f"{prefix}stats:*")
+            search_deleted = await cache_service.delete_pattern(f"{prefix}search:*")
+            # Buffer doğrudan prefix'siz bir key olduğu için delete ile sil
+            buf_deleted = await cache_service.delete(SCRAPER_LOG_BUFFER_KEY)
+            logger.info(
+                f"Startup cache temizliği: "
+                f"{lock_deleted} lock, {stats_deleted} stats, "
+                f"{search_deleted} search, {int(buf_deleted)} event buffer silindi"
+            )
+        except Exception as e:
+            logger.warning(f"Startup cache temizliği hatası: {e}")
     else:
         logger.warning("Redis cache bağlantısı kurulamadı - cache devre dışı")
     
@@ -262,32 +285,82 @@ async def lifespan(app: FastAPI):
         scraper_task = asyncio.create_task(delayed_scraper_start(scraper_manager))
     
     yield
-    
-    # Shutdown
+
+    # ── SHUTDOWN ──────────────────────────────────────────────────────────────
     logger.header("BACKEND KAPATILIYOR")
-    
-    # Cancel pending scraper start task if exists
-    if scraper_task and not scraper_task.done():
-        scraper_task.cancel()
-        try:
-            await scraper_task
-        except asyncio.CancelledError:
-            pass
-    
-    # Stop all scrapers
+
+    async def _cancel(task, name="task"):
+        if task and not task.done():
+            task.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+    # 1. Cancel auto-start task
+    await _cancel(scraper_task, "scraper_start_task")
+
+    # 2. Stop all scrapers (sets stop flags + closes browsers)
     logger.info("Scraper'lar durduruluyor...")
     if scraper_manager:
-        await scraper_manager.stop_all()
-        await scraper_manager.close()
-    
-    # Close Redis cache
-    logger.info("Redis cache bağlantısı kapatılıyor...")
-    await cache_service.disconnect()
-    
-    # Close database
-    logger.info("Database bağlantısı kapatılıyor...")
-    await close_database()
-    
+        try:
+            await asyncio.wait_for(scraper_manager.stop_all(), timeout=12.0)
+        except asyncio.TimeoutError:
+            logger.warning("Scraper stop timeout (12s) — devam ediliyor")
+        # Thread pool'u kapat (daemon thread'ler Python exit'te zaten ölür)
+        try:
+            scraper_manager._executor.shutdown(wait=False, cancel_futures=True)
+        except TypeError:
+            # Python < 3.9 cancel_futures desteklemiyor
+            scraper_manager._executor.shutdown(wait=False)
+
+    # 3. WebSocket manager kapat (Redis Pub/Sub consumer + WS bağlantıları)
+    logger.info("WebSocket manager kapatılıyor...")
+    try:
+        from backend.routers.websocket import ws_manager
+        await asyncio.wait_for(ws_manager.shutdown(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"WebSocket shutdown hatası: {e}")
+
+    # 4. Stream service kapat (Redis Streams consumers)
+    logger.info("Stream service kapatılıyor...")
+    try:
+        from backend.services.stream_service import stream_service
+        await asyncio.wait_for(stream_service.close(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Stream service shutdown hatası: {e}")
+
+    # 5. Elasticsearch kapat
+    logger.info("Elasticsearch kapatılıyor...")
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        await asyncio.wait_for(elasticsearch_service.close(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Elasticsearch shutdown hatası: {e}")
+
+    # 6. Redis cache kapat
+    logger.info("Redis cache kapatılıyor...")
+    try:
+        await asyncio.wait_for(cache_service.disconnect(), timeout=3.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Redis cache shutdown hatası: {e}")
+
+    # 7. Database kapat
+    logger.info("Database kapatılıyor...")
+    try:
+        await asyncio.wait_for(close_database(), timeout=5.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        logger.warning(f"Database shutdown hatası: {e}")
+
+    # 8. Kalan asyncio task'lerini iptal et (leak önleme)
+    current = asyncio.current_task()
+    pending = [t for t in asyncio.all_tasks() if t is not current and not t.done()]
+    if pending:
+        logger.info(f"Kalan {len(pending)} task iptal ediliyor...")
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+
     logger.success("Backend kapatıldı")
 
 
@@ -323,6 +396,7 @@ app.include_router(search_router, prefix="/api/v1")
 app.include_router(openalex_router, prefix="/api/v1")
 app.include_router(citation_graph_router, prefix="/api/v1")
 app.include_router(authors_router, prefix="/api/v1")
+app.include_router(journal_scraper_router, prefix="/api/v1")
 
 # Register global error handlers
 register_error_handlers(app)

@@ -74,6 +74,24 @@ class ConnectionManager:
         if not self._listen_redis_task or self._listen_redis_task.done():
             self._listen_redis_task = asyncio.create_task(self._start_redis_consumer())
 
+    async def shutdown(self):
+        """WebSocket manager'ı kapat — tüm task'leri iptal et, bağlantıları kapat."""
+        for task in (self._listen_redis_task, self._prune_task):
+            if task and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+        # Tüm aktif WS bağlantılarını kapat
+        async with self._lock:
+            for ws in list(self._active_connections.keys()):
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            self._active_connections.clear()
+
     async def connect(self, websocket: WebSocket, scrapers: Optional[Set[str]] = None):
         """Yeni WebSocket bağlantısı kabul et. scrapers: ilk subscription seti."""
         await websocket.accept()

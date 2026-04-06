@@ -354,9 +354,13 @@ class ElasticsearchService:
                 # ObjectId'leri string'e çevir
                 if hasattr(val, "__str__") and not isinstance(val, (str, int, float, bool, list, datetime)):
                     val = str(val)
-                # Datetime nesnelerini ISO formatına çevir
+                # Datetime nesnelerini ISO formatına çevir (T ayracı zorunlu — ES strict_date_optional_time)
                 if isinstance(val, datetime):
                     val = val.isoformat()
+                # Stream üzerinden string olarak gelen tarih alanlarını düzelt:
+                # "2026-04-04 12:48:59.958383" → "2026-04-04T12:48:59.958383"
+                if field in ("created_at", "updated_at", "scraped_at") and isinstance(val, str):
+                    val = val.replace(" ", "T", 1)
                 doc[field] = val
         
         return doc

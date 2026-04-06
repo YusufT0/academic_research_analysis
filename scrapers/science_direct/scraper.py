@@ -31,18 +31,20 @@ class ScraperStoppedException(Exception):
 class ScienceDirectScraper:
     """Science Direct scraper ana sınıfı"""
     
-    def __init__(self, use_proxy: bool = None, headless: bool = False, 
-                 use_undetected: bool = True, stop_flag=None):
+    def __init__(self, use_proxy: bool = None, headless: bool = False,
+                 use_undetected: bool = True, stop_flag=None, pause_flag=None):
         """
         Science Direct scraper'ı başlatır
-        
+
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
             use_undetected: undetected-chromedriver kullan (Cloudflare bypass)
             stop_flag: threading.Event - durdurma sinyali için
+            pause_flag: threading.Event - duraklatma sinyali için
         """
         self.stop_flag = stop_flag
+        self.pause_flag = pause_flag
         self.config = ScienceDirectConfig()
         
         # Proxy yapılandırması - her zaman oluştur, içinde USE_PROXY kontrolü var
@@ -90,6 +92,20 @@ class ScienceDirectScraper:
         if self.stop_flag and self.stop_flag.is_set():
             logger.warning("Stop sinyali alındı, scraper durduruluyor...")
             raise ScraperStoppedException("Scraper durduruldu")
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Stop/pause flag kontrolü yaparak bekle. Stop flag set ise exception fırlatır."""
+        end = time.time() + seconds
+        while True:
+            self.check_stop_flag()
+            if self.pause_flag and self.pause_flag.is_set():
+                while self.pause_flag.is_set():
+                    self.check_stop_flag()
+                    time.sleep(0.3)
+            remaining = end - time.time()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.3, remaining))
     
     def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
@@ -122,7 +138,7 @@ class ScienceDirectScraper:
                 
                 # Cloudflare kontrolünü bekle
                 logger.loading("Cloudflare kontrolü bekleniyor")
-                time.sleep(5)  # Cloudflare challenge için ek süre
+                self._interruptible_sleep(5)  # Cloudflare challenge için ek süre
                 
                 # Sayfanın yüklenmesini bekle
                 WebDriverWait(self.driver, self.config.timeout).until(
@@ -136,10 +152,10 @@ class ScienceDirectScraper:
                 # Cloudflare challenge kontrolü
                 if "challenge" in self.driver.current_url.lower() or "captcha" in self.driver.page_source.lower():
                     logger.warning("Cloudflare challenge algılandı, bekleniyor...")
-                    time.sleep(10)  # Challenge'ın geçmesi için bekle
-                
+                    self._interruptible_sleep(10)  # Challenge'ın geçmesi için bekle
+
                 # Kısa bekleme (sayfa tamamen render olsun)
-                time.sleep(2)
+                self._interruptible_sleep(2)
                 
                 # Cookie popup'ını kapat
                 handle_cookie_consent(self.driver)
@@ -154,7 +170,7 @@ class ScienceDirectScraper:
                     if self.driver:
                         self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
                         self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
-                    time.sleep(2)
+                    self._interruptible_sleep(2)
                     continue
                 return False
             except Exception as e:
@@ -184,7 +200,7 @@ class ScienceDirectScraper:
                         else:
                             logger.error("Driver yeniden başlatılamadı!")
                             return False
-                        time.sleep(2)  # Yeniden başlatma sonrası kısa bekleme
+                        self._interruptible_sleep(2)  # Yeniden başlatma sonrası kısa bekleme
                         continue
                     else:
                         logger.error("Maksimum deneme sayısına ulaşıldı - bağlantı sorunu devam ediyor")
@@ -221,14 +237,14 @@ class ScienceDirectScraper:
             
             # Sayfanın yüklenmesini bekle
             logger.loading("Sayfa yükleniyor")
-            time.sleep(3)
-            
+            self._interruptible_sleep(3)
+
             # Cookie popup'ını kapat
             handle_cookie_consent(self.driver)
-            
+
             # Arama sonuçlarının yüklenmesini bekle
             logger.loading("Arama sonuçları bekleniyor")
-            time.sleep(2)
+            self._interruptible_sleep(2)
             
             # Sonuçları kontrol et
             logger.info("Sonuçlar kontrol ediliyor...")
@@ -284,99 +300,298 @@ class ScienceDirectScraper:
             traceback.print_exc()
             return []
     
-    def extract_latest_issue_articles(self, journal_url: str) -> tuple:
+    def extract_journal_about_info(self, journal_url: str) -> dict:
         """
-        Journal sayfasından Latest Issue'ya gidip makale URL'lerini ve issue bilgilerini çıkarır
-        
+        Journal sayfasından about bilgilerini (aims & scope) çıkarır.
+
+        Nav'da About sekmesi varsa /about/aims-and-scope sayfasına giderek
+        .js-aims-and-scope içeriğini alır; yoksa doğrudan journal sayfasındaki
+        .about-content-wrapper > span.spaced içeriğini kullanır.
+
         Args:
             journal_url: Journal'ın ana sayfası URL'i
-            
+
         Returns:
-            tuple: (article_urls listesi, issue_info dict)
+            dict: {'aims_and_scope': html_str veya None}
         """
         try:
-            logger.info(f"Journal sayfası açılıyor: {journal_url}")
-            
-            # 1. Journal ana sayfasına git
             full_url = f"https://www.sciencedirect.com{journal_url}" if journal_url.startswith('/') else journal_url
+            logger.info(f"Journal about bilgileri alınıyor: {full_url}")
             self.driver.get(full_url)
-            time.sleep(3)
-            
-            # Cookie popup'ını kapat
+            self._interruptible_sleep(3)
             handle_cookie_consent(self.driver)
-            
-            # 2. Latest issue linkini al
-            logger.info("  Latest issue linki aranıyor...")
-            latest_issue_url = ArticleParser.extract_latest_issue_url(self.driver.page_source)
-            
-            if not latest_issue_url:
-                logger.warning("  Latest issue linki bulunamadı, eski yönteme geçiliyor...")
-                # Eski yöntem: latest-published-articles div'inden al
-                article_urls = ArticleParser.extract_article_urls(self.driver.page_source)
-                return article_urls, {'volume': None, 'date': None, 'status': None}
-            
-            # 3. Latest issue sayfasına git
-            full_issue_url = f"https://www.sciencedirect.com{latest_issue_url}" if latest_issue_url.startswith('/') else latest_issue_url
-            logger.info(f"  Latest issue sayfasına gidiliyor: {full_issue_url}")
-            self.driver.get(full_issue_url)
-            time.sleep(3)
-            
-            # Cookie popup'ını kapat
-            handle_cookie_consent(self.driver)
-            
-            # 4. Issue bilgilerini al (Volume, Date)
-            logger.info("  Issue bilgileri alınıyor...")
-            issue_info = ArticleParser.extract_issue_info(self.driver.page_source)
-            
-            # Issue URL'sini ekle (latest issue sayfasının URL'si)
-            issue_info['url'] = self.driver.current_url
-            logger.success(f"  Issue URL: {issue_info['url']}")
-            
-            # 5. Makale URL'lerini al
-            logger.info("  Makale linkleri alınıyor...")
-            article_urls = ArticleParser.extract_article_urls_from_issue(self.driver.page_source)
-            
-            return article_urls, issue_info
-            
+
+            page_source = self.driver.page_source
+            has_about = JournalParser.has_about_nav_item(page_source)
+
+            aims_and_scope = None
+            if has_about:
+                about_url = full_url.rstrip('/') + '/about/aims-and-scope'
+                logger.info(f"About sekmesi bulundu, aims-and-scope sayfasına gidiliyor: {about_url}")
+                self.driver.get(about_url)
+                self._interruptible_sleep(3)
+                handle_cookie_consent(self.driver)
+                aims_and_scope = JournalParser.extract_aims_scope_from_about_page(self.driver.page_source)
+            else:
+                logger.info("About sekmesi yok, journal ana sayfasından aims & scope alınıyor")
+                aims_and_scope = JournalParser.extract_aims_scope_from_journal_page(page_source)
+
+            if aims_and_scope:
+                logger.success(f"Aims & scope alındı ({len(aims_and_scope)} karakter)")
+            else:
+                logger.warning("Aims & scope bulunamadı")
+
+            return {'aims_and_scope': aims_and_scope}
+
         except Exception as e:
-            logger.failed("  Latest issue articles çıkarma hatası", e)
+            logger.failed("Journal about info çıkarma hatası", e)
             import traceback
             traceback.print_exc()
-            return [], {'volume': None, 'date': None, 'status': None}
-    
-    def extract_latest_articles_urls(self, journal_url: str) -> list:
+            return {'aims_and_scope': None}
+
+    def extract_all_issues_from_issues_page(
+        self,
+        journal_url: str,
+        depth: int = None,
+        existing_urls: set = None,
+    ) -> list:
         """
-        Journal sayfasındaki 'latest-published-articles' div'inden makale URL'lerini çıkarır
-        (Eski yöntem - geriye uyumluluk için korundu)
-        
+        /issues sayfasına gider ve issue listesini döndürür (en yeni önce).
+
+        Strateji:
+        - Sayfada zaten açık olan panelleri parse eder.
+        - Depth sayısı kadar YENİ (DB'de olmayan) issue toplandığında durur.
+          existing_urls verilmişse, o URL'lere sahip issue'lar depth sayımına
+          dahil edilmez; daha eskiye bakılmaya devam edilir.
+        - Pagination varsa sonraki sayfaya geçer.
+        - depth=None ise tüm sayfalar ve tüm paneller işlenir.
+
         Args:
-            journal_url: Journal'ın ana sayfası URL'i
-            
+            journal_url: Journal'ın ana sayfası URL'i (tam veya relative)
+            depth: Hedef YENİ issue sayısı
+            existing_urls: DB'de zaten var olan issue URL'leri (relative path kısmı)
+
         Returns:
-            list: Makale URL'lerinin listesi
+            list: [{'url': str, 'title': str, 'status': str}, ...]
         """
+        existing_urls = existing_urls or set()
+
+        def _count_new(issues: list) -> int:
+            """Verilen listede DB'de olmayan issue sayısını döndür"""
+            if not existing_urls:
+                return len(issues)
+            return sum(1 for i in issues if i['url'] not in existing_urls)
+
         try:
-            logger.info(f"Latest articles alınıyor: {journal_url}")
-            
-            # Journal sayfasına git
-            full_url = f"https://www.sciencedirect.com{journal_url}" if journal_url.startswith('/') else journal_url
-            self.driver.get(full_url)
-            time.sleep(3)
-            
-            # Cookie popup'ını kapat
+            base_url = (
+                f"https://www.sciencedirect.com{journal_url}"
+                if journal_url.startswith('/') else journal_url
+            ).rstrip('/')
+            issues_url = f"{base_url}/issues"
+
+            logger.info(f"Issues sayfasına gidiliyor: {issues_url}")
+            self.driver.get(issues_url)
+            self._interruptible_sleep(3)
             handle_cookie_consent(self.driver)
-            
-            # Article URL'lerini parse et
-            article_urls = ArticleParser.extract_article_urls(self.driver.page_source)
-            
-            return article_urls
-            
+
+            all_issues = []
+
+            while True:  # pagination döngüsü
+                # 1. Şu an sayfada açık olan panellerdeki issue'ları al
+                current_page_issues = JournalParser.parse_issues_from_issues_page(
+                    self.driver.page_source
+                )
+
+                # 2. Depth dolmadıysa kapalı accordion'ları birer birer aç
+                # (depth sayımında yalnızca yeni issue'lar hesaba katılır)
+                if depth is None or _count_new(all_issues) + _count_new(current_page_issues) < depth:
+                    closed_buttons = self.driver.find_elements(
+                        By.CSS_SELECTOR,
+                        "li.accordion-panel button.accordion-panel-title[aria-expanded='false']"
+                    )
+                    logger.info(f"Bu sayfada {len(closed_buttons)} kapalı accordion var")
+
+                    for btn in closed_buttons:
+                        # Açılanları tekrar parse et, yeni issue sayısı yeterliyse dur
+                        current_page_issues = JournalParser.parse_issues_from_issues_page(
+                            self.driver.page_source
+                        )
+                        if depth and _count_new(all_issues) + _count_new(current_page_issues) >= depth:
+                            break
+
+                        try:
+                            panel_id = btn.get_attribute('aria-controls')
+                            # Butonu görünür alana kaydır, sonra normal click
+                            self.driver.execute_script(
+                                "arguments[0].scrollIntoView({block:'center'});", btn
+                            )
+                            time.sleep(0.3)
+                            btn.click()
+
+                            if panel_id:
+                                WebDriverWait(self.driver, 20).until(
+                                    EC.presence_of_element_located((
+                                        By.CSS_SELECTOR,
+                                        f"[id='{panel_id}'] section.js-issue-list-content"
+                                    ))
+                                )
+                            else:
+                                self._interruptible_sleep(2)
+
+                        except TimeoutException:
+                            logger.warning(
+                                f"Accordion içeriği yüklenemedi: "
+                                f"{btn.get_attribute('id') or '?'}, atlanıyor"
+                            )
+                        except Exception as e:
+                            logger.warning(f"Accordion açma hatası: {e}")
+
+                # 3. Bu sayfadaki tüm açık içeriği topla
+                current_page_issues = JournalParser.parse_issues_from_issues_page(
+                    self.driver.page_source
+                )
+                all_issues.extend(current_page_issues)
+                new_so_far = _count_new(all_issues)
+                skipped = len(all_issues) - new_so_far
+                logger.info(
+                    f"Bu sayfadan {len(current_page_issues)} issue toplandı "
+                    f"(toplam: {len(all_issues)}, yeni: {new_so_far}, atlanacak: {skipped})"
+                )
+
+                # 4. Yeterli sayıda YENİ issue toplandıysa dur
+                if depth and new_so_far >= depth:
+                    break
+
+                # 5. Sonraki sayfa var mı?
+                try:
+                    next_btn = self.driver.find_element(
+                        By.CSS_SELECTOR,
+                        "button[aria-label='Next page']:not([disabled])"
+                    )
+                    next_btn.click()
+                    self._interruptible_sleep(3)
+                    handle_cookie_consent(self.driver)
+                except Exception:
+                    logger.info("Issues sayfasında son sayfaya ulaşıldı")
+                    break
+
+            logger.success(f"Toplam {len(all_issues)} issue bulundu ({_count_new(all_issues)} yeni)")
+            return all_issues
+
         except Exception as e:
-            logger.failed("  Latest articles çıkarma hatası", e)
+            logger.failed("Issues sayfası çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return []
-    
+
+    def _process_single_issue(
+        self,
+        issue_stub: dict,
+        max_articles: int = None,
+        article_progress_callback=None,
+        article_list_callback=None,
+        issue_idx: int = 1,
+        total_issues: int = 1,
+    ) -> dict:
+        """
+        Tek bir issue sayfasına gider, makale URL'lerini ve issue bilgilerini çıkarır,
+        her makaleyi tek tek işler.
+
+        Args:
+            issue_stub: {'url': str, 'title': str, 'status': str}
+            max_articles: Bu issue için maksimum makale sayısı
+            issue_idx / total_issues: Loglama için konum bilgisi
+
+        Returns:
+            dict: {'issue_info': {...}, 'articles': [...]}
+        """
+        issue_url = issue_stub['url']
+        full_issue_url = (
+            f"https://www.sciencedirect.com{issue_url}"
+            if issue_url.startswith('/') else issue_url
+        )
+
+        logger.section(f"Issue {issue_idx}/{total_issues}: {issue_stub.get('title', issue_url)}")
+        logger.info(f"  Issue URL: {full_issue_url}")
+
+        self.driver.get(full_issue_url)
+        self._interruptible_sleep(3)
+        handle_cookie_consent(self.driver)
+
+        # Issue bilgilerini al
+        issue_info = ArticleParser.extract_issue_info(self.driver.page_source)
+        issue_info['url'] = self.driver.current_url
+        logger.success(f"  Issue: {issue_info.get('issue_number')} | {issue_info.get('date')}")
+
+        # Makale URL'lerini al
+        article_urls = ArticleParser.extract_article_urls_from_issue(self.driver.page_source)
+
+        if not article_urls:
+            logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
+            return {'issue_info': issue_info, 'articles': []}
+
+        if max_articles:
+            article_urls = article_urls[:max_articles]
+            logger.info(f"  İlk {max_articles} makale işlenecek")
+
+        # Makale listesini UI'a bildir
+        if article_list_callback:
+            try:
+                article_list_callback(['' for _ in article_urls])
+            except Exception:
+                pass
+
+        articles = []
+        for idx, article_url in enumerate(article_urls, 1):
+            self.check_stop_flag()
+
+            if article_progress_callback:
+                try:
+                    article_progress_callback(idx, len(article_urls), None)
+                except Exception:
+                    pass
+
+            logger.section(f"  Makale {idx}/{len(article_urls)}")
+            article_details = self.extract_article_details(article_url)
+
+            if article_details:
+                article_details['journal_name'] = None  # caller fills this
+                article_details['issue_number'] = issue_info.get('issue_number')
+                article_details['issue_date'] = issue_info.get('date')
+                articles.append(article_details)
+                self.rate_limiter.reset_consecutive_failures()
+            else:
+                logger.warning("  Makale detayları alınamadı")
+
+            if article_progress_callback:
+                try:
+                    article_progress_callback(
+                        idx, len(article_urls),
+                        article_details.get('title') if article_details else None
+                    )
+                except Exception:
+                    pass
+
+            if self.rate_limiter.should_wait_for_failures():
+                self.rate_limiter.wait_for_failures()
+                retry_results = self._process_retry_queue()
+                for r in retry_results:
+                    r['issue_number'] = issue_info.get('issue_number')
+                    r['issue_date'] = issue_info.get('date')
+                articles.extend(retry_results)
+
+            self.rate_limiter.random_wait()
+
+        # Kalan retry queue
+        if self.rate_limiter.retry_queue:
+            retry_results = self._process_retry_queue()
+            for r in retry_results:
+                r['issue_number'] = issue_info.get('issue_number')
+                r['issue_date'] = issue_info.get('date')
+            articles.extend(retry_results)
+
+        return {'issue_info': issue_info, 'articles': articles}
+
     def extract_article_details(self, article_url: str, retry_attempt: int = 0) -> dict:
         """
         Makale sayfasından detaylı bilgileri çıkarır
@@ -396,8 +611,8 @@ class ScienceDirectScraper:
             # Makale sayfasına git
             full_url = f"https://www.sciencedirect.com{article_url}" if article_url.startswith('/') else article_url
             self.driver.get(full_url)
-            time.sleep(3)
-            
+            self._interruptible_sleep(3)
+
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
                 logger.warning("Content error tespit edildi!")
@@ -487,132 +702,138 @@ class ScienceDirectScraper:
             self.navigator.driver = updated_driver
             logger.success("Driver referansları güncellendi")
     
-    def scrape_journal_articles(self, journal_info: dict, max_articles: int = None, article_progress_callback=None, article_list_callback=None) -> list:
+    def scrape_journal_articles(
+        self,
+        journal_info: dict,
+        depth: int = 1,
+        max_articles: int = None,
+        article_progress_callback=None,
+        article_list_callback=None,
+        existing_issue_urls: set = None,
+        issue_start_callback=None,
+        issue_complete_callback=None,
+    ) -> list:
         """
-        Bir journal'ın tüm makalelerini tarar
-        
+        Bir journal'ın issue'larını ve makalelerini tarar.
+
         Args:
-            journal_info: Journal bilgisi (name, url)
-            max_articles: Maksimum taranacak makale sayısı (None ise hepsi)
-            
+            journal_info: Journal bilgisi (name, url, ...)
+            depth: Kaç YENİ issue işlenecek (1 = sadece en yeni, None/0 = tümü)
+            max_articles: Her issue için maksimum makale sayısı (None = hepsi)
+            article_progress_callback: İlerleme callback'i
+            article_list_callback: Makale listesi callback'i
+            existing_issue_urls: DB'de zaten var olan issue URL'leri (relative path).
+                                  Bu URL'lere sahip issue'lar depth sayımına dahil edilmez.
+
         Returns:
-            list: Makale detaylarının listesi
+            list[dict]: Her eleman bir issue'ya ait sonuç:
+                        {'issue_info': {...}, 'articles': [...]}
         """
+        existing_issue_urls = existing_issue_urls or set()
+
         try:
             logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_info['name']}")
-            
-            # 1. Latest issue'ya git ve makale URL'lerini + issue bilgilerini al
-            article_urls, issue_info = self.extract_latest_issue_articles(journal_info['url'])
-            
-            if not article_urls:
-                logger.warning(f"{journal_info['name']} için makale bulunamadı")
+
+            # 1. Journal about bilgilerini (aims & scope) çıkar
+            about_info = self.extract_journal_about_info(journal_info['url'])
+            journal_info.update(about_info)
+
+            # 2. /issues sayfasından issue listesini al
+            # existing_issue_urls geçilir → yalnızca yeni issue'lar depth'e sayılır
+            all_issues = self.extract_all_issues_from_issues_page(
+                journal_info['url'],
+                depth=depth,
+                existing_urls=existing_issue_urls,
+            )
+
+            if not all_issues:
+                logger.warning(f"{journal_info['name']} için issue bulunamadı")
                 return []
-            
-            # Issue bilgilerini journal_info'ya ekle
-            journal_info['latest_issue_number'] = issue_info.get('issue_number')
-            journal_info['latest_issue_date'] = issue_info.get('date')
-            journal_info['latest_issue_status'] = issue_info.get('status')
-            journal_info['latest_issue_url'] = issue_info.get('url')
-            
-            logger.stats({
-                'Issue Number': issue_info.get('issue_number', 'N/A'),
-                'Date': issue_info.get('date', 'N/A'),
-                'Status': issue_info.get('status', 'N/A'),
-                'URL': issue_info.get('url', 'N/A')
-            }, "Issue Bilgileri")
-            
-            # Max articles kontrolü
-            if max_articles:
-                article_urls = article_urls[:max_articles]
-                logger.info(f"İlk {max_articles} makale taranacak")
 
-            # Makale listesini UI'a bildir (başlıklar yok, placeholder gönder)
-            if article_list_callback:
-                try:
-                    article_list_callback(['' for _ in article_urls])
-                except Exception:
-                    pass
+            # Zaten DB'de olanları atla; kalan yeni issue'lardan depth kadar al
+            new_issues = [i for i in all_issues if i['url'] not in existing_issue_urls]
+            skipped_count = len(all_issues) - len(new_issues)
 
-            # 2. Her makale için detayları al
-            all_articles = []
+            if skipped_count:
+                logger.info(
+                    f"{skipped_count} issue daha önce işlenmiş, atlanıyor. "
+                    f"Yeni issue sayısı: {len(new_issues)}"
+                )
 
-            for idx, article_url in enumerate(article_urls, 1):
-                # Stop flag kontrolü - her makale öncesi
+            issues_to_process = new_issues if not depth else new_issues[:depth]
+            logger.info(
+                f"Toplam {len(all_issues)} issue bulundu, "
+                f"{len(issues_to_process)} tanesi işlenecek (depth={depth})"
+            )
+
+            # 3. Her issue'yu işle
+            issue_results = []
+
+            for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
-                # Makale başlamadan önce UI'a bildir (anlık güncelleme)
-                if article_progress_callback:
+                if issue_start_callback:
                     try:
-                        article_progress_callback(idx, len(article_urls), None)
+                        issue_start_callback(
+                            issue_idx,
+                            len(issues_to_process),
+                            issue_stub.get('title', f'Issue {issue_idx}'),
+                        )
                     except Exception:
                         pass
 
-                logger.section(f"Makale {idx}/{len(article_urls)}")
-                
-                article_details = self.extract_article_details(article_url)
-                
-                if article_details:
-                    # Journal ve Issue bilgilerini ekle
-                    article_details['journal_name'] = journal_info['name']
-                    article_details['journal_url'] = journal_info['url']
-                    article_details['issue_number'] = issue_info.get('issue_number')
-                    article_details['issue_date'] = issue_info.get('date')
+                result = self._process_single_issue(
+                    issue_stub=issue_stub,
+                    max_articles=max_articles,
+                    article_progress_callback=article_progress_callback,
+                    article_list_callback=article_list_callback,
+                    issue_idx=issue_idx,
+                    total_issues=len(issues_to_process),
+                )
 
-                    all_articles.append(article_details)
+                # Journal bilgilerini makalelere ekle
+                for article in result['articles']:
+                    article['journal_name'] = journal_info['name']
+                    article['journal_url'] = journal_info['url']
+                    print_article_summary(article, len(result['articles']))
 
-                    # Başarılı, ardışık başarısızlık sayısını sıfırla
-                    self.rate_limiter.reset_consecutive_failures()
+                issue_results.append(result)
 
-                    # Özet bilgi göster
-                    print_article_summary(article_details, idx)
-                else:
-                    logger.warning("  Makale detayları alınamadı")
-
-                if article_progress_callback:
+                if issue_complete_callback:
                     try:
-                        article_progress_callback(idx, len(article_urls), article_details.get('title') if article_details else None)
+                        issue_complete_callback(
+                            issue_idx,
+                            len(result['articles']),
+                            [a.get('title', '') for a in result['articles']],
+                        )
                     except Exception:
                         pass
-                
-                # Ardışık 5 başarısızlık kontrolü
-                if self.rate_limiter.should_wait_for_failures():
-                    self.rate_limiter.wait_for_failures()
-                    
-                    # Retry queue'daki makaleleri tekrar dene
-                    retry_results = self._process_retry_queue()
-                    all_articles.extend(retry_results)
-                
-                # Random bekleme (rate limiting önleme)
-                self.rate_limiter.random_wait()
-            
-            # Son olarak kalan retry queue'yu işle
-            if self.rate_limiter.retry_queue:
-                logger.info(f"Kalan {len(self.rate_limiter.retry_queue)} makale retry queue'dan işleniyor...")
-                retry_results = self._process_retry_queue()
-                all_articles.extend(retry_results)
-            
-            # Failed articles'ı son bir kez dene
+
+            # 4. Tüm journal için final failed articles denemesi
             if self.rate_limiter.failed_articles:
-                logger.section(f"SON DENEME: Failed articles işleniyor ({len(self.rate_limiter.failed_articles)} makale)")
-                
-                final_retry_results = self._process_failed_articles()
-                all_articles.extend(final_retry_results)
-            
+                logger.section(
+                    f"SON DENEME: Failed articles işleniyor "
+                    f"({len(self.rate_limiter.failed_articles)} makale)"
+                )
+                final_retry = self._process_failed_articles()
+                # Failed articles hangi issue'ya ait bilinmiyor; son issue'ya ekle
+                if issue_results and final_retry:
+                    issue_results[-1]['articles'].extend(final_retry)
+
+            total_articles = sum(len(r['articles']) for r in issue_results)
             logger.header(f"{journal_info['name']} TARAMASI TAMAMLANDI")
             logger.stats({
-                'Toplam Makale': len(all_articles),
-                'Issue': f"{issue_info.get('issue_number', 'N/A')} - {issue_info.get('date', 'N/A')}"
+                'İşlenen Issue': len(issue_results),
+                'Toplam Makale': total_articles,
             })
             if self.rate_limiter.failed_articles:
                 logger.error(f"{len(self.rate_limiter.failed_articles)} makale kalıcı olarak başarısız")
-                logger.info("   Başarısız makaleler:")
                 for failed_url in self.rate_limiter.failed_articles:
                     logger.info(f"   - {failed_url}")
-            
-            return all_articles
-            
+
+            return issue_results
+
         except ScraperStoppedException:
-            # Stop sinyali - yukarı fırlat
             logger.warning(f"{journal_info['name']}: Stop sinyali alındı")
             raise
         except Exception as e:
@@ -729,8 +950,8 @@ class ScienceDirectScraper:
                 break
             
             # Sayfa yüklenmesini bekle
-            time.sleep(2)
-        
+            self._interruptible_sleep(2)
+
         logger.header("Tarama Tamamlandı!")
         logger.stats({
             'Toplam Journal': len(all_journals),

@@ -56,6 +56,25 @@ class PageNavigator:
             return False
     
     @staticmethod
+    def navigate_to_loi(selenium_driver, journal_code: str, wait_after: int = 3) -> bool:
+        """
+        Journal'ın LOI (List of Issues / Archive) sayfasına git.
+        URL: https://dl.acm.org/loi/{journal_code}
+        """
+        loi_url = f"{PageNavigator.ACM_BASE}/loi/{journal_code}"
+        try:
+            logger.url(loi_url, f"{journal_code} LOI sayfasına gidiliyor")
+            if not selenium_driver.get(loi_url, wait_after=wait_after):
+                logger.warning(f"LOI sayfası yüklenemedi: {loi_url}")
+                return False
+            selenium_driver.wait_for_page_load(30)
+            logger.success(f"LOI sayfası yüklendi")
+            return True
+        except Exception as e:
+            logger.failed(f"LOI sayfasına gidilemedi ({journal_code})", e)
+            return False
+
+    @staticmethod
     def navigate_to_latest_issue(selenium_driver, journal: dict, wait_after: int = 3) -> bool:
         """
         Journal sayfasından "View latest issue" butonuna tıklayarak 

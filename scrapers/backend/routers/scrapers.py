@@ -21,6 +21,7 @@ class ScraperControlRequest(BaseModel):
     """Scraper kontrol request"""
     headless: bool = Field(default=True, description="Headless mod")
     max_articles: Optional[int] = Field(None, description="Maksimum makale sayısı")
+    depth: Optional[int] = Field(None, ge=1, description="Kaç issue işlenecek (IEEE, ScienceDirect, ACM)")
 
 
 # ==================== Status Endpoints ====================
@@ -67,8 +68,9 @@ async def start_ieee(request: ScraperControlRequest = None):
     
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
-    
-    success = await manager.start_ieee(headless=headless, max_articles=max_articles)
+    depth = request.depth if request and request.depth else 1
+
+    success = await manager.start_ieee(headless=headless, max_articles=max_articles, depth=depth)
     
     if not success:
         raise HTTPException(status_code=400, detail="IEEE scraper already running")
@@ -134,16 +136,18 @@ async def resume_ieee():
 async def start_sciencedirect(request: ScraperControlRequest = None):
     """
     ScienceDirect scraper'ı başlat.
-    
+
     - **headless**: Browser'ı görünmez modda çalıştır (default: True)
     - **max_articles**: Her journal'dan maksimum kaç makale çekilecek
+    - **depth**: Her journal'da kaç issue işlenecek (default: 1 = sadece en yeni)
     """
     manager = get_scraper_manager()
-    
+
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
-    
-    success = await manager.start_sciencedirect(headless=headless, max_articles=max_articles)
+    depth = request.depth if request and request.depth else 1
+
+    success = await manager.start_sciencedirect(headless=headless, max_articles=max_articles, depth=depth)
     
     if not success:
         raise HTTPException(status_code=400, detail="ScienceDirect scraper already running")
@@ -210,16 +214,18 @@ async def resume_sciencedirect():
 async def start_acm(request: ScraperControlRequest = None):
     """
     ACM scraper'ı başlat.
-    
+
     - **headless**: Browser'ı görünmez modda çalıştır (default: True)
     - **max_articles**: Her journal'dan maksimum kaç makale çekilecek
+    - **depth**: Her journal'da kaç issue işlenecek (default: 1 = sadece en yeni)
     """
     manager = get_scraper_manager()
-    
+
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
-    
-    success = await manager.start_acm(headless=headless, max_articles=max_articles)
+    depth = request.depth if request and request.depth else 1
+
+    success = await manager.start_acm(headless=headless, max_articles=max_articles, depth=depth)
     
     if not success:
         raise HTTPException(status_code=400, detail="ACM scraper already running")
@@ -372,7 +378,7 @@ async def stop_all():
 @router.get("/logs", summary="Scraper logları")
 async def get_logs(
     scraper_type: str = Query("all", description="Scraper tipi: all, ieee, sciencedirect, acm"),
-    limit: int = Query(50, ge=1, le=200, description="Maksimum log sayısı"),
+    limit: int = Query(50, ge=1, le=1000, description="Maksimum log sayısı"),
 ):
     """Scraper loglarını getir"""
     manager = get_scraper_manager()

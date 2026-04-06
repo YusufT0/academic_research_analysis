@@ -67,9 +67,9 @@ class RedisStreamService:
                         stream, self._consumer_group, id="0", mkstream=True
                     )
                     logger.info("Consumer group created", stream=stream, group=self._consumer_group)
-                except Exception:
-                    # Grup zaten varsa hata verir, sorun değil
-                    pass
+                except Exception as e:
+                    if "BUSYGROUP" not in str(e):
+                        logger.warning("Consumer group create warning", stream=stream, error=str(e))
             
             logger.info("Redis Streams connected", consumer_group=self._consumer_group)
         except Exception as e:
@@ -191,7 +191,20 @@ class RedisStreamService:
                     await self._process_batch(stream, handlers, batch)
                 break
             except Exception as e:
-                logger.error("Consumer loop error", stream=stream, error=str(e))
+                error_str = str(e)
+                if "NOGROUP" in error_str or "No such key" in error_str:
+                    # Consumer group or stream was lost (e.g. Redis restart) — recreate
+                    logger.warning("Consumer group missing, recreating", stream=stream, group=self._consumer_group)
+                    try:
+                        await self._redis.xgroup_create(
+                            stream, self._consumer_group, id="$", mkstream=True
+                        )
+                        logger.info("Consumer group recreated", stream=stream)
+                    except Exception as create_err:
+                        if "BUSYGROUP" not in str(create_err):
+                            logger.error("Failed to recreate consumer group", stream=stream, error=str(create_err))
+                else:
+                    logger.error("Consumer loop error", stream=stream, error=error_str)
                 await asyncio.sleep(1)
     
     async def _process_batch(

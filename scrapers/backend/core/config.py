@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     run_tests_on_startup: bool = Field(default=False, alias="RUN_TESTS_ON_STARTUP", description="Backend başlarken testler çalıştırılsın mı")
     scraper_headless: bool = Field(default=True, alias="SCRAPER_HEADLESS", description="Browser headless modda çalışsın mı")
     ieee_max_articles: int = Field(default=100, alias="IEEE_MAX_ARTICLES", description="IEEE scraper maksimum makale sayısı")
+    ieee_depth: int = Field(default=1, alias="IEEE_DEPTH", description="IEEE scraper kaç yeni issue işlenecek (1=sadece en yeni, 0/None=tümü)")
     sciencedirect_max_articles: int = Field(default=100, alias="SCIENCEDIRECT_MAX_ARTICLES", description="ScienceDirect scraper maksimum makale sayısı")
     acm_max_articles: int = Field(default=100, alias="ACM_MAX_ARTICLES", description="ACM scraper maksimum makale sayısı")
     enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm")
