@@ -12,6 +12,12 @@ import type {
   ElasticSearchResult,
   SearchSuggestion,
   SearchFacets,
+  NlpSearchResponse,
+  NlpBarChartData,
+  NlpPieChartData,
+  NlpScatterPoint,
+  NlpStatus,
+  JournalCitationMetrics,
 } from './types';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
@@ -99,8 +105,8 @@ export async function getJournalArticles(journalId: string, page = 1, pageSize =
   return fetchApi(`/journals/${journalId}/articles?page=${page}&page_size=${pageSize}`);
 }
 
-export async function getJournalCitationMetrics(journalId: string) {
-  return fetchApi(`/journals/${journalId}/citation-metrics`);
+export async function getJournalCitationMetrics(journalId: string): Promise<JournalCitationMetrics> {
+  return fetchApi<JournalCitationMetrics>(`/journals/${journalId}/citation-metrics`);
 }
 
 // ==================== Articles ====================
@@ -382,4 +388,35 @@ export async function getAuthorArticles(name: string, page: number = 1, page_siz
   params.set('page', page.toString());
   params.set('page_size', page_size.toString());
   return fetchApi<any>(`/authors/${encodeURIComponent(name)}/articles?${params.toString()}`);
+}
+
+// ==================== NLP / AI Analysis ====================
+
+export async function getNlpStatus(): Promise<NlpStatus> {
+  return fetchApi<NlpStatus>('/nlp/status');
+}
+
+export async function nlpSearch(
+  query: string,
+  topK = 10,
+  autoTrain = false,
+): Promise<NlpSearchResponse> {
+  const params = new URLSearchParams({
+    query,
+    top_k: topK.toString(),
+    auto_train: autoTrain.toString(),
+  });
+  return fetchApi<NlpSearchResponse>(`/nlp/search?${params.toString()}`);
+}
+
+export async function getNlpBarChartInput(): Promise<NlpBarChartData> {
+  return fetchApi<NlpBarChartData>('/nlp/get_bar_chart_input');
+}
+
+export async function getNlpPieChartInput(): Promise<NlpPieChartData> {
+  return fetchApi<NlpPieChartData>('/nlp/get_pie_chart_input');
+}
+
+export async function getNlpScatterChartInput(): Promise<NlpScatterPoint[]> {
+  return fetchApi<NlpScatterPoint[]>('/nlp/get_scatter_chart_input');
 }

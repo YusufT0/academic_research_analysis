@@ -784,12 +784,14 @@ class NLPService:
         best_cluster, max_similarity = await self._search_similar_clusters(query, model_version, top_k, auto_train)
 
         if not best_cluster:
+            resolved_version = model_version or "unknown"
             return {
                 "query": query,
-                "model_version": model_version,
+                "model_version": resolved_version,
                 "similarity_score": 0,
                 "cluster_id": None,
                 "cluster_label": None,
+                "total_in_cluster": None,
                 "articles": []
             }
 
@@ -799,7 +801,7 @@ class NLPService:
 
         return {
             "query": query,
-            "model_version": model_version,
+            "model_version": best_cluster.model_version,
             "similarity_score": float(max_similarity),
             "cluster_id": best_cluster.cluster_id,
             "cluster_label": best_cluster.label,

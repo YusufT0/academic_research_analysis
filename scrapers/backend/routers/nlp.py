@@ -194,22 +194,22 @@ async def search_similar_articles(
     Cache desteği: Aynı sorgu için sonuçlar cache'lenir.
     """
     try:
-        # Önce cache'e bak
-        cache_params = {"model_version": model_version, "top_k": top_k}
-        cached_result = await cache_service.get_search_results(query, cache_params)
-        if cached_result:
-            logger.debug(f"Search cache HIT: {query}")
-            return SearchResponse(**cached_result)
-        
-        # Cache'de yoksa hesapla
+        # Her zaman nlp_service içindeki state'i güncelle (chart endpointleri buna bağımlı).
+        # Cache yalnızca HTTP response için kullanılır, state için değil.
         result = await nlp_service.search_similar(
             query=query,
             model_version=model_version,
             top_k=top_k,
             auto_train=auto_train
         )
-        
-        # Sonucu cache'le
+
+        cache_params = {"model_version": model_version, "top_k": top_k}
+        cached_result = await cache_service.get_search_results(query, cache_params)
+        if cached_result:
+            logger.debug(f"Search cache HIT (state updated): {query}")
+            return SearchResponse(**cached_result)
+
+        # Cache'de yoksa sonucu cache'le
         await cache_service.set_search_results(query, cache_params, result)
         logger.info(f"Cache MISS: search '{query[:30]}...' - cached")
         

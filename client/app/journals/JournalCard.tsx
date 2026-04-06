@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
-import { ExternalLink, BookOpen, FileText, ChevronDown, ChevronUp, Unlock, Star, Presentation, Activity } from 'lucide-react';
+import { useState, useEffect, useRef, useMemo } from 'react';
+import { ExternalLink, BookOpen, FileText, ChevronDown, ChevronUp, Unlock, Star, Presentation, Activity, BarChart3 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import type { Journal, Issue, Article, PaginatedResponse } from '@/lib/types';
-import { getJournalIssues, getArticles } from '@/lib/api';
+import type { Journal, Issue, Article, PaginatedResponse, JournalCitationMetrics } from '@/lib/types';
+import { getJournalIssues, getArticles, getJournalCitationMetrics } from '@/lib/api';
 import Link from 'next/link';
 
 interface JournalCardProps {
@@ -21,6 +22,8 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
   const [expandedIssueId, setExpandedIssueId] = useState<string | null>(null);
   const [articles, setArticles] = useState<Record<string, Article[]>>({});
   const [loadingArticles, setLoadingArticles] = useState<Record<string, boolean>>({});
+  const [citationMetrics, setCitationMetrics] = useState<JournalCitationMetrics | null>(null);
+  const [citationLoading, setCitationLoading] = useState(false);
   const processedIssueId = useRef<string | null>(null);
 
   useEffect(() => {
@@ -71,12 +74,19 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
       setLoadingIssues(true);
       try {
         const data = await getJournalIssues(journal.id, 1, 100) as any;
-        // Assuming data is { items: Issue[], ... }
         setIssues(Array.isArray(data) ? data : data?.items || []);
       } catch (err) {
         console.error("Failed to load issues:", err);
       } finally {
         setLoadingIssues(false);
+      }
+
+      if (!citationMetrics) {
+        setCitationLoading(true);
+        getJournalCitationMetrics(journal.id)
+          .then(setCitationMetrics)
+          .catch(() => {})
+          .finally(() => setCitationLoading(false));
       }
     }
     setExpanded(!expanded);
@@ -182,6 +192,11 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
           )}
         </div>
 
+        {/* Citation History Chart */}
+        {expanded && (
+          <CitationHistoryChart data={citationMetrics} loading={citationLoading} />
+        )}
+
         {/* Issues Accordion */}
         {expanded && (
           <div className="mt-6 pt-4 border-t border-slate-200">
@@ -276,5 +291,45 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function CitationHistoryChart({ data, loading }: { data: JournalCitationMetrics | null; loading: boolean }) {
+  const chartData = useMemo(() => {
+    if (!data?.historical_citation_data) return [];
+    return Object.entries(data.historical_citation_data)
+      .map(([year, count]) => ({ year, count }))
+      .sort((a, b) => a.year.localeCompare(b.year));
+  }, [data]);
+
+  if (loading) {
+    return (
+      <div className="mt-6 pt-4 border-t border-slate-200">
+        <div className="animate-pulse h-32 bg-slate-100 rounded-lg" />
+      </div>
+    );
+  }
+
+  if (chartData.length === 0) return null;
+
+  return (
+    <div className="mt-6 pt-4 border-t border-slate-200">
+      <h4 className="font-medium text-slate-800 mb-3 flex items-center gap-2">
+        <BarChart3 className="h-4 w-4 text-indigo-600" />
+        Yıllık Atıf Grafiği
+      </h4>
+      <ResponsiveContainer width="100%" height={160}>
+        <BarChart data={chartData} margin={{ top: 5, right: 10, left: -15, bottom: 5 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+          <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+          <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+          <Tooltip
+            contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+            formatter={(value) => [`${Number(value).toLocaleString()} atıf`, 'Atıf']}
+          />
+          <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
