@@ -19,6 +19,11 @@ import {
   Columns2,
   AlignJustify,
   Link2,
+  Database,
+  Zap,
+  Trash2,
+  RotateCcw,
+  Settings2,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
@@ -37,7 +42,14 @@ import {
   stopAcmScraper,
   pauseAcmScraper,
   resumeAcmScraper,
-  getScraperLogs
+  getScraperLogs,
+  startAllScrapers,
+  startAllScrapersSequential,
+  startAllScrapersRoundRobin,
+  stopAllScrapers,
+  getCacheStats,
+  clearCache,
+  syncElasticsearch,
 } from '@/lib/api';
 import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
 import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
@@ -997,11 +1009,218 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 
 // ==================== Main Page ====================
 
+// ==================== System Management Panel ====================
+
+function SystemManagementPanel() {
+  const [cacheStats, setCacheStats] = useState<any>(null);
+  const [cacheLoading, setCacheLoading] = useState(false);
+  const [clearLoading, setClearLoading] = useState(false);
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [message, setMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
+
+  const fetchCacheStats = async () => {
+    setCacheLoading(true);
+    try {
+      const data = await getCacheStats();
+      setCacheStats(data);
+    } catch { /* ignore */ } finally {
+      setCacheLoading(false);
+    }
+  };
+
+  const handleClearCache = async () => {
+    setClearLoading(true);
+    setMessage(null);
+    try {
+      const res = await clearCache();
+      setMessage({ text: res.message, type: 'success' });
+      await fetchCacheStats();
+    } catch {
+      setMessage({ text: 'Cache temizleme başarısız', type: 'error' });
+    } finally {
+      setClearLoading(false);
+    }
+  };
+
+  const handleSyncEs = async () => {
+    setSyncLoading(true);
+    setMessage(null);
+    try {
+      const res = await syncElasticsearch();
+      setMessage({ text: res.message || 'Elasticsearch senkronizasyonu başlatıldı', type: 'success' });
+    } catch {
+      setMessage({ text: 'ES senkronizasyonu başarısız', type: 'error' });
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      {/* Cache Yönetimi */}
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+            <Database className="h-4 w-4 text-slate-500" />
+            Redis Cache
+          </h3>
+          <Button variant="ghost" size="sm" onClick={fetchCacheStats} isLoading={cacheLoading}>
+            <RotateCcw className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        {cacheStats ? (
+          <div className="bg-slate-50 rounded-lg p-3 text-xs space-y-1.5">
+            {Object.entries(cacheStats).map(([k, v]) => (
+              <div key={k} className="flex justify-between text-slate-600">
+                <span className="font-medium">{k}</span>
+                <span>{String(v)}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-xs text-slate-400 italic">İstatistikleri yüklemek için yenile butonuna basın</p>
+        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-full text-red-600 hover:bg-red-50 hover:border-red-200"
+          onClick={handleClearCache}
+          isLoading={clearLoading}
+        >
+          <Trash2 className="h-3.5 w-3.5 mr-1.5" />
+          Tüm Cache'i Temizle
+        </Button>
+      </div>
+
+      {/* Elasticsearch Sync */}
+      <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-2">
+          <Zap className="h-4 w-4 text-amber-500" />
+          Elasticsearch
+        </h3>
+        <p className="text-xs text-slate-500">
+          MongoDB ile Elasticsearch arasında senkronizasyon kayması varsa manuel senkronizasyon başlatın.
+          Tüm makaleler yeniden indekslenir.
+        </p>
+        <Button
+          variant="secondary"
+          size="sm"
+          className="w-full"
+          onClick={handleSyncEs}
+          isLoading={syncLoading}
+        >
+          <RotateCcw className="h-3.5 w-3.5 mr-1.5" />
+          ES Senkronizasyonu Başlat
+        </Button>
+      </div>
+
+      {/* Mesaj */}
+      {message && (
+        <div className={`col-span-full text-sm px-3 py-2 rounded-lg ${message.type === 'success' ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-700'}`}>
+          {message.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== Start All Panel ====================
+
+function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefresh: () => void }) {
+  const [mode, setMode] = useState<'parallel' | 'sequential' | 'round_robin'>('parallel');
+  const [loading, setLoading] = useState(false);
+  const [stopLoading, setStopLoading] = useState(false);
+
+  const handleStartAll = async () => {
+    setLoading(true);
+    try {
+      if (mode === 'parallel') await startAllScrapers(false);
+      else if (mode === 'sequential') await startAllScrapersSequential(false);
+      else await startAllScrapersRoundRobin(false);
+      await onRefresh();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStopAll = async () => {
+    setStopLoading(true);
+    try {
+      await stopAllScrapers();
+      await onRefresh();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setStopLoading(false);
+    }
+  };
+
+  const modeLabels = {
+    parallel: { label: 'Paralel', desc: 'Tüm scraperlar aynı anda başlar' },
+    sequential: { label: 'Sıralı', desc: 'Biri bitince diğeri başlar' },
+    round_robin: { label: 'Round Robin', desc: 'Her birkaç dergide bir scraperlar değişir' },
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Mod Seçimi */}
+      <div>
+        <p className="text-sm font-medium text-slate-700 mb-2">Çalışma Modu</p>
+        <div className="grid grid-cols-3 gap-2">
+          {(Object.entries(modeLabels) as [typeof mode, typeof modeLabels[typeof mode]][]).map(([key, { label, desc }]) => (
+            <button
+              key={key}
+              onClick={() => setMode(key)}
+              className={`p-3 rounded-lg border text-left transition-colors ${mode === key
+                ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
+              }`}
+            >
+              <p className="text-sm font-semibold">{label}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Butonlar */}
+      <div className="flex gap-3">
+        <Button
+          variant="primary"
+          className="flex-1"
+          onClick={handleStartAll}
+          isLoading={loading}
+          disabled={anyRunning}
+        >
+          <Play className="h-4 w-4 mr-2" />
+          Tümünü Başlat ({modeLabels[mode].label})
+        </Button>
+        {anyRunning && (
+          <Button
+            variant="secondary"
+            className="flex-1 text-red-600 hover:bg-red-50 hover:border-red-200"
+            onClick={handleStopAll}
+            isLoading={stopLoading}
+          >
+            <Square className="h-4 w-4 mr-2" />
+            Tümünü Durdur
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ==================== Main Page ====================
+
 export default function ScrapersPage() {
   const [status, setStatus] = useState<AllScrapersStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [openAlexExpanded, setOpenAlexExpanded] = useState(false);
   const [journalUrlExpanded, setJournalUrlExpanded] = useState(false);
+  const [systemExpanded, setSystemExpanded] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -1164,6 +1383,17 @@ export default function ScrapersPage() {
         )}
       </div>
 
+      {/* Tüm Scraperları Başlat */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Tüm Scraperları Başlat</CardTitle>
+          <CardDescription>IEEE Xplore, ScienceDirect ve ACM scraperlarını aynı anda başlatın</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <StartAllPanel anyRunning={status?.any_running ?? false} onRefresh={fetchStatus} />
+        </CardContent>
+      </Card>
+
       {/* Scraper Controls */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {status && (
@@ -1204,6 +1434,32 @@ export default function ScrapersPage() {
 
       {/* Logs with WebSocket */}
       <ScraperLogs wsEvents={wsEvents} isWsConnected={isConnected} />
+
+      {/* Sistem Yönetimi */}
+      <div className="border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm">
+        <button
+          onClick={() => setSystemExpanded(!systemExpanded)}
+          className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-slate-100 text-slate-700 rounded-lg">
+              <Settings2 className="h-5 w-5" />
+            </div>
+            <div className="text-left">
+              <h2 className="font-semibold text-slate-900">Sistem Yönetimi</h2>
+              <p className="text-sm text-slate-500">Redis cache istatistikleri, cache temizleme ve Elasticsearch senkronizasyonu</p>
+            </div>
+          </div>
+          <ChevronUp
+            className={`h-5 w-5 text-slate-400 transition-transform ${systemExpanded ? 'rotate-180' : ''}`}
+          />
+        </button>
+        {systemExpanded && (
+          <div className="p-4 border-t border-slate-200">
+            <SystemManagementPanel />
+          </div>
+        )}
+      </div>
     </div>
   );
 }

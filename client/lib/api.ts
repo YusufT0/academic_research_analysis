@@ -452,6 +452,52 @@ export async function getAuthorArticles(name: string, page: number = 1, page_siz
 
 // ==================== NLP / AI Analysis ====================
 
+export async function nlpTrain(modelVersion?: string): Promise<{ status: string; message: string }> {
+  return fetchApi('/nlp/train', {
+    method: 'POST',
+    body: JSON.stringify({ model_version: modelVersion }),
+  });
+}
+
+export async function getNlpClusters() {
+  return fetchApi<any[]>('/nlp/clusters');
+}
+
+export async function getNlpHistory() {
+  return fetchApi<any>('/nlp/history');
+}
+
+export async function getCacheStats() {
+  return fetchApi<any>('/stats/cache');
+}
+
+export async function clearCache(pattern?: string) {
+  const params = pattern ? `?pattern=${encodeURIComponent(pattern)}` : '';
+  return fetchApi<{ message: string }>(`/stats/cache${params}`, { method: 'DELETE' });
+}
+
+export async function syncElasticsearch() {
+  return fetchApi<{ message: string }>('/search/sync', { method: 'POST' });
+}
+
+export async function getJournalStats() {
+  return fetchApi<any>('/stats/journals');
+}
+
+export async function startAllScrapersSequential(headless = true) {
+  return fetchApi('/scrapers/start-all-sequential', {
+    method: 'POST',
+    body: JSON.stringify({ headless }),
+  });
+}
+
+export async function startAllScrapersRoundRobin(headless = true) {
+  return fetchApi('/scrapers/start-all-round-robin', {
+    method: 'POST',
+    body: JSON.stringify({ headless }),
+  });
+}
+
 export async function getNlpStatus(): Promise<NlpStatus> {
   return fetchApi<NlpStatus>('/nlp/status');
 }
