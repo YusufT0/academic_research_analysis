@@ -391,47 +391,45 @@ class ArticleParser:
             article_items = article_list.find_all('li', class_='js-article-list-item')
             logger.found(len(article_items), "article item")
             
-            article_urls = []
+            articles = []
             skipped_count = 0
-            
+
             for idx, item in enumerate(article_items, 1):
                 try:
                     # dl.js-article içindeki article type'ı kontrol et
                     article_dl = item.find('dl', class_='js-article')
-                    
+
                     if article_dl:
                         # js-article-subtype span'ını bul
                         subtype_span = article_dl.find('span', class_='js-article-subtype')
-                        
+
                         if subtype_span:
                             article_type = subtype_span.get_text(strip=True)
-                            
+
                             # Sadece "Research article" tipindeki makaleleri al
                             if article_type != 'Research article':
                                 skipped_count += 1
                                 logger.debug(f"{idx}. Atlandı (Tip: {article_type})")
                                 continue
-                    
+
                     # a.article-content-title linkini bul
                     title_link = item.find('a', class_='article-content-title')
-                    
+
                     if title_link and title_link.get('href'):
                         article_url = title_link['href']
-                        article_urls.append(article_url)
-                        
-                        # Makale başlığını da al (log için)
                         title_span = title_link.find('span', class_='js-article-title')
-                        title_text = title_span.get_text(strip=True)[:60] if title_span else article_url
-                        logger.success(f"{idx}. {title_text}...")
-                    
+                        title_text = title_span.get_text(strip=True) if title_span else ''
+                        articles.append({'url': article_url, 'title': title_text})
+                        logger.success(f"{idx}. {title_text[:60]}...")
+
                 except Exception as e:
                     logger.warning(f"Article {idx} parse hatası: {e}")
                     continue
-            
-            logger.found(len(article_urls), "Research article URL'i")
+
+            logger.found(len(articles), "Research article URL'i")
             if skipped_count > 0:
                 logger.info(f"{skipped_count} makale atlandı (Research article değil)")
-            return article_urls
+            return articles
             
         except Exception as e:
             logger.error(f"Article URL çıkarma hatası: {e}")

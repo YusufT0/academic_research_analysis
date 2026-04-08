@@ -373,8 +373,8 @@ class ArticleParser:
             
             logger.found(len(result_items), "item")
             
-            article_urls = []
-            
+            articles = []
+
             for idx, item in enumerate(result_items, 1):
                 try:
                     # h2 içindeki article linkini bul
@@ -382,27 +382,28 @@ class ArticleParser:
                     if not h2_title:
                         # Mobile için alternatif selector
                         h2_title = item.find('h2', class_='result-item-title')
-                    
+
                     if not h2_title:
                         # Başlık bulunamadı, muhtemelen "Table of Contents" gibi link olmayan item
                         continue
-                    
+
                     # h2 içindeki a tag'ini bul
                     article_link = h2_title.find('a', href=True)
-                    
+
                     if article_link and article_link.get('href'):
                         article_url = article_link['href']
-                        
+
                         # /document/ ile başlayan linkler makale linkleridir
                         if '/document/' in article_url:
-                            article_urls.append(article_url)
-                            logger.info(f"  {len(article_urls)}. {article_url}")
-                    
+                            title_text = article_link.get_text(strip=True)
+                            articles.append({'url': article_url, 'title': title_text})
+                            logger.info(f"  {len(articles)}. {title_text[:60]}")
+
                 except Exception as e:
                     continue
-            
-            logger.found(len(article_urls), "makale URL'i")
-            return article_urls
+
+            logger.found(len(articles), "makale URL'i")
+            return articles
             
         except Exception as e:
             logger.failed("Makale URL çıkarma hatası", e)

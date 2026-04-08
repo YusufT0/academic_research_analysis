@@ -22,6 +22,7 @@ class ScraperControlRequest(BaseModel):
     headless: bool = Field(default=True, description="Headless mod")
     max_articles: Optional[int] = Field(None, description="Maksimum makale sayısı")
     depth: Optional[int] = Field(None, ge=1, description="Kaç issue işlenecek (IEEE, ScienceDirect, ACM)")
+    issues_order: str = Field(default="newest_first", description="Issue işleme sırası: 'newest_first' (yeniden eskiye) veya 'oldest_first' (eskiden yeniye)")
 
 
 # ==================== Status Endpoints ====================
@@ -69,8 +70,9 @@ async def start_ieee(request: ScraperControlRequest = None):
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
     depth = request.depth if request and request.depth else 1
+    issues_order = request.issues_order if request else "newest_first"
 
-    success = await manager.start_ieee(headless=headless, max_articles=max_articles, depth=depth)
+    success = await manager.start_ieee(headless=headless, max_articles=max_articles, depth=depth, issues_order=issues_order)
     
     if not success:
         raise HTTPException(status_code=400, detail="IEEE scraper already running")
@@ -146,8 +148,9 @@ async def start_sciencedirect(request: ScraperControlRequest = None):
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
     depth = request.depth if request and request.depth else 1
+    issues_order = request.issues_order if request else "newest_first"
 
-    success = await manager.start_sciencedirect(headless=headless, max_articles=max_articles, depth=depth)
+    success = await manager.start_sciencedirect(headless=headless, max_articles=max_articles, depth=depth, issues_order=issues_order)
     
     if not success:
         raise HTTPException(status_code=400, detail="ScienceDirect scraper already running")
@@ -224,8 +227,9 @@ async def start_acm(request: ScraperControlRequest = None):
     headless = request.headless if request else True
     max_articles = request.max_articles if request and request.max_articles else 100
     depth = request.depth if request and request.depth else 1
+    issues_order = request.issues_order if request else "newest_first"
 
-    success = await manager.start_acm(headless=headless, max_articles=max_articles, depth=depth)
+    success = await manager.start_acm(headless=headless, max_articles=max_articles, depth=depth, issues_order=issues_order)
     
     if not success:
         raise HTTPException(status_code=400, detail="ACM scraper already running")

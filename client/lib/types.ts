@@ -106,6 +106,7 @@ export interface ScraperStatus {
   current_issue_index: number;
   total_issues: number;
   completed_issues: IssueProgress[];
+  pending_issues: string[];
   article_list: string[];
   current_article: string | null;
   current_article_index: number;

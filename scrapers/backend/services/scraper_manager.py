@@ -98,6 +98,7 @@ class ScraperProgress:
         self.current_issue_index: int = 0
         self.total_issues: int = 0
         self.completed_issues: List[Dict[str, Any]] = []  # [{title, articles_count, article_list}]
+        self.pending_issues: List[str] = []  # Henüz işlenmemiş issue başlıkları
 
         # Makale ilerleme
         self.article_list: List[str] = []           # Mevcut issue'nun makale başlıkları (ön bilgi)
@@ -218,6 +219,7 @@ class ScraperProgress:
             "current_issue_index": self.current_issue_index,
             "total_issues": self.total_issues,
             "completed_issues": self.completed_issues,
+            "pending_issues": self.pending_issues,
             "article_list": self.article_list,
             "current_article": self.current_article,
             "current_article_index": self.current_article_index,
@@ -246,6 +248,7 @@ class ScraperProgress:
         self.current_issue_index = 0
         self.total_issues = 0
         self.completed_issues = []
+        self.pending_issues = []
         self.article_list = []
         self.current_article = None
         self.current_article_index = 0
@@ -360,6 +363,12 @@ class ScraperManager:
             self.acm_headless = True
             self.acm_max_articles = 100
             self.acm_depth = 1
+
+        # Issue işleme sırası: "newest_first" (yeniden eskiye) veya "oldest_first" (eskiden yeniye)
+        # Varsayılan: yeniden eskiye (newest_first)
+        self.ieee_issues_order: str = "newest_first"
+        self.sciencedirect_issues_order: str = "newest_first"
+        self.acm_issues_order: str = "newest_first"
         
         # Round Robin Settings
         self.round_robin_journals_per_switch = 3
@@ -530,7 +539,7 @@ class ScraperManager:
 
     # ==================== IEEE Scraper ====================
     
-    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
+    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first") -> bool:
         """IEEE scraper'ı başlat (ayrı thread'de)"""
         if self.ieee_progress.status == ScraperStatus.RUNNING:
             logger.warning("IEEE scraper already running")
@@ -544,6 +553,7 @@ class ScraperManager:
         self.ieee_headless = headless
         self.ieee_max_articles = max_articles
         self.ieee_depth = depth
+        self.ieee_issues_order = issues_order
 
         # Reset flags
         self._ieee_stop_flag.clear()
@@ -551,7 +561,7 @@ class ScraperManager:
 
         # Thread'de başlat - event loop'u bloklamaz
         self._ieee_future = self._executor.submit(self._run_ieee_scraper_sync)
-        logger.info("IEEE scraper thread'de başlatıldı")
+        logger.info(f"IEEE scraper thread'de başlatıldı (issues_order={issues_order})")
 
         return True
     
@@ -693,10 +703,11 @@ class ScraperManager:
                     progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
                     progress.current_article_index = art_idx
 
-                def _ieee_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str):
+                def _ieee_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str, pending_titles: list = None):
                     progress.total_issues = total_issues
                     progress.current_issue = issue_title or f"Issue {issue_idx}"
                     progress.current_issue_index = issue_idx
+                    progress.pending_issues = pending_titles or []
                     progress.article_list = []
                     progress.current_article = None
                     progress.current_article_index = 0
@@ -755,6 +766,7 @@ class ScraperManager:
                         existing_issue_urls=existing_issue_urls,
                         issue_start_callback=_ieee_issue_start_cb,
                         issue_complete_callback=_ieee_issue_complete_cb,
+                        issues_order=self.ieee_issues_order,
                     )
 
                     try:
@@ -928,7 +940,7 @@ class ScraperManager:
     
     # ==================== ScienceDirect Scraper ====================
     
-    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
+    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first") -> bool:
         """ScienceDirect scraper'ı başlat (ayrı thread'de)"""
         if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
             logger.warning("ScienceDirect scraper already running")
@@ -942,6 +954,7 @@ class ScraperManager:
         self.sciencedirect_headless = headless
         self.sciencedirect_max_articles = max_articles
         self.sciencedirect_depth = depth
+        self.sciencedirect_issues_order = issues_order
 
         # Reset flags
         self._sciencedirect_stop_flag.clear()
@@ -949,7 +962,7 @@ class ScraperManager:
 
         # Thread'de başlat - event loop'u bloklamaz
         self._sciencedirect_future = self._executor.submit(self._run_sciencedirect_scraper_sync)
-        logger.info("ScienceDirect scraper thread'de başlatıldı")
+        logger.info(f"ScienceDirect scraper thread'de başlatıldı (issues_order={issues_order})")
 
         return True
     
@@ -1092,10 +1105,11 @@ class ScraperManager:
                     progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
                     progress.current_article_index = art_idx
 
-                def _sd_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str):
+                def _sd_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str, pending_titles: list = None):
                     progress.total_issues = total_issues
                     progress.current_issue = issue_title or f"Issue {issue_idx}"
                     progress.current_issue_index = issue_idx
+                    progress.pending_issues = pending_titles or []
                     progress.article_list = []
                     progress.current_article = None
                     progress.current_article_index = 0
@@ -1157,6 +1171,7 @@ class ScraperManager:
                         existing_issue_urls=existing_issue_urls,
                         issue_start_callback=_sd_issue_start_cb,
                         issue_complete_callback=_sd_issue_complete_cb,
+                        issues_order=self.sciencedirect_issues_order,
                     )
 
                     try:
@@ -1328,7 +1343,7 @@ class ScraperManager:
 
     # ==================== ACM Scraper ====================
     
-    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1) -> bool:
+    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first") -> bool:
         """ACM scraper'ı başlat (ayrı thread'de)"""
         if self.acm_progress.status == ScraperStatus.RUNNING:
             logger.warning("ACM scraper already running")
@@ -1342,6 +1357,7 @@ class ScraperManager:
         self.acm_headless = headless
         self.acm_max_articles = max_articles
         self.acm_depth = depth
+        self.acm_issues_order = issues_order
 
         # Reset flags
         self._acm_stop_flag.clear()
@@ -1349,7 +1365,7 @@ class ScraperManager:
 
         # Thread'de başlat - event loop'u bloklamaz
         self._acm_future = self._executor.submit(self._run_acm_scraper_sync)
-        logger.info("ACM scraper thread'de başlatıldı")
+        logger.info(f"ACM scraper thread'de başlatıldı (issues_order={issues_order})")
 
         return True
     
@@ -1492,10 +1508,11 @@ class ScraperManager:
                     progress.current_article = art_title or f"Makale {art_idx}/{art_total}"
                     progress.current_article_index = art_idx
 
-                def _acm_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str):
+                def _acm_issue_start_cb(issue_idx: int, total_issues: int, issue_title: str, pending_titles: list = None):
                     progress.total_issues = total_issues
                     progress.current_issue = issue_title or f"Issue {issue_idx}"
                     progress.current_issue_index = issue_idx
+                    progress.pending_issues = pending_titles or []
                     progress.article_list = []
                     progress.current_article = None
                     progress.current_article_index = 0
@@ -1554,6 +1571,7 @@ class ScraperManager:
                         existing_issue_urls=existing_issue_urls,
                         issue_start_callback=_acm_issue_start_cb,
                         issue_complete_callback=_acm_issue_complete_cb,
+                        issues_order=self.acm_issues_order,
                     )
 
                     try:

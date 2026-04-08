@@ -307,6 +307,18 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
                 </ul>
               );
             })()}
+
+            {/* Bekleyen issue'lar */}
+            {(scraper.pending_issues ?? []).length > 0 && (
+              <div className="border-t border-blue-100 divide-y divide-blue-50">
+                {(scraper.pending_issues ?? []).map((title, i) => (
+                  <div key={i} className="px-3 py-1.5 flex items-center gap-2 opacity-40">
+                    <Clock className="h-3 w-3 text-slate-400 flex-shrink-0" />
+                    <span className="flex-1 text-xs text-slate-500 truncate">{title}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -331,7 +343,7 @@ interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: (limit: number, depth?: number) => Promise<void>;
+  onStart: (limit: number, depth?: number, issueOrder?: string) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
@@ -343,6 +355,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
   const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
   const [limit, setLimit] = useState<number>(25);
   const [depth, setDepth] = useState<number>(1);
+  const [issueOrder, setIssueOrder] = useState<string>('newest_first');
 
   // Tekil journal modu aktifse idle gibi davran — gerçek durum JournalUrlScraper'da gösterilir
   const effectiveScraper = scraper.is_single_journal_mode
@@ -466,45 +479,80 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Actions Menu */}
         <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
           {canStart && (
-            <div className="flex flex-wrap items-center gap-3 w-full">
-              <div className="flex items-center gap-2">
-                <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
-                  Makale Limiti:
-                </label>
-                <input
-                  id={`limit-${title}`}
-                  type="number"
-                  min="1"
-                  max="5000"
-                  value={limit}
-                  onChange={(e) => setLimit(parseInt(e.target.value) || 25)}
-                  className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
-                />
-              </div>
-
-              {showDepth && (
+            <div className="flex flex-col gap-3 w-full">
+              <div className="flex flex-wrap items-center gap-3">
                 <div className="flex items-center gap-2">
-                  <label htmlFor={`depth-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
-                    Issue Derinliği:
+                  <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                    Makale Limiti:
                   </label>
                   <input
-                    id={`depth-${title}`}
+                    id={`limit-${title}`}
                     type="number"
                     min="1"
-                    max="50"
-                    value={depth}
-                    onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
-                    className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
-                    title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
+                    max="5000"
+                    value={limit}
+                    onChange={(e) => setLimit(parseInt(e.target.value) || 25)}
+                    className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
                   />
                 </div>
-              )}
+
+                {showDepth && (
+                  <div className="flex items-center gap-2">
+                    <label htmlFor={`depth-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                      Issue Derinliği:
+                    </label>
+                    <input
+                      id={`depth-${title}`}
+                      type="number"
+                      min="1"
+                      max="50"
+                      value={depth}
+                      onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
+                      className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Issue Sırası Toggle */}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-slate-600 whitespace-nowrap">Issue Sırası:</span>
+                <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+                  <button
+                    id={`issue-order-newest-${title}`}
+                    type="button"
+                    onClick={() => setIssueOrder('newest_first')}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                      issueOrder === 'newest_first'
+                        ? 'bg-slate-700 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                    title="Issue'ları en yeniden en eskiye işle"
+                  >
+                    Yeniden Eskiye
+                  </button>
+                  <button
+                    id={`issue-order-oldest-${title}`}
+                    type="button"
+                    onClick={() => setIssueOrder('oldest_first')}
+                    className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-slate-200 ${
+                      issueOrder === 'oldest_first'
+                        ? 'bg-slate-700 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                    title="Issue'ları en eskiden en yeniye işle"
+                  >
+                    Eskiden Yeniye
+                  </button>
+                </div>
+              </div>
 
               <Button
                 variant="primary"
-                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined))}
+                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder))}
                 isLoading={actionLoading}
-                className="flex-1"
+                className="w-full"
               >
                 <Play className="h-4 w-4 mr-2" />
                 Başlat
@@ -1173,7 +1221,7 @@ export default function ScrapersPage() {
               title="IEEE Xplore Scraper"
               description="IEEE akademik makalelerini toplar"
               showDepth
-              onStart={async (limit, depth) => { await startIeeeScraper(false, limit, depth ?? 1); await fetchStatus(); }}
+              onStart={async (limit, depth, issueOrder) => { await startIeeeScraper(false, limit, depth ?? 1, issueOrder ?? 'newest_first'); await fetchStatus(); }}
               onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
@@ -1183,7 +1231,7 @@ export default function ScrapersPage() {
               title="ScienceDirect Scraper"
               description="Elsevier ScienceDirect makalelerini toplar"
               showDepth
-              onStart={async (limit, depth) => { await startScienceDirectScraper(false, limit, depth ?? 1); await fetchStatus(); }}
+              onStart={async (limit, depth, issueOrder) => { await startScienceDirectScraper(false, limit, depth ?? 1, issueOrder ?? 'newest_first'); await fetchStatus(); }}
               onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
@@ -1193,7 +1241,7 @@ export default function ScrapersPage() {
               title="ACM Digital Library Scraper"
               description="ACM akademik makalelerini toplar"
               showDepth
-              onStart={async (limit, depth) => { await startAcmScraper(false, limit, depth ?? 1); await fetchStatus(); }}
+              onStart={async (limit, depth, issueOrder) => { await startAcmScraper(false, limit, depth ?? 1, issueOrder ?? 'newest_first'); await fetchStatus(); }}
               onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}

@@ -211,10 +211,10 @@ export async function getScrapersStatus(): Promise<AllScrapersStatus> {
   return fetchApi<AllScrapersStatus>('/scrapers/status');
 }
 
-export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1) {
+export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first') {
   return fetchApi('/scrapers/ieee/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder }),
   });
 }
 
@@ -230,10 +230,10 @@ export async function resumeIeeeScraper() {
   return fetchApi('/scrapers/ieee/resume', { method: 'POST' });
 }
 
-export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1) {
+export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1, issueOrder = 'newest_first') {
   return fetchApi('/scrapers/sciencedirect/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder }),
   });
 }
 
@@ -249,10 +249,10 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
-export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1) {
+export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first') {
   return fetchApi('/scrapers/acm/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder }),
   });
 }
 
