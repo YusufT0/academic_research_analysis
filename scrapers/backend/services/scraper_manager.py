@@ -369,6 +369,11 @@ class ScraperManager:
         self.ieee_issues_order: str = "newest_first"
         self.sciencedirect_issues_order: str = "newest_first"
         self.acm_issues_order: str = "newest_first"
+
+        # Sürekli mod: tamamlandıktan sonra otomatik yeniden başlat
+        self.ieee_continuous: bool = False
+        self.sciencedirect_continuous: bool = False
+        self.acm_continuous: bool = False
         
         # Round Robin Settings
         self.round_robin_journals_per_switch = 3
@@ -539,7 +544,7 @@ class ScraperManager:
 
     # ==================== IEEE Scraper ====================
     
-    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first") -> bool:
+    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """IEEE scraper'ı başlat (ayrı thread'de)"""
         if self.ieee_progress.status == ScraperStatus.RUNNING:
             logger.warning("IEEE scraper already running")
@@ -554,6 +559,7 @@ class ScraperManager:
         self.ieee_max_articles = max_articles
         self.ieee_depth = depth
         self.ieee_issues_order = issues_order
+        self.ieee_continuous = continuous
 
         # Reset flags
         self._ieee_stop_flag.clear()
@@ -853,6 +859,8 @@ class ScraperManager:
                 progress.status = ScraperStatus.COMPLETED
                 progress.add_log("success", "IEEE scraper tamamlandı")
                 logger.success("[IEEE Thread] Scraper tamamlandı")
+                if self.ieee_continuous:
+                    progress.add_log("info", "Sürekli mod aktif — yeniden başlatma bekleniyor...")
         
         except ScraperStoppedException:
             # Stop sinyali - normal sonlanma
@@ -887,8 +895,28 @@ class ScraperManager:
                 pass
             # Distributed lock'u bırak
             if self._loop:
-                asyncio.run_coroutine_threadsafe(
+                fut = asyncio.run_coroutine_threadsafe(
                     DistributedScraperLock.release("ieee"), self._loop
+                )
+                try:
+                    fut.result(timeout=5)
+                except Exception:
+                    pass
+            # Sürekli mod: lock serbest bırakıldıktan sonra yeniden başlat
+            if (self.ieee_continuous
+                    and progress.status == ScraperStatus.COMPLETED
+                    and not self._ieee_stop_flag.is_set()
+                    and self._loop):
+                import time as _ct; _ct.sleep(5)
+                asyncio.run_coroutine_threadsafe(
+                    self.start_ieee(
+                        headless=self.ieee_headless,
+                        max_articles=self.ieee_max_articles,
+                        depth=self.ieee_depth,
+                        issues_order=self.ieee_issues_order,
+                        continuous=True,
+                    ),
+                    self._loop,
                 )
 
     async def stop_ieee(self) -> bool:
@@ -940,7 +968,7 @@ class ScraperManager:
     
     # ==================== ScienceDirect Scraper ====================
     
-    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first") -> bool:
+    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """ScienceDirect scraper'ı başlat (ayrı thread'de)"""
         if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
             logger.warning("ScienceDirect scraper already running")
@@ -955,6 +983,7 @@ class ScraperManager:
         self.sciencedirect_max_articles = max_articles
         self.sciencedirect_depth = depth
         self.sciencedirect_issues_order = issues_order
+        self.sciencedirect_continuous = continuous
 
         # Reset flags
         self._sciencedirect_stop_flag.clear()
@@ -1258,6 +1287,8 @@ class ScraperManager:
                 progress.status = ScraperStatus.COMPLETED
                 progress.add_log("success", "ScienceDirect scraper tamamlandı")
                 logger.success("[SD Thread] Scraper tamamlandı")
+                if self.sciencedirect_continuous:
+                    progress.add_log("info", "Sürekli mod aktif — yeniden başlatma bekleniyor...")
         
         except ScraperStoppedException:
             # Stop sinyali - normal sonlanma
@@ -1289,8 +1320,28 @@ class ScraperManager:
                 pass
             # Distributed lock'u bırak
             if self._loop:
-                asyncio.run_coroutine_threadsafe(
+                fut = asyncio.run_coroutine_threadsafe(
                     DistributedScraperLock.release("sciencedirect"), self._loop
+                )
+                try:
+                    fut.result(timeout=5)
+                except Exception:
+                    pass
+            # Sürekli mod: lock serbest bırakıldıktan sonra yeniden başlat
+            if (self.sciencedirect_continuous
+                    and progress.status == ScraperStatus.COMPLETED
+                    and not self._sciencedirect_stop_flag.is_set()
+                    and self._loop):
+                import time as _ct; _ct.sleep(5)
+                asyncio.run_coroutine_threadsafe(
+                    self.start_sciencedirect(
+                        headless=self.sciencedirect_headless,
+                        max_articles=self.sciencedirect_max_articles,
+                        depth=self.sciencedirect_depth,
+                        issues_order=self.sciencedirect_issues_order,
+                        continuous=True,
+                    ),
+                    self._loop,
                 )
 
     async def stop_sciencedirect(self) -> bool:
@@ -1343,7 +1394,7 @@ class ScraperManager:
 
     # ==================== ACM Scraper ====================
     
-    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first") -> bool:
+    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """ACM scraper'ı başlat (ayrı thread'de)"""
         if self.acm_progress.status == ScraperStatus.RUNNING:
             logger.warning("ACM scraper already running")
@@ -1358,6 +1409,7 @@ class ScraperManager:
         self.acm_max_articles = max_articles
         self.acm_depth = depth
         self.acm_issues_order = issues_order
+        self.acm_continuous = continuous
 
         # Reset flags
         self._acm_stop_flag.clear()
@@ -1658,6 +1710,8 @@ class ScraperManager:
                 progress.status = ScraperStatus.COMPLETED
                 progress.add_log("success", "ACM scraper tamamlandı")
                 logger.success("[ACM Thread] Scraper tamamlandı")
+                if self.acm_continuous:
+                    progress.add_log("info", "Sürekli mod aktif — yeniden başlatma bekleniyor...")
         
         except ScraperStoppedException:
             # Stop sinyali - normal sonlanma
@@ -1689,8 +1743,28 @@ class ScraperManager:
                 pass
             # Distributed lock'u bırak
             if self._loop:
-                asyncio.run_coroutine_threadsafe(
+                fut = asyncio.run_coroutine_threadsafe(
                     DistributedScraperLock.release("acm"), self._loop
+                )
+                try:
+                    fut.result(timeout=5)
+                except Exception:
+                    pass
+            # Sürekli mod: lock serbest bırakıldıktan sonra yeniden başlat
+            if (self.acm_continuous
+                    and progress.status == ScraperStatus.COMPLETED
+                    and not self._acm_stop_flag.is_set()
+                    and self._loop):
+                import time as _ct; _ct.sleep(5)
+                asyncio.run_coroutine_threadsafe(
+                    self.start_acm(
+                        headless=self.acm_headless,
+                        max_articles=self.acm_max_articles,
+                        depth=self.acm_depth,
+                        issues_order=self.acm_issues_order,
+                        continuous=True,
+                    ),
+                    self._loop,
                 )
 
     async def stop_acm(self) -> bool:

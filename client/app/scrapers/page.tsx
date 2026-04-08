@@ -343,7 +343,7 @@ interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: (limit: number, depth?: number, issueOrder?: string) => Promise<void>;
+  onStart: (limit: number, depth?: number, issueOrder?: string, headless?: boolean, continuous?: boolean) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
@@ -356,6 +356,8 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
   const [limit, setLimit] = useState<number>(25);
   const [depth, setDepth] = useState<number>(1);
   const [issueOrder, setIssueOrder] = useState<string>('newest_first');
+  const [headless, setHeadless] = useState<boolean>(true);
+  const [continuous, setContinuous] = useState<boolean>(false);
 
   // Tekil journal modu aktifse idle gibi davran — gerçek durum JournalUrlScraper'da gösterilir
   const effectiveScraper = scraper.is_single_journal_mode
@@ -548,9 +550,42 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
                 </div>
               </div>
 
+              {/* Headless & Sürekli Mod */}
+              <div className="flex flex-wrap gap-3">
+                {/* Headless Mod */}
+                <button
+                  type="button"
+                  onClick={() => setHeadless((v) => !v)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                    headless
+                      ? 'bg-slate-700 border-slate-700 text-white'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                  title={headless ? 'Browser gizli çalışıyor' : 'Browser görünür çalışıyor'}
+                >
+                  <span className={`w-2 h-2 rounded-full ${headless ? 'bg-emerald-400' : 'bg-slate-400'}`} />
+                  Headless {headless ? 'Açık' : 'Kapalı'}
+                </button>
+
+                {/* Sürekli Mod */}
+                <button
+                  type="button"
+                  onClick={() => setContinuous((v) => !v)}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+                    continuous
+                      ? 'bg-indigo-600 border-indigo-600 text-white'
+                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                  }`}
+                  title={continuous ? 'Scraper tamamlandıktan sonra otomatik yeniden başlar' : 'Sürekli mod kapalı'}
+                >
+                  <span className={`w-2 h-2 rounded-full ${continuous ? 'bg-indigo-300 animate-pulse' : 'bg-slate-400'}`} />
+                  Sürekli Mod {continuous ? 'Açık' : 'Kapalı'}
+                </button>
+              </div>
+
               <Button
                 variant="primary"
-                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder))}
+                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder, headless, continuous))}
                 isLoading={actionLoading}
                 className="w-full"
               >
@@ -1221,7 +1256,7 @@ export default function ScrapersPage() {
               title="IEEE Xplore Scraper"
               description="IEEE akademik makalelerini toplar"
               showDepth
-              onStart={async (limit, depth, issueOrder) => { await startIeeeScraper(false, limit, depth ?? 1, issueOrder ?? 'newest_first'); await fetchStatus(); }}
+              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
               onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
@@ -1231,7 +1266,7 @@ export default function ScrapersPage() {
               title="ScienceDirect Scraper"
               description="Elsevier ScienceDirect makalelerini toplar"
               showDepth
-              onStart={async (limit, depth, issueOrder) => { await startScienceDirectScraper(false, limit, depth ?? 1, issueOrder ?? 'newest_first'); await fetchStatus(); }}
+              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
               onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
@@ -1241,7 +1276,7 @@ export default function ScrapersPage() {
               title="ACM Digital Library Scraper"
               description="ACM akademik makalelerini toplar"
               showDepth
-              onStart={async (limit, depth, issueOrder) => { await startAcmScraper(false, limit, depth ?? 1, issueOrder ?? 'newest_first'); await fetchStatus(); }}
+              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
               onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}

@@ -112,7 +112,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
                     innerRadius={40}
                     fill="#8884d8"
                     dataKey="amount"
-                    label={({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+                    label={({ cx, cy, midAngle = 0, innerRadius, outerRadius, percent }) => {
                       if ((percent || 0) < 0.05) return null;
                       const RADIAN = Math.PI / 180;
                       const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
