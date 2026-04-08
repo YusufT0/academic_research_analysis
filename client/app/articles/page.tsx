@@ -546,7 +546,7 @@ function ArticlesContent() {
   const [filters, setFilters] = useState<ArticleFilters>({
     page: 1,
     page_size: 10,
-    sort_by: 'publication_year',
+    sort_by: 'citation_count',
     sort_order: 'desc',
     id: articleId || undefined,
   });
@@ -597,13 +597,15 @@ function ArticlesContent() {
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Makaleler</h1>
           <p className="mt-1 text-slate-500">
-            Toplam {data?.total.toLocaleString() || 0} makale
+            {filters.id ? `${data?.total || 0} sonuç` : `Toplam ${data?.total.toLocaleString() || 0} makale`}
           </p>
         </div>
-        <Button variant="secondary" onClick={() => setShowFilters(!showFilters)}>
-          <Filter className="h-4 w-4 mr-2" />
-          Filtreler
-        </Button>
+        {!filters.id && (
+          <Button variant="secondary" onClick={() => setShowFilters(!showFilters)}>
+            <Filter className="h-4 w-4 mr-2" />
+            Filtreler
+          </Button>
+        )}
       </div>
 
       {/* Filters */}
@@ -675,11 +677,11 @@ function ArticlesContent() {
                     }));
                   }}
                 >
+                  <option value="citation_count-desc">Atıf Sayısı (En Yüksek)</option>
                   <option value="publication_year-desc">Yıl (Yeni → Eski)</option>
                   <option value="publication_year-asc">Yıl (Eski → Yeni)</option>
                   <option value="title-asc">Başlık (A → Z)</option>
                   <option value="title-desc">Başlık (Z → A)</option>
-                  <option value="citation_count-desc">Atıf Sayısı</option>
                   <option value="citation_percentile-desc">Atıf Yüzdeliği (En Yüksek)</option>
                   <option value="fwci-desc">FWCI (En Yüksek)</option>
                 </select>
@@ -715,7 +717,7 @@ function ArticlesContent() {
       </div>
 
       {/* Pagination */}
-      {data && data.total_pages > 1 && (
+      {data && data.total_pages > 1 && !filters.id && (
         <div className="flex items-center justify-between">
           <p className="text-sm text-slate-500">
             Sayfa {data.page} / {data.total_pages}

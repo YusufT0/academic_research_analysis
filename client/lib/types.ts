@@ -160,6 +160,9 @@ export interface ArticleStats {
   by_year: Record<string, number>;
   top_keywords: Array<{ _id: string; count: number }>;
   top_authors: Array<{ _id: string; count: number }>;
+  unique_keywords_count: number;
+  unique_authors_count: number;
+  unique_years_count: number;
 }
 
 export interface CitationStats {

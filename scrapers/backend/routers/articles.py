@@ -51,55 +51,57 @@ async def list_articles(
     Cursor kullanılırken `page` parametresi yoksayılır.
     """
     # Build query
-    query = {}
+    # base_query: count için kullanılır (cursor _id range'i hariç, id exact match dahil)
+    base_query = {}
 
     if id:
         try:
-            query["_id"] = PydanticObjectId(id)
+            base_query["_id"] = PydanticObjectId(id)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid article ID")
 
     if journal_id:
         try:
-            query["journal_id"] = PydanticObjectId(journal_id)
+            base_query["journal_id"] = PydanticObjectId(journal_id)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid journal ID")
 
     if issue_id:
         try:
-            query["issue_id"] = PydanticObjectId(issue_id)
+            base_query["issue_id"] = PydanticObjectId(issue_id)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid issue ID")
 
     if source_website:
-        query["source_website"] = source_website
+        base_query["source_website"] = source_website
     if publication_year:
-        query["publication_year"] = publication_year
+        base_query["publication_year"] = publication_year
     if open_access is not None:
-        query["open_access"] = open_access
+        base_query["open_access"] = open_access
     if article_type:
-        query["article_type"] = article_type
+        base_query["article_type"] = article_type
     if has_doi is not None:
-        query["doi"] = {"$ne": None} if has_doi else None
+        base_query["doi"] = {"$ne": None} if has_doi else None
     if has_abstract is not None:
-        query["abstract"] = {"$ne": None} if has_abstract else None
+        base_query["abstract"] = {"$ne": None} if has_abstract else None
 
     sort_dir = 1 if sort_order == "asc" else -1
 
     # ── Keyset pagination (cursor) ──────────────────────────────────────────
     # cursor sağlandıysa skip() yerine _id karşılaştırması kullan — O(1) vs O(n)
+    # fetch_query: base_query üzerine cursor _id range'i eklenir
+    query = dict(base_query)
     use_keyset = cursor is not None
     if use_keyset:
         try:
             cursor_id = PydanticObjectId(cursor)
-            # Sıralama yönüne göre cursor'dan önce/sonra gelen dökümanlar
             id_op = "$gt" if sort_order == "asc" else "$lt"
             query["_id"] = {id_op: cursor_id}
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid cursor value")
 
-    # ── Total count (keyset'te toplam hala gerekli ama cursor yoksa hesapla) ──
-    total = await Article.find({k: v for k, v in query.items() if k != "_id"}).count()
+    # ── Total count: base_query kullan (cursor range'i değil, id exact match dahil) ──
+    total = await Article.find(base_query).count()
 
     # ── Fetch items ──────────────────────────────────────────────────────────
     if use_keyset:

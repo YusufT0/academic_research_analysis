@@ -160,10 +160,20 @@ async def get_article_stats():
         {"$sort": {"count": -1}},
         {"$limit": 20}
     ]
-    
+
     cursor = collection.aggregate(pipeline_keywords)
     top_keywords = await cursor.to_list(length=None)
-    
+
+    # Unique keywords count
+    pipeline_unique_keywords = [
+        {"$unwind": "$keywords"},
+        {"$group": {"_id": "$keywords"}},
+        {"$count": "total"}
+    ]
+    cursor = collection.aggregate(pipeline_unique_keywords)
+    unique_keywords_result = await cursor.to_list(length=None)
+    unique_keywords_count = unique_keywords_result[0]["total"] if unique_keywords_result else 0
+
     # Top authors
     pipeline_authors = [
         {"$unwind": "$authors"},
@@ -176,16 +186,39 @@ async def get_article_stats():
         {"$sort": {"count": -1}},
         {"$limit": 20}
     ]
-    
+
     cursor = collection.aggregate(pipeline_authors)
     top_authors = await cursor.to_list(length=None)
-    
+
+    # Unique authors count
+    pipeline_unique_authors = [
+        {"$unwind": "$authors"},
+        {"$group": {"_id": "$authors"}},
+        {"$count": "total"}
+    ]
+    cursor = collection.aggregate(pipeline_unique_authors)
+    unique_authors_result = await cursor.to_list(length=None)
+    unique_authors_count = unique_authors_result[0]["total"] if unique_authors_result else 0
+
+    # Unique years count
+    pipeline_unique_years = [
+        {"$match": {"publication_year": {"$ne": None}}},
+        {"$group": {"_id": "$publication_year"}},
+        {"$count": "total"}
+    ]
+    cursor = collection.aggregate(pipeline_unique_years)
+    unique_years_result = await cursor.to_list(length=None)
+    unique_years_count = unique_years_result[0]["total"] if unique_years_result else 0
+
     result = {
         "total": await Article.count(),
         "by_source": {item["_id"]: item for item in by_source},
         "by_year": {str(item["_id"]): item["count"] for item in by_year},
         "top_keywords": top_keywords,
         "top_authors": top_authors,
+        "unique_keywords_count": unique_keywords_count,
+        "unique_authors_count": unique_authors_count,
+        "unique_years_count": unique_years_count,
     }
     
     await cache_service.set_search_results("stats_articles", {}, result)

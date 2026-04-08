@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, BarChart3 } from 'lucide-react';
 import StatsCards from '@/components/dashboard/StatsCards';
 import ScraperStatus from '@/components/dashboard/ScraperStatus';
@@ -77,24 +78,24 @@ function RecentArticles() {
           <div className="space-y-3">
             {articles.map((article) => (
               <div key={article.id} className="flex items-start gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors">
-                <div className="flex-1 min-w-0">
-                  <h4 className="font-medium text-slate-900 text-sm line-clamp-2">{article.title}</h4>
+                <Link href={`/articles?article_id=${article.id}`} className="flex-1 min-w-0 group">
+                  <h4 className="font-medium text-slate-900 text-sm line-clamp-2 group-hover:text-indigo-600 transition-colors">{article.title}</h4>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs text-slate-500">{article.journal_name}</span>
                     {article.publication_year && (
                       <Badge variant="default">{article.publication_year}</Badge>
                     )}
                   </div>
-        </div>
-          <a
-                  href={getFullUrl(article.url, article.source_website)} 
-            target="_blank"
-            rel="noopener noreferrer"
-                  className="text-emerald-600 hover:text-emerald-700"
+                </Link>
+                <a
+                  href={getFullUrl(article.url, article.source_website)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-emerald-600 hover:text-emerald-700 flex-shrink-0"
                 >
                   <ArrowUpRight className="h-4 w-4" />
-          </a>
-        </div>
+                </a>
+              </div>
             ))}
           </div>
         )}

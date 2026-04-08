@@ -1,11 +1,22 @@
 'use client';
 
+import { useState } from 'react';
+import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Medal, Star, Target, TrendingUp, Presentation } from 'lucide-react';
 import type { CitationStats } from '@/lib/types';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 
 const COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'];
+
+const SORT_ORDER: Record<string, number> = {
+  "0": 0,
+  "1": 1,
+  "5": 2,
+  "20": 3,
+  "50": 4,
+  "100+": 5,
+};
 
 const DISTRIBUTION_LABELS: Record<string, string> = {
   "0": "Atıf Almayan (0)",
@@ -17,11 +28,26 @@ const DISTRIBUTION_LABELS: Record<string, string> = {
 };
 
 export function CitationsSection({ data }: { data: CitationStats }) {
-  // Format data for Recharts
-  const distributionData = data.citation_distribution.map((d, i) => ({
-    name: DISTRIBUTION_LABELS[d._id.toString()] || `${d._id} Atıf`,
-    amount: d.count
-  }));
+  // Format and sort data in correct order
+  const allDistributionData = [...data.citation_distribution]
+    .sort((a, b) => (SORT_ORDER[a._id.toString()] ?? 99) - (SORT_ORDER[b._id.toString()] ?? 99))
+    .map((d) => ({
+      name: DISTRIBUTION_LABELS[d._id.toString()] || `${d._id} Atıf`,
+      amount: d.count,
+    }));
+
+  const [hiddenItems, setHiddenItems] = useState<Set<string>>(new Set());
+
+  const distributionData = allDistributionData.filter((d) => !hiddenItems.has(d.name));
+
+  function toggleItem(name: string) {
+    setHiddenItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   const yearlyData = data.citations_by_pub_year.map(d => ({
     year: d._id.toString(),
@@ -74,7 +100,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
             <CardDescription>Hangi aralıkta kaç makale atıf almış?</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-72 w-full">
+            <div className="h-64 w-full">
               <ResponsiveContainer>
                 <PieChart>
                   <Pie
@@ -83,18 +109,54 @@ export function CitationsSection({ data }: { data: CitationStats }) {
                     cy="50%"
                     labelLine={false}
                     outerRadius={90}
+                    innerRadius={40}
                     fill="#8884d8"
                     dataKey="amount"
-                    label={({ name, percent }) => `${name} (${((percent || 0) * 100).toFixed(0)}%)`}
+                    label={({ cx, cy, midAngle, innerRadius, outerRadius, percent }) => {
+                      if ((percent || 0) < 0.05) return null;
+                      const RADIAN = Math.PI / 180;
+                      const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
+                      const x = cx + radius * Math.cos(-midAngle * RADIAN);
+                      const y = cy + radius * Math.sin(-midAngle * RADIAN);
+                      return (
+                        <text x={x} y={y} fill="white" textAnchor="middle" dominantBaseline="central" fontSize={12} fontWeight={600}>
+                          {`${((percent || 0) * 100).toFixed(0)}%`}
+                        </text>
+                      );
+                    }}
                   >
-                    {distributionData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
+                    {distributionData.map((entry) => {
+                      const originalIndex = allDistributionData.findIndex((d) => d.name === entry.name);
+                      return (
+                        <Cell key={`cell-${entry.name}`} fill={COLORS[originalIndex % COLORS.length]} />
+                      );
+                    })}
                   </Pie>
                   <Tooltip formatter={(value) => [`${value} makale`, 'Adet']} />
-                  <Legend />
                 </PieChart>
               </ResponsiveContainer>
+            </div>
+            {/* Tıklanabilir özel legend */}
+            <div className="flex flex-wrap justify-center gap-x-4 gap-y-2 mt-3">
+              {allDistributionData.map((entry, index) => {
+                const hidden = hiddenItems.has(entry.name);
+                return (
+                  <button
+                    key={entry.name}
+                    onClick={() => toggleItem(entry.name)}
+                    className="flex items-center gap-1.5 text-xs transition-opacity"
+                    style={{ opacity: hidden ? 0.35 : 1 }}
+                  >
+                    <span
+                      className="inline-block w-3 h-3 rounded-sm flex-shrink-0"
+                      style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                    />
+                    <span className={hidden ? 'line-through text-slate-400' : 'text-slate-600'}>
+                      {entry.name}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </CardContent>
         </Card>
@@ -113,11 +175,31 @@ export function CitationsSection({ data }: { data: CitationStats }) {
                 <div key={article._id} className="flex gap-4 p-3 bg-slate-50 rounded-lg items-center hover:bg-slate-100 transition-colors">
                   <div className="text-xl font-bold text-slate-300 w-6 text-center">{idx + 1}</div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 truncate" title={article.title}>{article.title}</p>
-                    <p className="text-xs text-slate-500 truncate">{article.authors.slice(0, 2).join(', ')}{article.authors.length > 2 ? ' et al.' : ''} • {article.publication_year}</p>
+                    <Link
+                      href={`/articles?article_id=${article._id}`}
+                      className="text-sm font-semibold text-slate-900 hover:text-indigo-600 truncate block transition-colors"
+                      title={article.title}
+                    >
+                      {article.title}
+                    </Link>
+                    <p className="text-xs text-slate-500 truncate mt-0.5">
+                      {article.authors.slice(0, 2).map((author, i) => (
+                        <span key={author}>
+                          <Link
+                            href={`/authors/${encodeURIComponent(author)}`}
+                            className="hover:text-indigo-600 hover:underline transition-colors"
+                          >
+                            {author}
+                          </Link>
+                          {i < Math.min(article.authors.length, 2) - 1 ? ', ' : ''}
+                        </span>
+                      ))}
+                      {article.authors.length > 2 ? ' et al.' : ''}
+                      {article.publication_year ? ` • ${article.publication_year}` : ''}
+                    </p>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <p className="text-lg font-bold text-emerald-600">{article.citation_count}</p>
+                    <p className="text-lg font-bold text-emerald-600">{article.citation_count.toLocaleString()}</p>
                     <p className="text-[10px] text-slate-400 uppercase tracking-wider">Atıf</p>
                   </div>
                 </div>
@@ -140,8 +222,14 @@ export function CitationsSection({ data }: { data: CitationStats }) {
                 <div key={journal._id} className="flex gap-4 p-3 bg-slate-50 rounded-lg items-center hover:bg-slate-100 transition-colors">
                   <div className="text-xl font-bold text-slate-300 w-6 text-center">{idx + 1}</div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-slate-900 truncate" title={journal.name}>{journal.name}</p>
-                    <p className="text-xs text-slate-500 truncate">Toplam Dergi Atıfı: {journal.total_citation_count}</p>
+                    <Link
+                      href={`/journals?journal_id=${journal._id}`}
+                      className="text-sm font-semibold text-slate-900 hover:text-indigo-600 truncate block transition-colors"
+                      title={journal.name}
+                    >
+                      {journal.name}
+                    </Link>
+                    <p className="text-xs text-slate-500 truncate">Toplam Dergi Atıfı: {journal.total_citation_count.toLocaleString()}</p>
                   </div>
                   <div className="text-right flex-shrink-0">
                     <p className="text-lg font-bold text-indigo-600">{journal.h_index}</p>

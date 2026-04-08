@@ -37,6 +37,14 @@ body {
   background: #94a3b8;
 }
 
+/* Remove focus outline from Recharts SVG elements */
+.recharts-wrapper,
+.recharts-wrapper *,
+.recharts-wrapper svg,
+.recharts-wrapper svg * {
+  outline: none !important;
+}
+
 /* Custom animations */
 @keyframes pulse-slow {
   0%, 100% {
