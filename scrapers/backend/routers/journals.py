@@ -37,6 +37,8 @@ async def list_journals(
     open_access: Optional[bool] = Query(None, description="Açık erişim"),
     letter_group: Optional[str] = Query(None, description="Alfabetik grup"),
     search: Optional[str] = Query(None, description="İsim araması"),
+    year_min: Optional[int] = Query(None, description="Sayı yılı aralığı - başlangıç"),
+    year_max: Optional[int] = Query(None, description="Sayı yılı aralığı - bitiş"),
     # Sorting
     sort_by: str = Query("name", description="Sıralama alanı: name, article_count, issue_count"),
     sort_order: str = Query("asc", description="Sıralama yönü: asc, desc"),
@@ -57,7 +59,9 @@ async def list_journals(
         "open_access": open_access,
         "letter_group": letter_group,
         "sort_by": sort_by,
-        "sort_order": sort_order
+        "sort_order": sort_order,
+        "year_min": year_min,
+        "year_max": year_max,
     }
     search_query = search or ""
     
@@ -79,7 +83,25 @@ async def list_journals(
         query["letter_group"] = letter_group
     if search:
         query["name"] = {"$regex": search, "$options": "i"}
-    
+    if year_min is not None or year_max is not None:
+        from database.models import Issue
+        year_filter: dict = {}
+        if year_min is not None:
+            year_filter["$gte"] = year_min
+        if year_max is not None:
+            year_filter["$lte"] = year_max
+        pipeline = [
+            {"$match": {"year": year_filter}},
+            {"$group": {"_id": "$journal_id"}},
+        ]
+        issue_collection = Issue.get_pymongo_collection()
+        matching = await issue_collection.aggregate(pipeline).to_list(length=None)
+        matching_ids = [doc["_id"] for doc in matching]
+        if matching_ids:
+            query["_id"] = {"$in": matching_ids}
+        else:
+            return {"items": [], "total": 0, "page": page, "page_size": page_size, "total_pages": 0, "has_next": False, "has_prev": False}
+
     # Sort direction
     sort_dir = 1 if sort_order == "asc" else -1
     
@@ -136,6 +158,21 @@ async def list_journals(
     await cache_service.set_search_results(f"journals_list_v2_{search_query}", cache_params, result)
     logger.info(f"Cache MISS: journals list (page {page}) - cached")
     return result
+
+
+@router.get("/year-range", summary="Dergi sayı yılı min/max değerlerini getir")
+async def get_journal_year_range():
+    """Veritabanındaki sayıların (issue) en küçük ve en büyük yılını döndürür."""
+    from database.models import Issue
+    pipeline = [
+        {"$match": {"year": {"$ne": None}}},
+        {"$group": {"_id": None, "min_year": {"$min": "$year"}, "max_year": {"$max": "$year"}}},
+    ]
+    collection = Issue.get_pymongo_collection()
+    result = await collection.aggregate(pipeline).to_list(length=1)
+    if result:
+        return {"min_year": result[0]["min_year"], "max_year": result[0]["max_year"]}
+    return {"min_year": 2000, "max_year": 2025}
 
 
 @router.get("/{journal_id}", summary="Dergi detayı", response_model=JournalResponse)

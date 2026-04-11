@@ -10,8 +10,9 @@ import {
 import { Card, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { getArticles, getArticle, type ArticleFilters } from '@/lib/api';
+import { getArticles, getArticle, getArticleYearRange, type ArticleFilters } from '@/lib/api';
 import type { Article, PaginatedResponse } from '@/lib/types';
+import { YearRangeSlider } from '@/components/ui/YearRangeSlider';
 
 function getFullUrl(url: string, sourceWebsite: string): string {
   if (!url) return '';
@@ -543,6 +544,7 @@ function ArticlesContent() {
 
   const [data, setData] = useState<PaginatedResponse<Article> | null>(null);
   const [loading, setLoading] = useState(true);
+  const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
   const [filters, setFilters] = useState<ArticleFilters>({
     page: 1,
     page_size: 10,
@@ -551,6 +553,13 @@ function ArticlesContent() {
     id: articleId || undefined,
   });
   const [showFilters, setShowFilters] = useState(false);
+
+  useEffect(() => {
+    getArticleYearRange().then((r) => {
+      setYearRange({ min: r.min_year, max: r.max_year });
+      setFilters((prev) => ({ ...prev, year_min: r.min_year, year_max: r.max_year }));
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (articleId) {
@@ -612,80 +621,78 @@ function ArticlesContent() {
       {showFilters && (
         <Card>
           <CardContent className="pt-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Kaynak</label>
-                <select
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  value={filters.source_website || ''}
-                  onChange={(e) => handleFilterChange('source_website', e.target.value || undefined)}
-                >
-                  <option value="">Tümü</option>
-                  <option value="ieeexplore">IEEE Xplore</option>
-                  <option value="sciencedirect">ScienceDirect</option>
-                  <option value="acm">ACM Digital Library</option>
-                </select>
+            <div className="flex flex-col lg:flex-row gap-6">
+              {/* Sol yarı — 3 dropdown */}
+              <div className="flex-1 flex flex-col sm:flex-row gap-3">
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Kaynak</label>
+                  <select
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={filters.source_website || ''}
+                    onChange={(e) => handleFilterChange('source_website', e.target.value || undefined)}
+                  >
+                    <option value="">Tümü</option>
+                    <option value="ieeexplore">IEEE Xplore</option>
+                    <option value="sciencedirect">ScienceDirect</option>
+                    <option value="acm">ACM Digital Library</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Açık Erişim</label>
+                  <select
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={filters.open_access === undefined ? '' : String(filters.open_access)}
+                    onChange={(e) =>
+                      handleFilterChange(
+                        'open_access',
+                        e.target.value === '' ? undefined : e.target.value === 'true',
+                      )
+                    }
+                  >
+                    <option value="">Tümü</option>
+                    <option value="true">Evet</option>
+                    <option value="false">Hayır</option>
+                  </select>
+                </div>
+                <div className="flex-1">
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Sıralama</label>
+                  <select
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={`${filters.sort_by}-${filters.sort_order}`}
+                    onChange={(e) => {
+                      const [sortBy, sortOrder] = e.target.value.split('-');
+                      setFilters((prev) => ({
+                        ...prev,
+                        sort_by: sortBy,
+                        sort_order: sortOrder as 'asc' | 'desc',
+                      }));
+                    }}
+                  >
+                    <option value="citation_count-desc">Atıf Sayısı (En Yüksek)</option>
+                    <option value="publication_year-desc">Yıl (Yeni → Eski)</option>
+                    <option value="publication_year-asc">Yıl (Eski → Yeni)</option>
+                    <option value="title-asc">Başlık (A → Z)</option>
+                    <option value="title-desc">Başlık (Z → A)</option>
+                    <option value="citation_percentile-desc">Atıf Yüzdeliği (En Yüksek)</option>
+                    <option value="fwci-desc">FWCI (En Yüksek)</option>
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Yıl</label>
-                <select
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  value={filters.publication_year || ''}
-                  onChange={(e) =>
-                    handleFilterChange(
-                      'publication_year',
-                      e.target.value ? Number(e.target.value) : undefined,
-                    )
-                  }
-                >
-                  <option value="">Tümü</option>
-                  {[2025, 2024, 2023, 2022, 2021, 2020].map((year) => (
-                    <option key={year} value={year}>
-                      {year}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Açık Erişim</label>
-                <select
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  value={filters.open_access === undefined ? '' : String(filters.open_access)}
-                  onChange={(e) =>
-                    handleFilterChange(
-                      'open_access',
-                      e.target.value === '' ? undefined : e.target.value === 'true',
-                    )
-                  }
-                >
-                  <option value="">Tümü</option>
-                  <option value="true">Evet</option>
-                  <option value="false">Hayır</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">Sıralama</label>
-                <select
-                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  value={`${filters.sort_by}-${filters.sort_order}`}
-                  onChange={(e) => {
-                    const [sortBy, sortOrder] = e.target.value.split('-');
-                    setFilters((prev) => ({
-                      ...prev,
-                      sort_by: sortBy,
-                      sort_order: sortOrder as 'asc' | 'desc',
-                    }));
-                  }}
-                >
-                  <option value="citation_count-desc">Atıf Sayısı (En Yüksek)</option>
-                  <option value="publication_year-desc">Yıl (Yeni → Eski)</option>
-                  <option value="publication_year-asc">Yıl (Eski → Yeni)</option>
-                  <option value="title-asc">Başlık (A → Z)</option>
-                  <option value="title-desc">Başlık (Z → A)</option>
-                  <option value="citation_percentile-desc">Atıf Yüzdeliği (En Yüksek)</option>
-                  <option value="fwci-desc">FWCI (En Yüksek)</option>
-                </select>
-              </div>
+
+              {/* Sağ yarı — yıl aralığı slider */}
+              {yearRange && (
+                <div className="flex-1 flex flex-col justify-center">
+                  <YearRangeSlider
+                    label="Yayın Yılı Aralığı"
+                    min={yearRange.min}
+                    max={yearRange.max}
+                    value={[filters.year_min ?? yearRange.min, filters.year_max ?? yearRange.max]}
+                    onChange={([min, max]) =>
+                      setFilters((prev) => ({ ...prev, year_min: min, year_max: max, page: 1 }))
+                    }
+                  />
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>

@@ -58,3 +58,38 @@ body {
 .animate-pulse-slow {
   animation: pulse-slow 2s ease-in-out infinite;
 }
+
+/* Year range slider — inputs themselves don't capture clicks, only thumbs do */
+.year-range-slider {
+  pointer-events: none;
+}
+.year-range-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #4f46e5;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.4);
+  cursor: pointer;
+  pointer-events: all;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+.year-range-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.5);
+}
+.year-range-slider::-moz-range-thumb {
+  height: 16px;
+  width: 16px;
+  border-radius: 50%;
+  background: #4f46e5;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(79, 70, 229, 0.4);
+  cursor: pointer;
+  pointer-events: all;
+}
+.year-range-slider::-moz-range-track {
+  pointer-events: none;
+}

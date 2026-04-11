@@ -61,6 +61,11 @@ export async function getScraperStats() {
 
 // ==================== Journals ====================
 
+export interface YearRange {
+  min_year: number;
+  max_year: number;
+}
+
 export interface JournalFilters {
   page?: number;
   page_size?: number;
@@ -70,6 +75,8 @@ export interface JournalFilters {
   search?: string;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
+  year_min?: number;
+  year_max?: number;
 }
 
 export async function getJournals(filters: JournalFilters = {}): Promise<PaginatedResponse<Journal>> {
@@ -83,8 +90,14 @@ export async function getJournals(filters: JournalFilters = {}): Promise<Paginat
   if (filters.search) params.set('search', filters.search);
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
+  if (filters.year_min !== undefined) params.set('year_min', filters.year_min.toString());
+  if (filters.year_max !== undefined) params.set('year_max', filters.year_max.toString());
 
   return fetchApi<PaginatedResponse<Journal>>(`/journals?${params.toString()}`);
+}
+
+export async function getJournalYearRange(): Promise<YearRange> {
+  return fetchApi<YearRange>('/journals/year-range');
 }
 
 export async function getJournal(id: string): Promise<Journal> {
@@ -113,6 +126,8 @@ export interface ArticleFilters {
   issue_id?: string;
   source_website?: string;
   publication_year?: number;
+  year_min?: number;
+  year_max?: number;
   open_access?: boolean;
   article_type?: string;
   has_doi?: boolean;
@@ -131,6 +146,8 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.issue_id) params.set('issue_id', filters.issue_id);
   if (filters.source_website) params.set('source_website', filters.source_website);
   if (filters.publication_year) params.set('publication_year', filters.publication_year.toString());
+  if (filters.year_min !== undefined) params.set('year_min', filters.year_min.toString());
+  if (filters.year_max !== undefined) params.set('year_max', filters.year_max.toString());
   if (filters.open_access !== undefined) params.set('open_access', filters.open_access.toString());
   if (filters.article_type) params.set('article_type', filters.article_type);
   if (filters.has_doi !== undefined) params.set('has_doi', filters.has_doi.toString());
@@ -139,6 +156,10 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
 
   return fetchApi<PaginatedResponse<Article>>(`/articles?${params.toString()}`);
+}
+
+export async function getArticleYearRange(): Promise<YearRange> {
+  return fetchApi<YearRange>('/articles/year-range');
 }
 
 export async function getArticle(id: string): Promise<Article> {

@@ -32,7 +32,9 @@ async def list_articles(
     journal_id: Optional[str] = Query(None, description="Dergi ID'si"),
     issue_id: Optional[str] = Query(None, description="Sayı ID'si"),
     source_website: Optional[str] = Query(None, description="Kaynak site"),
-    publication_year: Optional[int] = Query(None, description="Yayın yılı"),
+    publication_year: Optional[int] = Query(None, description="Yayın yılı (tam eşleşme)"),
+    year_min: Optional[int] = Query(None, description="Yayın yılı aralığı - başlangıç"),
+    year_max: Optional[int] = Query(None, description="Yayın yılı aralığı - bitiş"),
     open_access: Optional[bool] = Query(None, description="Açık erişim"),
     article_type: Optional[str] = Query(None, description="Makale tipi"),
     has_doi: Optional[bool] = Query(None, description="DOI var mı"),
@@ -74,7 +76,14 @@ async def list_articles(
 
     if source_website:
         base_query["source_website"] = source_website
-    if publication_year:
+    if year_min is not None or year_max is not None:
+        year_filter: dict = {}
+        if year_min is not None:
+            year_filter["$gte"] = year_min
+        if year_max is not None:
+            year_filter["$lte"] = year_max
+        base_query["publication_year"] = year_filter
+    elif publication_year:
         base_query["publication_year"] = publication_year
     if open_access is not None:
         base_query["open_access"] = open_access
@@ -163,6 +172,20 @@ async def list_articles(
         "has_prev": page > 1,
         "next_cursor": next_cursor,
     }
+
+
+@router.get("/year-range", summary="Makale yayın yılı min/max değerlerini getir")
+async def get_article_year_range():
+    """Veritabanındaki makalelerin en küçük ve en büyük yayın yılını döndürür."""
+    pipeline = [
+        {"$match": {"publication_year": {"$ne": None}}},
+        {"$group": {"_id": None, "min_year": {"$min": "$publication_year"}, "max_year": {"$max": "$publication_year"}}},
+    ]
+    collection = Article.get_pymongo_collection()
+    result = await collection.aggregate(pipeline).to_list(length=1)
+    if result:
+        return {"min_year": result[0]["min_year"], "max_year": result[0]["max_year"]}
+    return {"min_year": 2000, "max_year": 2025}
 
 
 @router.get("/search", summary="Makale ara")

@@ -7,7 +7,8 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
-import { getJournals, getJournal, type JournalFilters } from '@/lib/api';
+import { getJournals, getJournal, getJournalYearRange, type JournalFilters } from '@/lib/api';
+import { YearRangeSlider } from '@/components/ui/YearRangeSlider';
 import type { Journal, PaginatedResponse } from '@/lib/types';
 import { JournalCard } from './JournalCard';
 
@@ -41,6 +42,7 @@ function JournalsContent() {
   const [data, setData] = useState<PaginatedResponse<Journal> | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
+  const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
   const initializedUrlParam = useRef(false);
   const skipSearchTrigger = useRef(false);
 
@@ -50,6 +52,13 @@ function JournalsContent() {
     sort_by: 'article_count',
     sort_order: 'desc',
   });
+
+  useEffect(() => {
+    getJournalYearRange().then((r) => {
+      setYearRange({ min: r.min_year, max: r.max_year });
+      setFilters((prev) => ({ ...prev, year_min: r.min_year, year_max: r.max_year }));
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     async function fetchJournals() {
@@ -105,20 +114,22 @@ function JournalsContent() {
       {/* Search and Filters */}
       <Card>
         <CardContent className="pt-6">
-          <div className="flex flex-col md:flex-row gap-4">
-            <div className="flex-1 relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Dergi ara..."
-                className="w-full pl-10 pr-4 py-2 rounded-lg border border-slate-300 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-              />
-            </div>
-            <div className="flex gap-3">
+          <div className="flex flex-col lg:flex-row gap-6">
+            {/* Sol yarı — arama + filtreler */}
+            <div className="flex-1 flex items-center gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Dergi ara..."
+                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                />
+              </div>
+
               <select
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 value={filters.source_website || ''}
                 onChange={(e) => setFilters((prev) => ({ ...prev, source_website: e.target.value || undefined, page: 1 }))}
               >
@@ -127,8 +138,9 @@ function JournalsContent() {
                 <option value="sciencedirect">ScienceDirect</option>
                 <option value="acm">ACM Digital Library</option>
               </select>
+
               <select
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 value={`${filters.sort_by}-${filters.sort_order}`}
                 onChange={(e) => {
                   const [sortBy, sortOrder] = e.target.value.split('-');
@@ -144,6 +156,21 @@ function JournalsContent() {
                 <option value="issue_count-desc">Sayı Sayısı</option>
               </select>
             </div>
+
+            {/* Sağ yarı — yıl aralığı slider */}
+            {yearRange && (
+              <div className="flex-1 flex flex-col justify-center">
+                <YearRangeSlider
+                  label="Sayı Yılı Aralığı"
+                  min={yearRange.min}
+                  max={yearRange.max}
+                  value={[filters.year_min ?? yearRange.min, filters.year_max ?? yearRange.max]}
+                  onChange={([min, max]) =>
+                    setFilters((prev) => ({ ...prev, year_min: min, year_max: max, page: 1 }))
+                  }
+                />
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
