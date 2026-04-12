@@ -989,6 +989,9 @@ class ScienceDirectScraper:
         all_journals = []
         page_count = 0
         
+        last_page_urls = set()
+        restart_count = 0
+        
         while True:
             # Stop flag kontrolü - her sayfa öncesi
             self.check_stop_flag()
@@ -1002,6 +1005,28 @@ class ScienceDirectScraper:
             
             # Mevcut sayfadaki journal'ları çıkar
             journals = self.extract_journals_from_current_page()
+            
+            current_urls = {j['url'] for j in journals if j.get('url')}
+            if current_urls and current_urls.issubset(last_page_urls):
+                logger.warning("Kopya liste tespit edildi (aynı sayfa tekrar yüklendi/aynı makaleler alındı)!")
+                if restart_count < 3:
+                    logger.info("Liste komple sıfırlanıyor, sayfa 1'e dönülüyor...")
+                    all_journals.clear()
+                    page_count = 0
+                    restart_count += 1
+                    last_page_urls.clear()
+                    
+                    self.driver.get(self.config.base_url)
+                    self._interruptible_sleep(3)
+                    handle_cookie_consent(self.driver)
+                    # update navigator info
+                    self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                    continue
+                else:
+                    logger.error("Maksimum sayfa sıfırlama limitine ulaşıldı, geçiliyor.")
+                    break
+                    
+            last_page_urls = current_urls
             
             # Sonuçları ekle
             for journal in journals:

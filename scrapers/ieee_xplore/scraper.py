@@ -159,6 +159,9 @@ class IEEEXploreScraper:
         
         logger.section(f"TOPLAM {total_pages} SAYFA TARANACAK")
         
+        last_page_urls = set()
+        restart_count = 0
+
         # Tüm sayfaları tara
         while True:
             # Stop flag kontrolü - her sayfa öncesi
@@ -169,6 +172,32 @@ class IEEEXploreScraper:
             # Mevcut sayfadaki journal'ları parse et
             page_source = self.driver.page_source
             journals = JournalParser.extract_journals_from_page(page_source)
+            
+            current_urls = {j['url'] for j in journals if j.get('url')}
+            if current_urls and current_urls.issubset(last_page_urls):
+                logger.warning("Kopya liste tespit edildi (aynı sayfa tekrar yüklendi/aynı makaleler alındı)!")
+                if restart_count < 3:
+                    logger.info("Liste komple sıfırlanıyor, sayfa 1'e dönülüyor...")
+                    self.all_journals.clear()
+                    current_page = 1
+                    restart_count += 1
+                    last_page_urls.clear()
+                    
+                    self.driver.get(self.config.base_url)
+                    wait_for_page_load(self.driver)
+                    self._interruptible_sleep(2)
+                    
+                    # Update navigator info
+                    self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                    page_info = self.navigator.get_current_page_info()
+                    if 'total_pages' in page_info:
+                        total_pages = page_info['total_pages']
+                    continue
+                else:
+                    logger.error("Maksimum sayfa sıfırlama limitine ulaşıldı, geçiliyor.")
+                    break
+                    
+            last_page_urls = current_urls
             self.all_journals.extend(journals)
             
             logger.found(len(journals), f"journal (Sayfa {current_page})")
