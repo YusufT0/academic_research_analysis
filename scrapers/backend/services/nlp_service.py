@@ -856,22 +856,34 @@ class NLPService:
         }
         
 
+    async def _resolve_journal_group_id(self, journal_name: str) -> Optional[PydanticObjectId]:
+        """
+        Dergi adını (journal_name) → journal ObjectId'ye çevirir.
+        DB'de group_id hem ObjectId hem str olabilir; ObjectId ile sorgulayarak her ikisini yakalarız.
+        Büyük/küçük harf farkını tolere eder; bulamazsa partial match dener.
+        """
+        pattern = re.compile(f"^{re.escape(journal_name.strip())}$", re.IGNORECASE)
+        article = await Article.find_one({"journal_name": {"$regex": pattern}})
+        if not article:
+            partial = re.compile(re.escape(journal_name.strip()), re.IGNORECASE)
+            article = await Article.find_one({"journal_name": {"$regex": partial}})
+        if not article:
+            logger.warning(f"_resolve_journal_group_id: no article found for journal_name='{journal_name}'")
+            return None
+        return article.journal_id  # PydanticObjectId
 
     async def get_clusters_by_journal(self, journal_name: str, model_version: str):
-        # 1. Find the journal_id from a sample article
-        sample_article = await Article.find_one({"journal_name": journal_name})
-        
-        if not sample_article:
+        journal_oid = await self._resolve_journal_group_id(journal_name)
+        if not journal_oid:
             return []
-        
-        # 2. Use .find() instead of .find_one() to get ALL clusters for this journal
-        # Also added model_version here to be safe
+
+        # group_id is stored as ObjectId in DB (some older docs may be str)
         clusters = await Cluster.find({
-            "group_id": str(sample_article.journal_id),
+            "group_id": {"$in": [journal_oid, str(journal_oid)]},
             "cluster_type": "journal",
             "model_version": model_version
         }).to_list()
-        
+
         return clusters
     # For Journals
     async def get_journal_topic_trends(self, journal_name: str, model_version: str, top_n: int = None):
@@ -903,7 +915,13 @@ class NLPService:
             "cluster_type": cluster_type,
         }
         if group_id:
-            query["group_id"] = group_id
+            if cluster_type == "journal":
+                resolved = await self._resolve_journal_group_id(group_id)
+                if not resolved:
+                    return {"clusters": []}
+                query["group_id"] = {"$in": [resolved, str(resolved)]}
+            else:
+                query["group_id"] = group_id
 
         clusters = await Cluster.find(query).to_list()
 
@@ -938,7 +956,13 @@ class NLPService:
             "model_version": model_version,
         }
         if group_id:
-            query["group_id"] = group_id
+            if cluster_type == "journal":
+                resolved = await self._resolve_journal_group_id(group_id)
+                if not resolved:
+                    return {"topic_tag": None, "series": {}}
+                query["group_id"] = {"$in": [resolved, str(resolved)]}
+            else:
+                query["group_id"] = group_id
 
         cluster = await Cluster.find_one(query)
         if not cluster or cluster.cluster_id == -1:

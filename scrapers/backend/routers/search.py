@@ -124,6 +124,21 @@ async def search_suggest(
     return {"query": q, "suggestions": suggestions}
 
 
+@router.get("/suggest/journals", summary="Dergi adı autocomplete önerileri")
+async def suggest_journals(
+    q: str = Query(..., min_length=1, description="Arama prefix'i"),
+    limit: int = Query(15, ge=1, le=50, description="Öneri sayısı"),
+):
+    """
+    Elasticsearch üzerinden dergi adı autocomplete.
+
+    Wildcard + aggregation kullanarak veritabanındaki gerçek dergi
+    adlarını (journal_name) prefix eşleşmesine göre döner.
+    """
+    suggestions = await elasticsearch_service.suggest_journals(prefix=q, limit=limit)
+    return {"query": q, "suggestions": suggestions}
+
+
 @router.get("/facets", summary="Arama filtreleri")
 async def search_facets():
     """

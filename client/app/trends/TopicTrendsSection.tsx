@@ -1,6 +1,6 @@
 ﻿'use client';
 
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import {
   ResponsiveContainer,
   LineChart,
@@ -18,6 +18,7 @@ import {
   listClusters,
   getClusterTrendSeries,
   getClusterArticles,
+  suggestJournals,
 } from '@/lib/api';
 import type { TopicTrendsData, TopicCluster, NlpStatus } from '@/lib/types';
 import Link from 'next/link';
@@ -85,6 +86,9 @@ export function TopicTrendsSection() {
   // ── Core state ──
   const [mode, setMode] = useState<Mode>('all');
   const [nameInput, setNameInput] = useState('');
+  const [journalSuggestions, setJournalSuggestions] = useState<string[]>([]);
+  const [showJournalSuggestions, setShowJournalSuggestions] = useState(false);
+  const journalInputRef = useRef<HTMLDivElement>(null);
   const [submittedName, setSubmittedName] = useState('');
 
   // ── NLP model ──
@@ -232,6 +236,21 @@ export function TopicTrendsSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, modelVersion]);
 
+  // ── Journal name autocomplete debounce ──
+  useEffect(() => {
+    if (mode !== 'journal' || !nameInput.trim()) {
+      setJournalSuggestions([]);
+      return;
+    }
+    const t = setTimeout(() => {
+      suggestJournals(nameInput.trim()).then((s) => {
+        setJournalSuggestions(s);
+        setShowJournalSuggestions(s.length > 0);
+      });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [nameInput, mode]);
+
   // ── Article search debounce (fires 500ms after articleSearch stops changing) ──
   useEffect(() => {
     if (openArticleClusterId === null) return;
@@ -248,6 +267,7 @@ export function TopicTrendsSection() {
     const trimmed = nameInput.trim();
     if (!trimmed) return;
     setSubmittedName(trimmed);
+    setShowJournalSuggestions(false);
     fetchBoth(trimmed);
   }
 
@@ -264,6 +284,8 @@ export function TopicTrendsSection() {
     setFullListOpen(false);
     setClusterSearch('');
     setClusterPage(0);
+    setJournalSuggestions([]);
+    setShowJournalSuggestions(false);
   }
 
   function handleTopNChange(n: number) {
@@ -416,14 +438,46 @@ export function TopicTrendsSection() {
         {/* Journal input */}
         {mode === 'journal' && (
           <div className="flex gap-2">
-            <input
-              type="text"
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-              placeholder="Dergi adi girin..."
-              className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-            />
+            <div ref={journalInputRef} className="relative flex-1">
+              <input
+                type="text"
+                value={nameInput}
+                onChange={(e) => {
+                  setNameInput(e.target.value);
+                  if (!e.target.value.trim()) {
+                    setJournalSuggestions([]);
+                    setShowJournalSuggestions(false);
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') { setShowJournalSuggestions(false); handleSearch(); }
+                  if (e.key === 'Escape') setShowJournalSuggestions(false);
+                }}
+                onFocus={() => journalSuggestions.length > 0 && setShowJournalSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowJournalSuggestions(false), 150)}
+                placeholder="Dergi adi girin..."
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              {showJournalSuggestions && journalSuggestions.length > 0 && (
+                <ul className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto text-sm">
+                  {journalSuggestions.map((name) => (
+                    <li
+                      key={name}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setNameInput(name);
+                        setShowJournalSuggestions(false);
+                        setSubmittedName(name);
+                        fetchBoth(name);
+                      }}
+                      className="px-3 py-2 cursor-pointer hover:bg-emerald-50 hover:text-emerald-700 truncate border-b border-slate-100 last:border-0"
+                    >
+                      {name}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <button
               onClick={handleSearch}
               disabled={!nameInput.trim() || loading || !modelVersion}

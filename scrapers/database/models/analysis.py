@@ -4,9 +4,9 @@ NLP ve Clustering analiz sonuçları için modeller
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Any
 from beanie import Document, PydanticObjectId
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from .base import TimestampMixin
 
@@ -112,6 +112,14 @@ class Cluster(Document, TimestampMixin):
         default=None,
         description="Cluster'ın kaynak publisher'ı ya da journal'ı. ALL seçildiyse None."
     )
+
+    @field_validator("group_id", mode="before")
+    @classmethod
+    def coerce_group_id(cls, v: Any) -> Optional[str]:
+        """DB'de ObjectId olarak kaydedilmiş group_id'leri string'e çevirir."""
+        if v is None:
+            return None
+        return str(v)
     # İstatistikler
     article_count: int = Field(default=0, description="Cluster'daki makale sayısı")
     avg_similarity: Optional[float] = Field(

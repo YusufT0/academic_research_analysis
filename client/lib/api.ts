@@ -464,6 +464,15 @@ export async function getNlpStatus(): Promise<import('./types').NlpStatus> {
   return fetchApi<import('./types').NlpStatus>('/nlp/status');
 }
 
+// ==================== Search / Autocomplete ====================
+
+export async function suggestJournals(q: string, limit = 15): Promise<string[]> {
+  if (!q.trim()) return [];
+  const params = new URLSearchParams({ q: q.trim(), limit: String(limit) });
+  const res = await fetchApi<{ query: string; suggestions: string[] }>(`/search/suggest/journals?${params.toString()}`);
+  return res.suggestions ?? [];
+}
+
 export async function getAllTopicTrends(model_version: string, top_n = 10): Promise<import('./types').TopicTrendsData> {
   const params = new URLSearchParams({ model_version, top_n: String(top_n) });
   return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_all_topic_trends?${params.toString()}`);
