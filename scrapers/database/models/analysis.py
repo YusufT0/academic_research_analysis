@@ -4,7 +4,7 @@ NLP ve Clustering analiz sonuçları için modeller
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Union
 from beanie import Document, PydanticObjectId
 from pydantic import Field
 
@@ -37,7 +37,25 @@ class ArticleEmbedding(Document, TimestampMixin):
     # Metadata
     model_version: str = Field(..., description="Kullanılan model versiyonu")
     
+    article_keywords : List[str] = Field(
+        ...,
+        description="Makaleye ait anahtar kelimeler."
+    )
+    article_dates : str = Field(
+        ...,
+        description="Date Published."
+    )
+    article_publisher : str = Field(
+       None,
+       description = "Publisher of the article." 
+    )
+    article_journal_id: PydanticObjectId = Field(
+        None,
+        description="Journal ID."
+    )
+ 
     class Settings:
+        # name = "article_embeddings_sample"
         name = "article_embeddings"
         indexes = [
             [("article_id", 1)],
@@ -85,7 +103,15 @@ class Cluster(Document, TimestampMixin):
         default_factory=list, 
         description="Örnek makale başlıkları (max 5)"
     )
-    
+
+    cluster_type: str = Field(
+        ...,
+        description="Yapılan clusterlamanin tipi."
+    )
+    group_id: Optional[Union[PydanticObjectId, str]] = Field(
+        default=None,
+        description="Cluster'ın kaynak publisher'ı ya da journal'ı. ALL seçildiyse None."
+    )    
     # İstatistikler
     article_count: int = Field(default=0, description="Cluster'daki makale sayısı")
     avg_similarity: Optional[float] = Field(
@@ -97,6 +123,7 @@ class Cluster(Document, TimestampMixin):
     model_version: str = Field(..., description="Clustering model versiyonu")
     
     class Settings:
+        # name = "clusters_sample"
         name = "clusters"
         indexes = [
             [("cluster_id", 1), ("model_version", 1)],
