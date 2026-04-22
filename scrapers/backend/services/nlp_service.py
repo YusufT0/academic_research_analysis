@@ -126,7 +126,7 @@ class NLPService:
             try:
                 self._embedder = SentenceTransformer(settings.nlp_embedder_model, device = "cuda")
             except:
-                print("Cannot link to GPU. Switching to CPU")
+                logger.warning("Cannot link to GPU. Switching to CPU")
                 self._embedder = SentenceTransformer(settings.nlp_embedder_model)
                 
         return self._embedder
@@ -612,11 +612,11 @@ class NLPService:
                         try:
                             dt_object = datetime.fromisoformat(est_date)
                             date_fin = dt_object
-                            print(f"Success: {est_date}")
+                            logger.debug(f"Date parsed successfully: {est_date}")
                         except ValueError:
-                            print(f"Failed to parse: {est_date}")
+                            logger.warning(f"Failed to parse date string: {est_date}")
                     else:
-                        print(f"Found {month}, but couldn't find a 4-digit year near it.")
+                        logger.debug(f"Found month '{month}' but no 4-digit year near it in: {date}")
                     
                     break
         return date_fin
@@ -650,8 +650,7 @@ class NLPService:
                 dt_object = datetime.fromisoformat(date)
                 result[dt_object] = result.get(dt_object, 0) + 1
             except:
-                print(f"{date} is not convertable to datetime")
-                print(f"Trying to fetch date from the string: {date}")
+                logger.debug(f"Date not ISO-parseable, attempting string extraction: {date}")
                 d = date.lower()
                 est_date = ""
                 for month, number in prefix_dates.items():
@@ -668,11 +667,11 @@ class NLPService:
                             try:
                                 dt_object = datetime.fromisoformat(est_date)
                                 result[dt_object] = result.get(dt_object, 0) + 1
-                                print(f"Success: {est_date}")
+                                logger.debug(f"Date parsed successfully: {est_date}")
                             except ValueError:
-                                print(f"Failed to parse: {est_date}")
+                                logger.warning(f"Failed to parse date string: {est_date}")
                         else:
-                            print(f"Found {month}, but couldn't find a 4-digit year near it.")
+                            logger.debug(f"Found month '{month}' but no 4-digit year near it in: {date}")
                         
                         break
                     
@@ -761,8 +760,8 @@ class NLPService:
     async def _fetch_with_source(self, user_website):
         article_embeddings = await ArticleEmbedding.find({"article_source_website": user_website}).to_list()
            
-        print(article_embeddings[0])
-        return 0;
+        logger.debug(f"Sample embedding: {article_embeddings[0]}")
+        return 0
     async def _generate_trends_from_clusters(self, clusters: list, model_version: str, top_n: int = None):
         if not clusters:
             return {"graph_data": [], "clusters": []}
@@ -1380,7 +1379,7 @@ class NLPService:
         if not model_version:
             model_version = await self._resolve_model_db_first(auto_train)
 
-        print("WE ARE SO BACK")
+        logger.info("Cache kontrol ediliyor")
         if self._cached_version != model_version:
             await self._load_cache(model_version)
 
