@@ -6,7 +6,7 @@ Clustering ve embedding iş mantığı
 import re
 # import pickle
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING
+from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Union
 from beanie import PydanticObjectId
 from collections import Counter
 import sys
@@ -22,7 +22,7 @@ from database.repositories import (
 )
 from backend.core.config import settings
 from utils.logger import get_logger
-
+from collections import defaultdict
 logger = get_logger('nlp_service')
 
 # Ağır kütüphaneler lazy import edilir — modül yüklenirken değil,
@@ -240,8 +240,8 @@ class NLPService:
             embedder_model=settings.nlp_embedder_model,
             umap_n_neighbors=settings.nlp_umap_n_neighbors,
             umap_n_components=settings.nlp_umap_n_components,
-            min_cluster_size=settings.nlp_min_cluster_size,
-            min_samples=settings.nlp_min_samples
+            min_cluster_size=settings.nlp_min_cluster_size_all,
+            min_samples=settings.nlp_min_samples_all
         )
         await self.analysis_repo.start_run(run)
         
@@ -258,10 +258,10 @@ class NLPService:
                 if article.abstract and len(article.abstract) >= min_abstract_length:
                     valid_articles.append(article)
             
-            if len(valid_articles) < settings.nlp_min_cluster_size:
+            if len(valid_articles) < settings.nlp_min_cluster_size_all:
                 raise ValueError(
                     f"Yetersiz makale sayısı: {len(valid_articles)} "
-                    f"(minimum: {settings.nlp_min_cluster_size})"
+                    f"(minimum: {settings.nlp_min_cluster_size_all})"
                 )
             
             logger.info(f"Found {len(valid_articles)} valid articles")
@@ -270,12 +270,23 @@ class NLPService:
             logger.info("Cleaning texts and generating embeddings...")
             cleaned_texts = []
             article_ids = []
-            
+            article_keywords = []
+            article_dates = []
+            article_publishers = []
+            article_journals = []
             for article in valid_articles:
                 cleaned = self._clean_text(article.abstract)
+                kws = await self._extract_abstarct_keywords(article.abstract)
+                date = await self._arrange_date(article.publication_date)
+                if date == None:
+                    continue
                 if cleaned:
                     cleaned_texts.append(cleaned)
                     article_ids.append(article.id)
+                    article_keywords.append(kws)
+                    article_dates.append(str(date))
+                    article_publishers.append(article.publisher)
+                    article_journals.append(article.journal_id)
             
             # Embedding
             embeddings_full = self.embedder.encode(cleaned_texts, show_progress_bar=True)
@@ -292,25 +303,9 @@ class NLPService:
             )
             embeddings_reduced = reducer.fit_transform(embeddings_full)
             logger.success(f"Reduced to {embeddings_reduced.shape[1]} dimensions")
-            
-            # 4. HDBSCAN ile clustering
-            logger.info("Clustering with HDBSCAN...")
-            import hdbscan
-            clusterer = hdbscan.HDBSCAN(
-                min_cluster_size=settings.nlp_min_cluster_size,
-                min_samples=settings.nlp_min_samples
-            )
-            cluster_labels = clusterer.fit_predict(embeddings_reduced)
-            
-            n_clusters = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-            noise_count = (cluster_labels == -1).sum()
-            logger.success(f"Found {n_clusters} clusters, {noise_count} noise points")
-            
-            # 5. Eski verileri temizle (aynı versiyon varsa)
+            # Saving Embeddings.
             await self.embedding_repo.delete_by_model_version(model_version)
             await self.cluster_repo.delete_by_model_version(model_version)
-            
-            # 6. Embedding'leri kaydet
             logger.info("Saving embeddings to database...")
             embedding_docs = []
             for i, article_id in enumerate(article_ids):
@@ -319,45 +314,171 @@ class NLPService:
                     embedding_full=embeddings_full[i].tolist(),
                     embedding_reduced=embeddings_reduced[i].tolist(),
                     text_cleaned=cleaned_texts[i],
-                    model_version=model_version
+                    model_version = model_version,
+                    article_dates = article_dates[i],
+                    article_keywords = article_keywords[i],
+                    article_publisher = article_publishers[i],
+                    article_journal_id = article_journals[i]
                 )
                 embedding_docs.append(embedding_doc)
             
             await self.embedding_repo.bulk_create(embedding_docs)
             logger.success(f"Saved {len(embedding_docs)} embeddings")
             
-            # 7. Cluster'ları kaydet
-            logger.info("Saving clusters to database...")
-            cluster_docs = await self._create_cluster_documents(
-                cluster_labels=cluster_labels,
-                embeddings_full=embeddings_full,
-                embeddings_reduced=embeddings_reduced,
-                article_ids=article_ids,
-                valid_articles=valid_articles,
-                model_version=model_version
-            )
+
+            # 4. HDBSCAN ile clustering
             
-            await self.cluster_repo.bulk_create(cluster_docs)
-            logger.success(f"Saved {len(cluster_docs)} clusters")
+            # 5. Eski verileri temizle (aynı versiyon varsa)
+            
+            def run_hdbscan(indices: list[int], min_cluster_size: int, min_samples: int):
+                subset_reduced = embeddings_reduced[indices]
+                clusterer = hdbscan.HDBSCAN(
+                    min_cluster_size=min_cluster_size,
+                    min_samples=min_samples
+                )
+                return clusterer.fit_predict(subset_reduced)
+
+            # --- Clustering for All ---
+            logger.info("Clustering for All.")
+            all_indices = list(range(len(article_ids)))
+            all_labels = run_hdbscan(
+                all_indices,
+                min_cluster_size=settings.nlp_min_cluster_size_all,
+                min_samples=settings.nlp_min_samples_all
+            )
+            n_clusters_all = len(set(all_labels)) - (1 if -1 in all_labels else 0)
+            logger.success(f"Found {n_clusters_all} clusters for all.")
+
+            cluster_docs_all = await self._create_cluster_documents(
+                cluster_labels=all_labels,
+                embeddings_full=embeddings_full[all_indices],
+                embeddings_reduced=embeddings_reduced[all_indices],
+                article_ids=[article_ids[i] for i in all_indices],
+                valid_articles=[valid_articles[i] for i in all_indices],
+                model_version=model_version,
+                cluster_type="all",
+                group_id=None
+            )
+            await self.cluster_repo.bulk_create(cluster_docs_all)
+            logger.success(f"Saved {len(cluster_docs_all)} clusters for all.")
+
+            # --- Clustering for Publishers ---
+            logger.info("Clustering for Publishers.")
+            publisher_groups: dict[str, list[int]] = {}
+            for i, source in enumerate(article_publishers):
+                publisher_groups.setdefault(source, []).append(i)
+
+            cluster_docs_publishers = []
+            for publisher, indices in publisher_groups.items():
+                if len(indices) == 1:
+                    idx = indices[0]
+                    cluster_docs_publishers.append(Cluster(
+                        cluster_id=0,
+                        centroid_full=embeddings_full[idx].tolist(),
+                        centroid_reduced=embeddings_reduced[idx].tolist(),
+                        article_ids=[article_ids[idx]],
+                        label=None,
+                        top_keywords=[],
+                        sample_titles=[valid_articles[idx].title] if valid_articles[idx].title else [],
+                        article_count=1,
+                        cluster_type="publisher",
+                        group_id=publisher,
+                        model_version=model_version
+                    ))
+                    continue
+                if len(indices) < settings.nlp_min_cluster_size_publisher:
+                    logger.warning(f"Skipping publisher '{publisher}': only {len(indices)} articles.")
+                    continue
+                labels = run_hdbscan(
+                    indices,
+                    min_cluster_size=settings.nlp_min_cluster_size_publisher,
+                    min_samples=settings.nlp_min_samples_publisher
+                )
+                docs = await self._create_cluster_documents(
+                    cluster_labels=labels,
+                    embeddings_full=embeddings_full[indices],
+                    embeddings_reduced=embeddings_reduced[indices],
+                    article_ids=[article_ids[i] for i in indices],
+                    valid_articles=[valid_articles[i] for i in indices],
+                    model_version=model_version,
+                    cluster_type="publisher",
+                    group_id=publisher
+                )
+                cluster_docs_publishers.extend(docs)
+
+            await self.cluster_repo.bulk_create(cluster_docs_publishers)
+            logger.success(f"Saved {len(cluster_docs_publishers)} clusters for publishers.")
+
+            # --- Clustering for Journals ---
+            logger.info("Clustering for Journals.")
+            journal_groups: dict[str, list[int]] = {}
+            for i, journal_id in enumerate(article_journals):
+                journal_groups.setdefault(str(journal_id), []).append(i)
+
+            cluster_docs_journals = []
+            for journal_id, indices in journal_groups.items():
+                if len(indices) == 1:
+                    idx = indices[0]
+                    cluster_docs_journals.append(Cluster(
+                        cluster_id=0,
+                        centroid_full=embeddings_full[idx].tolist(),
+                        centroid_reduced=embeddings_reduced[idx].tolist(),
+                        article_ids=[article_ids[idx]],
+                        label=None,
+                        top_keywords=[],
+                        sample_titles=[valid_articles[idx].title] if valid_articles[idx].title else [],
+                        article_count=1,
+                        cluster_type="journal",
+                        group_id=journal_id,
+                        model_version=model_version
+                    ))
+                    continue
+                if len(indices) < settings.nlp_min_cluster_size_journal:
+                    logger.warning(f"Skipping journal '{journal_id}': only {len(indices)} articles.")
+                    continue
+                labels = run_hdbscan(
+                    indices,
+                    min_cluster_size=settings.nlp_min_cluster_size_journal,
+                    min_samples=settings.nlp_min_samples_journal
+                )
+                docs = await self._create_cluster_documents(
+                    cluster_labels=labels,
+                    embeddings_full=embeddings_full[indices],
+                    embeddings_reduced=embeddings_reduced[indices],
+                    article_ids=[article_ids[i] for i in indices],
+                    valid_articles=[valid_articles[i] for i in indices],
+                    model_version=model_version,
+                    cluster_type="journal",
+                    group_id=journal_id
+                )
+                cluster_docs_journals.extend(docs)
+
+            await self.cluster_repo.bulk_create(cluster_docs_journals)
+            logger.success(f"Saved {len(cluster_docs_journals)} clusters for journals.")
+                                    
+            
             
             # 8. Analiz kaydını tamamla
+            
+            n_noise_all = int((all_labels == -1).sum())
+
             await self.analysis_repo.complete_run(
                 run=run,
                 total_articles=len(valid_articles),
-                total_clusters=n_clusters,
-                noise_count=int(noise_count)
+                total_clusters=n_clusters_all,
+                noise_count=n_noise_all
             )
-            
+
             # Cache'i güncelle
             await self._load_cache(model_version)
-            
+
             logger.section("Training Completed")
-            
+
             return {
                 "model_version": model_version,
                 "total_articles": len(valid_articles),
-                "total_clusters": n_clusters,
-                "noise_count": int(noise_count),
+                "total_clusters": n_clusters_all,
+                "noise_count": n_noise_all,
                 "embedding_dim_full": embeddings_full.shape[1],
                 "embedding_dim_reduced": embeddings_reduced.shape[1],
                 "status": "completed"
@@ -375,8 +496,10 @@ class NLPService:
         embeddings_reduced: "np.ndarray",
         article_ids: List[PydanticObjectId],
         valid_articles: List[Article],
-        model_version: str
-    ) -> List[Cluster]:
+        model_version: str,
+        cluster_type: str,
+        group_id: Optional[Union[PydanticObjectId, str]] = None
+) -> List[Cluster]:
         """Cluster dokümanları oluştur"""
         cluster_docs = []
         unique_labels = set(cluster_labels)
@@ -426,6 +549,8 @@ class NLPService:
                 top_keywords=top_keywords,
                 sample_titles=sample_titles,
                 article_count=len(indices),
+                cluster_type= cluster_type,
+                group_id= group_id,
                 model_version=model_version
             )
             cluster_docs.append(cluster_doc)
@@ -434,7 +559,54 @@ class NLPService:
     
     # searc_similar ve graph_input fonksiyonları _search_similar_clusters kullancak.
     # Sadece return typeları farklı.
-    
+    async def _arrange_date (self, publication_date):
+
+        prefix_dates = {
+            "january" : "1",
+            "february" : "2",
+            "march" : "3",
+            "april" : "4",
+            "may" : "5",
+            "june" : "6",
+            "july" : "7",
+            "august" : "8",
+            "september" : "9",
+            "october" : "10",
+            "november" : "11",
+            "december" : "12"
+            }
+        date_fin = None
+        date = publication_date
+        try:
+            dt_object = datetime.fromisoformat(date)
+            date_fin = dt_object
+        except:
+            # print(f"{date} is not convertable to datetime")
+            # print(f"Trying to fetch date from the string: {date}")
+            d = date.lower()
+            est_date = ""
+            for month, number in prefix_dates.items():
+                if month in d:
+                    # [\D]*? -> Skip any number of non-digit characters 
+                    # (\d{4}) -> Capture exactly 4 digits 
+                    pattern = rf"{month}[\D]*?(\d{{4}})"
+                    match = re.search(pattern, d)
+                    
+                    if match:
+                        year = match.group(1) # This is the 4-digit year
+                        est_date = f"{year}-{number.zfill(2)}-01" # Adding -01 makes it a valid ISO date
+                        
+                        try:
+                            dt_object = datetime.fromisoformat(est_date)
+                            date_fin = dt_object
+                            print(f"Success: {est_date}")
+                        except ValueError:
+                            print(f"Failed to parse: {est_date}")
+                    else:
+                        print(f"Found {month}, but couldn't find a 4-digit year near it.")
+                    
+                    break
+        return date_fin
     async def get_date_graph_input(self):
 
         """
@@ -573,9 +745,251 @@ class NLPService:
         scores = self.cross_encoder.predict(all_candidate_pairs, batch_size=32)
         return scores
 
+    async def _fetch_with_source(self, user_website):
+        article_embeddings = await ArticleEmbedding.find({"article_source_website": user_website}).to_list()
+           
+        print(article_embeddings[0])
+        return 0;
+    async def _generate_trends_from_clusters(self, clusters: list, model_version: str):
+        if not clusters:
+            return None
+
+        # 1. Fetch all embeddings once
+        all_article_ids = set()
+        for cluster in clusters:
+            if cluster.cluster_id != -1:  
+                all_article_ids.update(cluster.article_ids)
+
+        embeddings_list = await ArticleEmbedding.find({
+            "article_id": {"$in": list(all_article_ids)},
+            "model_version": model_version
+        }).to_list()
+
+        # 2. Map ID to BOTH keywords and dates
+        embedding_map = {
+            embd.article_id: {
+                "keywords": embd.article_keywords,
+                "date": embd.article_dates # Pulling the date from your schema
+            }
+            for embd in embeddings_list
+        }
+
+        # This will store our graph data: { "2023": {"AI": 5, "Robotics": 2}, "2024": ... }
+        timeline_data = defaultdict(lambda: defaultdict(int))
+        cluster_summaries = []
+
+        # 3. Process each cluster
+        for cluster in clusters:
+            if cluster.cluster_id == -1:
+                continue
+            raw_keywords = []
+            cluster_dates = []
+
+            for art_id in cluster.article_ids:
+                if art_id in embedding_map:
+                    raw_keywords.extend(embedding_map[art_id]["keywords"])
+                    
+                    # Extract the year for the X-axis (assuming dates are strings). 
+                    # Adjust this slice if your date format is different (e.g., 'YYYY-MM-DD')
+                    raw_date = embedding_map[art_id]["date"]
+                    year = str(raw_date)[:7] if raw_date else "Unknown"
+                    cluster_dates.append(year)
+            
+            unique_keywords = list(set(raw_keywords))[:20] 
+
+            if not unique_keywords:
+                continue
+
+            # Find the topic tag
+            topic_tag = await self._take_cluster_and_find_word(unique_keywords)
+
+            # 4. Populate the timeline counts
+            for year in cluster_dates:
+                timeline_data[year][topic_tag] += 1
+
+            cluster_summaries.append({
+                "cluster_id": cluster.cluster_id,
+                "topic_tag": topic_tag,
+                "article_count": len(cluster.article_ids)
+            })
+
+        # 5. Format the data for the frontend graph (X/Y axis friendly)
+        graph_data = []
+        for year, topics in timeline_data.items():
+            entry = {"date": year} # X-axis
+            entry.update(topics)   # Y-axis data points
+            graph_data.append(entry)
+
+        # Sort the graph data chronologically
+        graph_data.sort(key=lambda x: x["date"])
+
+        return {
+            "graph_data": graph_data,
+            "clusters": cluster_summaries
+        }
+        
+
+
+    async def get_clusters_by_journal(self, journal_name: str, model_version: str):
+        # 1. Find the journal_id from a sample article
+        sample_article = await Article.find_one({"journal_name": journal_name})
+        
+        if not sample_article:
+            return []
+        
+        # 2. Use .find() instead of .find_one() to get ALL clusters for this journal
+        # Also added model_version here to be safe
+        clusters = await Cluster.find({
+            "group_id": sample_article.journal_id, 
+            "cluster_type": "journal",
+            "model_version": model_version
+        }).to_list()
+        
+        return clusters
+    # For Journals
+    async def get_journal_topic_trends(self, journal_name: str, model_version: str):
+        clusters = await self.get_clusters_by_journal(journal_name, model_version)
+        return await self._generate_trends_from_clusters(clusters, model_version)
+
+    # For Publishers
+    async def get_publisher_topic_trends(self, publisher_name: str, model_version: str):
+        clusters = await Cluster.find({
+            "group_id": publisher_name, 
+            "cluster_type": "publisher",
+            "model_version": model_version
+        }).to_list()
+        return await self._generate_trends_from_clusters(clusters, model_version)
+
+    # For the Entire Dataset ("All")
+    async def get_all_topic_trends(self, model_version: str):
+        clusters = await Cluster.find({
+            "cluster_type": "all",
+            "model_version": model_version
+        }).to_list()
+        return await self._generate_trends_from_clusters(clusters, model_version)
+    # async def get_journal_topic_trends(self, journal_name: str, model_version: str) -> Optional[Dict[str, Any]]:
+    #     clusters = await self.get_clusters_by_journal(journal_name, model_version)
+    #     if not clusters:
+    #         return None
+
+    #     # 1. Fetch all embeddings once
+    #     all_article_ids = set()
+    #     for cluster in clusters:
+    #         if cluster.cluster_id != -1:  
+    #             all_article_ids.update(cluster.article_ids)
+
+    #     embeddings_list = await ArticleEmbedding.find({
+    #         "article_id": {"$in": list(all_article_ids)},
+    #         "model_version": model_version
+    #     }).to_list()
+
+    #     # 2. Map ID to BOTH keywords and dates
+    #     embedding_map = {
+    #         embd.article_id: {
+    #             "keywords": embd.article_keywords,
+    #             "date": embd.article_dates # Pulling the date from your schema
+    #         }
+    #         for embd in embeddings_list
+    #     }
+
+    #     # This will store our graph data: { "2023": {"AI": 5, "Robotics": 2}, "2024": ... }
+    #     timeline_data = defaultdict(lambda: defaultdict(int))
+    #     cluster_summaries = []
+
+    #     # 3. Process each cluster
+    #     for cluster in clusters:
+    #         raw_keywords = []
+    #         cluster_dates = []
+
+    #         for art_id in cluster.article_ids:
+    #             if art_id in embedding_map:
+    #                 raw_keywords.extend(embedding_map[art_id]["keywords"])
+                    
+    #                 # Extract the year for the X-axis (assuming dates are strings). 
+    #                 # Adjust this slice if your date format is different (e.g., 'YYYY-MM-DD')
+    #                 raw_date = embedding_map[art_id]["date"]
+    #                 year = str(raw_date)[:4] if raw_date else "Unknown"
+    #                 cluster_dates.append(year)
+            
+    #         unique_keywords = list(set(raw_keywords))[:20] 
+
+    #         if not unique_keywords:
+    #             continue
+
+    #         # Find the topic tag
+    #         topic_tag = await self._take_cluster_and_find_word(unique_keywords)
+
+    #         # 4. Populate the timeline counts
+    #         for year in cluster_dates:
+    #             timeline_data[year][topic_tag] += 1
+
+    #         cluster_summaries.append({
+    #             "cluster_id": cluster.cluster_id,
+    #             "topic_tag": topic_tag,
+    #             "article_count": len(cluster.article_ids)
+    #         })
+
+    #     # 5. Format the data for the frontend graph (X/Y axis friendly)
+    #     graph_data = []
+    #     for year, topics in timeline_data.items():
+    #         entry = {"date": year} # X-axis
+    #         entry.update(topics)   # Y-axis data points
+    #         graph_data.append(entry)
+
+    #     # Sort the graph data chronologically
+    #     graph_data.sort(key=lambda x: x["date"])
+
+    #     return {
+    #         "graph_data": graph_data,
+    #         "clusters": cluster_summaries
+    #     }
+        
+    
+    async def _fetch_via_journal(self, journal_name: str, model_version: str):    
+        clusters = await self.get_clusters_by_journal(journal_name, model_version)
+        if not clusters:
+            return None
+
+        # 1. Fetch all embeddings once
+        all_article_ids = set()
+        for cluster in clusters:
+            all_article_ids.update(cluster.article_ids)
+
+        embeddings_list = await ArticleEmbedding.find({
+            "article_id": {"$in": list(all_article_ids)},
+            "model_version": model_version
+        }).to_list()
+
+        embedding_map = {embd.article_id: embd.article_keywords for embd in embeddings_list}
+
+        # 2. Process each cluster to find its "Integral Word"
+        cluster_results = []
+        for cluster in clusters:
+            raw_keywords = []
+            for art_id in cluster.article_ids:
+                if art_id in embedding_map:
+                    raw_keywords.extend(embedding_map[art_id])
+            
+            
+            unique_keywords = list(set(raw_keywords))[:20] 
+
+            if not unique_keywords:
+                continue
+
+            # 3. Find the most representative label using your Cross-Encoder logic
+            cluster_label = await self._take_cluster_and_find_word(unique_keywords)
+
+            cluster_results.append({
+                "cluster_id": cluster.cluster_id,
+                "integral_label": cluster_label,
+                "all_keywords": unique_keywords,
+                "article_count": len(cluster.article_ids)
+            })
+
+        return cluster_results
+    
     async def _take_keywords_and_transform(self, words):
         '''
-        
         Bir grup kelimeyi alır bunları kümeler ve kümeleri
         {cluster_idx : [words]}
         olarak döndürür. 
@@ -610,37 +1024,40 @@ class NLPService:
         return clusters
         
     async def _take_cluster_and_find_word(self, cluster_list):
-        '''
-        Bir {cluster_idx : [words]} alır ve burada kelimelerden en kapsayıcı olanını belirler.
-        Çıktı olarak en kapsayıcı kelimeyi döner. 
-        '''
-        
         n = len(cluster_list)
+        if n == 1: return cluster_list[0]
         
-        running_totals = [0.0] * n 
-        
-        max_score = -1.0
-        max_score_word = cluster_list[0]
-
+        pairs = []
+        pair_indices = []
         for i in range(n):
-            for j in range(i+1, n):
-                score = float(self.cross_encoder.predict([(cluster_list[i], cluster_list[j])])[0])
-                
-                running_totals[i] += score
-                running_totals[j] += score
+            for j in range(i + 1, n):
+                pairs.append((cluster_list[i], cluster_list[j]))
+                pair_indices.append((i, j))
+        
+        # One single batch prediction on GPU
+        scores = self.cross_encoder.predict(pairs)
+        
+        running_totals = [0.0] * n
+        for idx, (i, j) in enumerate(pair_indices):
+            score = float(scores[idx])
+            running_totals[i] += score
+            running_totals[j] += score
+            
+        max_idx = np.argmax(running_totals)
+        return cluster_list[max_idx]
 
-                # Check and update the max on the fly for word 'i'
-                if running_totals[i] > max_score:
-                    max_score = running_totals[i]
-                    max_score_word = cluster_list[i]
-                
-                # Check and update the max on the fly for word 'j'
-                if running_totals[j] > max_score:
-                    max_score = running_totals[j]
-                    max_score_word = cluster_list[j]
-
-        return max_score_word
-
+    async def _extract_abstarct_keywords(self, text):
+        extracted = self.kw_model.extract_keywords(
+                text, 
+                keyphrase_ngram_range=(1, 2), 
+                stop_words='english', 
+                use_mmr=True,
+                diversity=0.2,
+                top_n=5 # Extract top 5 candidates to evaluate
+            )
+            
+        kws = [item[0] for item in extracted]
+        return kws
 
     async def _extract_cluster_keywords(self):
 
@@ -772,7 +1189,6 @@ class NLPService:
         except Exception as e:
             logger.error(f"Cache loading failed: {e}")
             return False
-    
     async def search_similar(
         self,
         query: str,

@@ -109,7 +109,7 @@ class Settings(BaseSettings):
         description="SentenceTransformer model adı"
     )
     nlp_umap_n_neighbors: int = Field(
-        default=15, 
+        default=10, 
         alias="NLP_UMAP_N_NEIGHBORS",
         description="UMAP n_neighbors parametresi"
     )
@@ -118,15 +118,37 @@ class Settings(BaseSettings):
         alias="NLP_UMAP_N_COMPONENTS",
         description="UMAP çıktı boyutu"
     )
-    nlp_min_cluster_size: int = Field(
-        default=20, 
-        alias="NLP_MIN_CLUSTER_SIZE",
-        description="HDBSCAN min_cluster_size"
+    nlp_min_cluster_size_all: int = Field(
+    default=5,
+    alias="NLP_MIN_CLUSTER_SIZE_ALL",
+    description="HDBSCAN min_cluster_size for all articles clustering"
     )
-    nlp_min_samples: int = Field(
-        default=1, 
-        alias="NLP_MIN_SAMPLES",
-        description="HDBSCAN min_samples"
+    nlp_min_samples_all: int = Field(
+        default=1,
+        alias="NLP_MIN_SAMPLES_ALL",
+        description="HDBSCAN min_samples for all articles clustering"
+    )
+
+    nlp_min_cluster_size_publisher: int = Field(
+        default=3,
+        alias="NLP_MIN_CLUSTER_SIZE_PUBLISHER",
+        description="HDBSCAN min_cluster_size for publisher clustering"
+    )
+    nlp_min_samples_publisher: int = Field(
+        default=1,
+        alias="NLP_MIN_SAMPLES_PUBLISHER",
+        description="HDBSCAN min_samples for publisher clustering"
+    )
+
+    nlp_min_cluster_size_journal: int = Field(
+        default=2,
+        alias="NLP_MIN_CLUSTER_SIZE_JOURNAL",
+        description="HDBSCAN min_cluster_size for journal clustering"
+    )
+    nlp_min_samples_journal: int = Field(
+        default=1,
+        alias="NLP_MIN_SAMPLES_JOURNAL",
+        description="HDBSCAN min_samples for journal clustering"
     )
     nlp_lazy_init: bool = Field(
         default=True,

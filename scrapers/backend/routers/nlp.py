@@ -303,6 +303,32 @@ async def list_clusters(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/get_journal_topic_trends")
+async def list_journal_topic_trends(name, model_version):
+    try:
+        topic_trends = await nlp_service.get_journal_topic_trends(journal_name = name, model_version= model_version)
+        return topic_trends
+    except Exception as e:
+        logger.error(f"Get Journal Topic Trends error: {e}")
+
+@router.get("/get_publisher_topic_trends")
+async def list_publisher_topic_trends(name, model_version):
+    try:
+        topic_trends = await nlp_service.get_publisher_topic_trends(publisher_name = name, model_version= model_version)
+        return topic_trends
+    except Exception as e:
+        logger.error(f"Get Journal Topic Trends error: {e}")
+
+@router.get("/get_all_topic_trends")
+async def list_all_topic_trends(model_version):
+    try:
+        topic_trends = await nlp_service.get_all_topic_trends(model_version= model_version)
+        return topic_trends
+    except Exception as e:
+        logger.error(f"Get Journal Topic Trends error: {e}")
+
+
+
 @router.get("/clusters/{cluster_id}", summary="Cluster detayını getir")
 async def get_cluster_detail(
     cluster_id: int,
