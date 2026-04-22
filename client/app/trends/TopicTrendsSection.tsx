@@ -17,8 +17,10 @@ import {
   getPublisherTopicTrends,
   listClusters,
   getClusterTrendSeries,
+  getClusterArticles,
 } from '@/lib/api';
 import type { TopicTrendsData, TopicCluster, NlpStatus } from '@/lib/types';
+import Link from 'next/link';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -111,6 +113,16 @@ export function TopicTrendsSection() {
   const [clusterSearch, setClusterSearch] = useState('');
   const [clusterPage, setClusterPage] = useState(0);
 
+  // ── Cluster article panel ──
+  type ClusterArticle = { id: string; title: string; doi?: string; url?: string; publication_date?: string };
+  const [openArticleClusterId, setOpenArticleClusterId] = useState<number | null>(null);
+  const [clusterArticles, setClusterArticles] = useState<ClusterArticle[]>([]);
+  const [clusterArticlesLoading, setClusterArticlesLoading] = useState(false);
+  const [clusterArticlesTotal, setClusterArticlesTotal] = useState(0);
+  const [articleSearch, setArticleSearch] = useState('');
+  const [articlePage, setArticlePage] = useState(0);
+  const ARTICLE_PAGE_SIZE = 15;
+
   // ── NLP status on mount ──
   useEffect(() => {
     getNlpStatus()
@@ -172,8 +184,44 @@ export function TopicTrendsSection() {
     setClusterPage(0);
     setSeriesCache(new Map());
     setFetchingTopics(new Set());
+    setOpenArticleClusterId(null);
+    setClusterArticles([]);
+    setArticleSearch('');
+    setArticlePage(0);
     fetchTopN(name, resolvedN, modelVersion);
     fetchAllClusters(name, modelVersion);
+  }
+
+  async function fetchArticlePanel(clusterId: number, page: number, search: string) {
+    if (!modelVersion) return;
+    setClusterArticlesLoading(true);
+    try {
+      const res = await getClusterArticles(clusterId, modelVersion, {
+        skip: page * ARTICLE_PAGE_SIZE,
+        limit: ARTICLE_PAGE_SIZE,
+        search: search.trim() || undefined,
+      });
+      setClusterArticles(res.articles);
+      setClusterArticlesTotal(res.total_count);
+    } catch {
+      setClusterArticles([]);
+      setClusterArticlesTotal(0);
+    } finally {
+      setClusterArticlesLoading(false);
+    }
+  }
+
+  async function openArticlePanel(cluster: TopicCluster) {
+    if (openArticleClusterId === cluster.cluster_id) {
+      setOpenArticleClusterId(null);
+      setArticleSearch('');
+      setArticlePage(0);
+      return;
+    }
+    setOpenArticleClusterId(cluster.cluster_id);
+    setArticleSearch('');
+    setArticlePage(0);
+    fetchArticlePanel(cluster.cluster_id, 0, '');
   }
 
   // ── Auto-fetch on mode=all ──
@@ -183,6 +231,16 @@ export function TopicTrendsSection() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, modelVersion]);
+
+  // ── Article search debounce (fires 500ms after articleSearch stops changing) ──
+  useEffect(() => {
+    if (openArticleClusterId === null) return;
+    const t = setTimeout(() => {
+      fetchArticlePanel(openArticleClusterId, 0, articleSearch);
+    }, 500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [articleSearch, openArticleClusterId]);
 
   // ── Handlers ──
 
@@ -577,42 +635,138 @@ export function TopicTrendsSection() {
                     const visible = visibleTopics.has(cluster.topic_tag);
                     const isFetching = fetchingTopics.has(cluster.topic_tag);
                     const color = topicColorMap.get(cluster.topic_tag) ?? '#cbd5e1';
+                    const articlesOpen = openArticleClusterId === cluster.cluster_id;
 
                     return (
-                      <div
-                        key={cluster.cluster_id}
-                        onClick={() => !isFetching && toggleVisible(cluster)}
-                        className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all select-none cursor-pointer hover:bg-slate-50 active:bg-slate-100 ${
-                          visible
-                            ? 'border-slate-300 bg-white'
-                            : 'border-slate-200 bg-white opacity-60'
-                        }`}
-                      >
-                        <span
-                          className={`w-3 h-3 rounded-full flex-shrink-0 transition-opacity ${visible ? '' : 'opacity-30'}`}
-                          style={{ backgroundColor: color }}
-                        />
-                        <span
-                          className={`flex-1 text-sm font-medium truncate ${
-                            visible ? 'text-slate-800' : 'text-slate-400 line-through'
-                          }`}
-                        >
-                          {capitalize(cluster.topic_tag)}
-                        </span>
-                        <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full flex-shrink-0">
-                          {cluster.article_count} makale
-                        </span>
-                        <span
-                          className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+                      <div key={cluster.cluster_id}>
+                        <div
+                          onClick={() => !isFetching && toggleVisible(cluster)}
+                          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all select-none cursor-pointer hover:bg-slate-50 active:bg-slate-100 ${
                             visible
-                              ? isTopN
-                                ? 'bg-emerald-100 text-emerald-700'
-                                : 'bg-blue-100 text-blue-700'
-                              : 'bg-slate-100 text-slate-500'
+                              ? 'border-slate-300 bg-white'
+                              : 'border-slate-200 bg-white opacity-60'
                           }`}
                         >
-                          {isFetching ? 'Yukleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
-                        </span>
+                          <span
+                            className={`w-3 h-3 rounded-full flex-shrink-0 transition-opacity ${visible ? '' : 'opacity-30'}`}
+                            style={{ backgroundColor: color }}
+                          />
+                          <span
+                            className={`flex-1 text-sm font-medium truncate ${
+                              visible ? 'text-slate-800' : 'text-slate-400 line-through'
+                            }`}
+                          >
+                            {capitalize(cluster.topic_tag)}
+                          </span>
+                          <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full flex-shrink-0">
+                            {articlesOpen && !clusterArticlesLoading
+                              ? clusterArticlesTotal
+                              : cluster.article_count} makale
+                          </span>
+                          <span
+                            className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
+                              visible
+                                ? isTopN
+                                  ? 'bg-emerald-100 text-emerald-700'
+                                  : 'bg-blue-100 text-blue-700'
+                                : 'bg-slate-100 text-slate-500'
+                            }`}
+                          >
+                            {isFetching ? 'Yukleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
+                          </span>
+                          {/* Article list toggle button */}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); openArticlePanel(cluster); }}
+                            title="Makaleleri goster/gizle"
+                            className={`flex-shrink-0 px-2 py-0.5 text-xs rounded-lg border transition-colors ${
+                              articlesOpen
+                                ? 'bg-indigo-600 text-white border-indigo-600'
+                                : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
+                            }`}
+                          >
+                            Makaleler {articlesOpen ? '▲' : '▼'}
+                          </button>
+                        </div>
+
+                        {/* Article panel */}
+                        {articlesOpen && (
+                          <div className="ml-6 mt-1 mb-2 border border-indigo-100 rounded-lg bg-indigo-50/40 overflow-hidden">
+                            {/* Search bar */}
+                            <div className="px-4 pt-3 pb-2 bg-indigo-50 border-b border-indigo-100">
+                              <input
+                                type="text"
+                                value={articleSearch}
+                                onChange={(e) => {
+                                  setArticleSearch(e.target.value);
+                                  setArticlePage(0);
+                                }}
+                                placeholder="Makale başlığında ara..."
+                                className="w-full px-3 py-1.5 text-xs border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
+                              />
+                            </div>
+
+                            {clusterArticlesLoading ? (
+                              <p className="text-xs text-slate-400 animate-pulse px-4 py-3">Makaleler yukleniyor...</p>
+                            ) : clusterArticles.length === 0 ? (
+                              <p className="text-xs text-slate-400 px-4 py-3">Makale bulunamadi.</p>
+                            ) : (
+                              <>
+                                <ul className="divide-y divide-indigo-100">
+                                  <li className="px-4 py-2 text-xs text-slate-400 font-medium bg-indigo-50 sticky top-0">
+                                    {clusterArticlesTotal} makale
+                                    {articleSearch.trim() && ' (arama sonucu)'}
+                                    {' — '}sayfa {articlePage + 1} / {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE) || 1}
+                                  </li>
+                                  {clusterArticles.map((art) => (
+                                    <li key={art.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-indigo-50 group">
+                                      <span className="flex-1 text-xs text-slate-700 line-clamp-2 group-hover:text-indigo-700 transition-colors">
+                                        {art.title}
+                                      </span>
+                                      <Link
+                                        href={`/articles?article_id=${art.id}`}
+                                        onClick={(e) => e.stopPropagation()}
+                                        className="flex-shrink-0 px-2.5 py-1 text-xs font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors whitespace-nowrap"
+                                      >
+                                        Goruntule →
+                                      </Link>
+                                    </li>
+                                  ))}
+                                </ul>
+
+                                {/* Article pagination */}
+                                {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE) > 1 && (
+                                  <div className="flex items-center justify-between px-4 py-2 border-t border-indigo-100 bg-indigo-50">
+                                    <button
+                                      onClick={() => {
+                                        const np = articlePage - 1;
+                                        setArticlePage(np);
+                                        if (openArticleClusterId !== null) fetchArticlePanel(openArticleClusterId, np, articleSearch);
+                                      }}
+                                      disabled={articlePage === 0 || clusterArticlesLoading}
+                                      className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      ← Onceki
+                                    </button>
+                                    <span className="text-xs text-slate-500">
+                                      {articlePage + 1} / {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE)}
+                                    </span>
+                                    <button
+                                      onClick={() => {
+                                        const np = articlePage + 1;
+                                        setArticlePage(np);
+                                        if (openArticleClusterId !== null) fetchArticlePanel(openArticleClusterId, np, articleSearch);
+                                      }}
+                                      disabled={articlePage >= Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE) - 1 || clusterArticlesLoading}
+                                      className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                      Sonraki →
+                                    </button>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

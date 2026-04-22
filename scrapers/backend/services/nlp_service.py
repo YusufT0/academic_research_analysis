@@ -1519,6 +1519,51 @@ class NLPService:
             for c in sorted(clusters, key=lambda x: x.article_count, reverse=True)
         ]
     
+    async def get_cluster_articles_filtered(
+        self,
+        cluster_id: int,
+        model_version: str,
+        skip: int = 0,
+        limit: int = 15,
+        search: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Cluster'ın makalelerini backend'de sayfalama ve başlık araması ile döndürür.
+        search varsa cache bypass edilir; yoksa önce cache'e bakılabilir (router üzerinden).
+        """
+        # Cluster'ı bul
+        cluster = await self.cluster_repo.find_by_cluster_id(cluster_id, model_version)
+        if not cluster:
+            return None
+
+        article_ids = cluster.article_ids
+
+        # MongoDB sorgusu: önce ID kümesini kısıtla, sonra başlık araması uygula
+        match_query: Dict[str, Any] = {"_id": {"$in": article_ids}}
+        if search and search.strip():
+            match_query["title"] = {"$regex": search.strip(), "$options": "i"}
+
+        total = await Article.find(match_query).count()
+        articles = await Article.find(match_query).skip(skip).limit(limit).to_list()
+
+        return {
+            "cluster_id": cluster_id,
+            "total_count": total,
+            "skip": skip,
+            "limit": limit,
+            "articles": [
+                {
+                    "id": str(a.id),
+                    "title": a.title,
+                    "doi": a.doi,
+                    "url": a.url,
+                    "keywords": a.keywords,
+                    "publication_date": a.publication_date,
+                }
+                for a in articles
+            ],
+        }
+
     async def get_cluster_detail(
         self,
         cluster_id: int,
@@ -1549,8 +1594,12 @@ class NLPService:
         }
         
         if include_articles:
+            # article_limit: sayfalama için ne kadar ID alacağımızı belirler;
+            # ancak DB'de bulunmayan (silinmiş) makaleler de olabileceğinden
+            # önce tüm ID'leri sorgulayıp sonucu slice'lıyoruz.
+            ids_to_fetch = cluster.article_ids[:article_limit]
             articles = await Article.find(
-                {"_id": {"$in": cluster.article_ids[:article_limit]}}
+                {"_id": {"$in": ids_to_fetch}}
             ).to_list()
             
             result["articles"] = [

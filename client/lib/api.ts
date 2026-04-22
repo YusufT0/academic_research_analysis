@@ -500,6 +500,18 @@ export async function getClusterTrendSeries(
   return fetchApi(`/nlp/cluster_trend_series?${params.toString()}`);
 }
 
+export async function getClusterArticles(
+  cluster_id: number,
+  model_version: string,
+  options: { skip?: number; limit?: number; search?: string } = {},
+): Promise<{ cluster_id: number; total_count: number; skip: number; limit: number; articles: Array<{ id: string; title: string; doi?: string; url?: string; publication_date?: string }> }> {
+  const params = new URLSearchParams({ model_version });
+  if (options.skip !== undefined) params.set('skip', String(options.skip));
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  if (options.search) params.set('search', options.search);
+  return fetchApi(`/nlp/clusters/${cluster_id}/articles?${params.toString()}`);
+}
+
 export async function getAuthorArticles(name: string, page: number = 1, page_size: number = 15) {
   const params = new URLSearchParams();
   params.set('page', page.toString());
