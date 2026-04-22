@@ -74,7 +74,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
           </CardHeader>
           <CardContent>
             <div className="h-72 w-full">
-              <ResponsiveContainer>
+              <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={yearlyData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="year" />
@@ -101,7 +101,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
           </CardHeader>
           <CardContent>
             <div className="h-64 w-full">
-              <ResponsiveContainer>
+              <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
                     data={distributionData}
