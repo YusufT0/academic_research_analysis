@@ -303,29 +303,98 @@ async def list_clusters(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/get_journal_topic_trends")
-async def list_journal_topic_trends(name, model_version):
+@router.post("/patch_labels", summary="Cluster label'larını yeniden hesapla (train gerektirmez)")
+async def patch_cluster_labels(
+    model_version: str = Query(..., description="Patch uygulanacak model versiyonu"),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Verilen model versiyonundaki label=null veya top_keywords=[] olan cluster'ları
+    ArticleEmbedding'lerden keyword çekerek ve cross-encoder ile en temsili label'ı
+    hesaplayarak günceller. Yeni bir eğitim başlatmaz.
+    """
     try:
-        topic_trends = await nlp_service.get_journal_topic_trends(journal_name = name, model_version= model_version)
+        result = await nlp_service.patch_cluster_labels(model_version=model_version)
+        return result
+    except Exception as e:
+        logger.error(f"Patch labels error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/patch_group_ids", summary="Publisher/journal cluster'larının null group_id'lerini doldur (train gerektirmez)")
+async def patch_cluster_group_ids(
+    model_version: str = Query(..., description="Patch uygulanacak model versiyonu"),
+):
+    try:
+        result = await nlp_service.patch_cluster_group_ids(model_version=model_version)
+        return result
+    except Exception as e:
+        logger.error(f"Patch group_ids error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/get_journal_topic_trends")
+async def list_journal_topic_trends(name: str, model_version: str, top_n: int = Query(10, ge=1, le=100)):
+    try:
+        topic_trends = await nlp_service.get_journal_topic_trends(journal_name=name, model_version=model_version, top_n=top_n)
         return topic_trends
     except Exception as e:
         logger.error(f"Get Journal Topic Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/get_publisher_topic_trends")
-async def list_publisher_topic_trends(name, model_version):
+async def list_publisher_topic_trends(name: str, model_version: str, top_n: int = Query(10, ge=1, le=100)):
     try:
-        topic_trends = await nlp_service.get_publisher_topic_trends(publisher_name = name, model_version= model_version)
+        topic_trends = await nlp_service.get_publisher_topic_trends(publisher_name=name, model_version=model_version, top_n=top_n)
         return topic_trends
     except Exception as e:
-        logger.error(f"Get Journal Topic Trends error: {e}")
+        logger.error(f"Get Publisher Topic Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/get_all_topic_trends")
-async def list_all_topic_trends(model_version):
+async def list_all_topic_trends(model_version: str, top_n: int = Query(10, ge=1, le=100)):
     try:
-        topic_trends = await nlp_service.get_all_topic_trends(model_version= model_version)
+        topic_trends = await nlp_service.get_all_topic_trends(model_version=model_version, top_n=top_n)
         return topic_trends
     except Exception as e:
-        logger.error(f"Get Journal Topic Trends error: {e}")
+        logger.error(f"Get All Topic Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/list_clusters", summary="Cluster metadatasını listele (graph data yok)")
+async def list_clusters_endpoint(
+    model_version: str,
+    cluster_type: str = Query("all"),
+    group_id: Optional[str] = Query(None),
+):
+    try:
+        return await nlp_service.list_clusters(
+            model_version=model_version,
+            cluster_type=cluster_type,
+            group_id=group_id,
+        )
+    except Exception as e:
+        logger.error(f"List clusters error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cluster_trend_series", summary="Tek bir cluster için zaman serisi")
+async def get_cluster_trend_series(
+    cluster_id: int,
+    model_version: str,
+    cluster_type: str = Query("all"),
+    group_id: Optional[str] = Query(None),
+):
+    try:
+        return await nlp_service.get_cluster_trend_series(
+            cluster_id=cluster_id,
+            model_version=model_version,
+            cluster_type=cluster_type,
+            group_id=group_id,
+        )
+    except Exception as e:
+        logger.error(f"Cluster trend series error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 

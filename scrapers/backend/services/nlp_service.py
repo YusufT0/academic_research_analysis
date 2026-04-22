@@ -7,6 +7,7 @@ import re
 # import pickle
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Union
+from pymongo import UpdateOne
 from beanie import PydanticObjectId
 from collections import Counter
 import sys
@@ -285,7 +286,7 @@ class NLPService:
                     article_ids.append(article.id)
                     article_keywords.append(kws)
                     article_dates.append(str(date))
-                    article_publishers.append(article.publisher)
+                    article_publishers.append(article.source_website)
                     article_journals.append(article.journal_id)
             
             # Embedding
@@ -349,6 +350,9 @@ class NLPService:
             n_clusters_all = len(set(all_labels)) - (1 if -1 in all_labels else 0)
             logger.success(f"Found {n_clusters_all} clusters for all.")
 
+            # Build extracted_keywords_map: article_id -> extracted keywords from training
+            extracted_keywords_map = {article_ids[i]: article_keywords[i] for i in range(len(article_ids))}
+
             cluster_docs_all = await self._create_cluster_documents(
                 cluster_labels=all_labels,
                 embeddings_full=embeddings_full[all_indices],
@@ -357,7 +361,8 @@ class NLPService:
                 valid_articles=[valid_articles[i] for i in all_indices],
                 model_version=model_version,
                 cluster_type="all",
-                group_id=None
+                group_id=None,
+                extracted_keywords_map=extracted_keywords_map
             )
             await self.cluster_repo.bulk_create(cluster_docs_all)
             logger.success(f"Saved {len(cluster_docs_all)} clusters for all.")
@@ -402,7 +407,8 @@ class NLPService:
                     valid_articles=[valid_articles[i] for i in indices],
                     model_version=model_version,
                     cluster_type="publisher",
-                    group_id=publisher
+                    group_id=publisher,
+                    extracted_keywords_map=extracted_keywords_map
                 )
                 cluster_docs_publishers.extend(docs)
 
@@ -449,7 +455,8 @@ class NLPService:
                     valid_articles=[valid_articles[i] for i in indices],
                     model_version=model_version,
                     cluster_type="journal",
-                    group_id=journal_id
+                    group_id=journal_id,
+                    extracted_keywords_map=extracted_keywords_map
                 )
                 cluster_docs_journals.extend(docs)
 
@@ -498,7 +505,8 @@ class NLPService:
         valid_articles: List[Article],
         model_version: str,
         cluster_type: str,
-        group_id: Optional[Union[PydanticObjectId, str]] = None
+        group_id: Optional[str] = None,
+        extracted_keywords_map: Optional[dict] = None
 ) -> List[Cluster]:
         """Cluster dokümanları oluştur"""
         cluster_docs = []
@@ -522,23 +530,26 @@ class NLPService:
             sample_titles = []
             
             for idx in indices[:10]:  # İlk 10 makale
-                article = id_to_article.get(article_ids[idx])
-                if article:
-                    if article.keywords:
-                        top_keywords.extend(article.keywords)
-                    if article.title and len(sample_titles) < 5:
-                        sample_titles.append(article.title)
+                art_id = article_ids[idx]
+                article = id_to_article.get(art_id)
+                # Önce eğitim sırasında extract edilen keywords'ü dene
+                if extracted_keywords_map and art_id in extracted_keywords_map:
+                    top_keywords.extend(extracted_keywords_map[art_id])
+                elif article and article.keywords:
+                    top_keywords.extend(article.keywords)
+                if article and article.title and len(sample_titles) < 5:
+                    sample_titles.append(article.title)
             
             # En sık geçen keywords
             keyword_counts = Counter(top_keywords)
             top_keywords = [kw for kw, _ in keyword_counts.most_common(10)]
             
-            # Cluster label oluştur
+            # Cluster label: cross-encoder ile en temsili keyword'ü bul ve DB'ye kaydet
             label_text = None
-            if label != -1 and top_keywords:
-                label_text = ", ".join(top_keywords[:3])
-            elif label == -1:
+            if label == -1:
                 label_text = "Noise / Unclustered"
+            elif top_keywords:
+                label_text = await self._take_cluster_and_find_word(top_keywords)
             
             cluster_doc = Cluster(
                 cluster_id=int(label),
@@ -577,6 +588,8 @@ class NLPService:
             }
         date_fin = None
         date = publication_date
+        if date is None:
+            return None
         try:
             dt_object = datetime.fromisoformat(date)
             date_fin = dt_object
@@ -750,9 +763,9 @@ class NLPService:
            
         print(article_embeddings[0])
         return 0;
-    async def _generate_trends_from_clusters(self, clusters: list, model_version: str):
+    async def _generate_trends_from_clusters(self, clusters: list, model_version: str, top_n: int = None):
         if not clusters:
-            return None
+            return {"graph_data": [], "clusters": []}
 
         # 1. Fetch all embeddings once
         all_article_ids = set()
@@ -797,11 +810,12 @@ class NLPService:
             
             unique_keywords = list(set(raw_keywords))[:20] 
 
-            if not unique_keywords:
+            if not unique_keywords and not cluster.label and not cluster.top_keywords:
                 continue
 
-            # Find the topic tag
-            topic_tag = await self._take_cluster_and_find_word(unique_keywords)
+            topic_tag = self._resolve_cluster_topic_tag(cluster)
+            if topic_tag is None:
+                topic_tag = await self._take_cluster_and_find_word(unique_keywords)
 
             # 4. Populate the timeline counts
             for year in cluster_dates:
@@ -823,8 +837,22 @@ class NLPService:
         # Sort the graph data chronologically
         graph_data.sort(key=lambda x: x["date"])
 
+        # Apply top_n filter — sort clusters by article_count desc, take first N
+        cluster_summaries.sort(key=lambda x: x["article_count"], reverse=True)
+        if top_n is not None:
+            cluster_summaries = cluster_summaries[:top_n]
+
+        allowed_topics = {c["topic_tag"] for c in cluster_summaries}
+        filtered_graph_data = []
+        for entry in graph_data:
+            new_entry = {"date": entry["date"]}
+            for topic in allowed_topics:
+                if topic in entry:
+                    new_entry[topic] = entry[topic]
+            filtered_graph_data.append(new_entry)
+
         return {
-            "graph_data": graph_data,
+            "graph_data": filtered_graph_data,
             "clusters": cluster_summaries
         }
         
@@ -840,33 +868,234 @@ class NLPService:
         # 2. Use .find() instead of .find_one() to get ALL clusters for this journal
         # Also added model_version here to be safe
         clusters = await Cluster.find({
-            "group_id": sample_article.journal_id, 
+            "group_id": str(sample_article.journal_id),
             "cluster_type": "journal",
             "model_version": model_version
         }).to_list()
         
         return clusters
     # For Journals
-    async def get_journal_topic_trends(self, journal_name: str, model_version: str):
+    async def get_journal_topic_trends(self, journal_name: str, model_version: str, top_n: int = None):
         clusters = await self.get_clusters_by_journal(journal_name, model_version)
-        return await self._generate_trends_from_clusters(clusters, model_version)
+        return await self._generate_trends_from_clusters(clusters, model_version, top_n=top_n)
 
     # For Publishers
-    async def get_publisher_topic_trends(self, publisher_name: str, model_version: str):
+    async def get_publisher_topic_trends(self, publisher_name: str, model_version: str, top_n: int = None):
+        # publisher_name is source_website value: 'ieeexplore', 'sciencedirect', 'acm'
         clusters = await Cluster.find({
-            "group_id": publisher_name, 
+            "group_id": publisher_name,
             "cluster_type": "publisher",
             "model_version": model_version
         }).to_list()
-        return await self._generate_trends_from_clusters(clusters, model_version)
+        return await self._generate_trends_from_clusters(clusters, model_version, top_n=top_n)
+
+    async def list_clusters(
+        self,
+        model_version: str,
+        cluster_type: str = "all",
+        group_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Graph data üretmeden sadece cluster metadatasını döndürür.
+        Pagination amaçlı frontend kullanımı için.
+        """
+        query: Dict[str, Any] = {
+            "model_version": model_version,
+            "cluster_type": cluster_type,
+        }
+        if group_id:
+            query["group_id"] = group_id
+
+        clusters = await Cluster.find(query).to_list()
+
+        result = []
+        for cluster in clusters:
+            if cluster.cluster_id == -1:
+                continue  # noise skip
+            topic_tag = self._resolve_cluster_topic_tag(cluster) or f"Cluster {cluster.cluster_id}"
+            result.append({
+                "cluster_id": cluster.cluster_id,
+                "topic_tag": topic_tag,
+                "article_count": cluster.article_count or 0,
+            })
+
+        result.sort(key=lambda x: x["article_count"], reverse=True)
+        return {"clusters": result}
+
+    async def get_cluster_trend_series(
+        self,
+        cluster_id: int,
+        model_version: str,
+        cluster_type: str = "all",
+        group_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Tek bir cluster için zaman serisi verisi döndürür.
+        Frontend'in bir konuyu aktifleştirirken on-demand çağırması için.
+        """
+        query: Dict[str, Any] = {
+            "cluster_id": cluster_id,
+            "cluster_type": cluster_type,
+            "model_version": model_version,
+        }
+        if group_id:
+            query["group_id"] = group_id
+
+        cluster = await Cluster.find_one(query)
+        if not cluster or cluster.cluster_id == -1:
+            return {"topic_tag": None, "series": {}}
+
+        topic_tag = self._resolve_cluster_topic_tag(cluster) or f"Cluster {cluster.cluster_id}"
+
+        # Fetch embeddings for this cluster's articles only
+        embeddings_list = await ArticleEmbedding.find({
+            "article_id": {"$in": cluster.article_ids},
+            "model_version": model_version,
+        }).to_list()
+
+        date_counts: Dict[str, int] = defaultdict(int)
+        for embd in embeddings_list:
+            raw_date = embd.article_dates
+            year_month = str(raw_date)[:7] if raw_date else None
+            if year_month:
+                date_counts[year_month] += 1
+
+        # Return as sorted list of {date, count} for easy merging on frontend
+        series = [{"date": d, "count": c} for d, c in sorted(date_counts.items())]
+        return {"topic_tag": topic_tag, "cluster_id": cluster_id, "series": series}
+
+    async def patch_cluster_labels(self, model_version: str) -> Dict[str, Any]:
+        """
+        Mevcut bir model versiyonundaki label=null veya top_keywords=[] olan
+        cluster'ları yeniden hesaplayıp DB'ye yazar. Train gerektirmez.
+        """
+        clusters = await Cluster.find({"model_version": model_version}).to_list()
+        if not clusters:
+            return {"patched": 0, "skipped": 0, "message": "No clusters found for this model version"}
+
+        # Tüm cluster'lardaki article_id'leri topla
+        all_article_ids = set()
+        for cluster in clusters:
+            if cluster.cluster_id != -1:
+                all_article_ids.update(cluster.article_ids)
+
+        # Embedding'lerden keywords'leri çek
+        embeddings_list = await ArticleEmbedding.find({
+            "article_id": {"$in": list(all_article_ids)},
+            "model_version": model_version
+        }).to_list()
+        keywords_map = {embd.article_id: embd.article_keywords for embd in embeddings_list}
+
+        patched = 0
+        skipped = 0
+
+        for cluster in clusters:
+            if cluster.cluster_id == -1:
+                if not cluster.label:
+                    cluster.label = "Noise / Unclustered"
+                    await cluster.save()
+                    patched += 1
+                else:
+                    skipped += 1
+                continue
+
+            # Zaten label ve keywords varsa atla
+            if cluster.label and cluster.top_keywords:
+                skipped += 1
+                continue
+
+            # Keywords topla
+            raw_keywords: list = []
+            for art_id in cluster.article_ids[:10]:
+                kws = keywords_map.get(art_id, [])
+                raw_keywords.extend(kws)
+
+            keyword_counts = Counter(raw_keywords)
+            top_keywords = [kw for kw, _ in keyword_counts.most_common(10)]
+
+            if not top_keywords:
+                skipped += 1
+                continue
+
+            label_text = await self._take_cluster_and_find_word(top_keywords)
+
+            cluster.top_keywords = top_keywords
+            cluster.label = label_text
+            await cluster.save()
+            patched += 1
+            logger.info(f"Patched cluster {cluster.cluster_id} ({cluster.cluster_type}): '{label_text}'")
+
+        return {
+            "model_version": model_version,
+            "total_clusters": len(clusters),
+            "patched": patched,
+            "skipped": skipped,
+        }
+
+    async def patch_cluster_group_ids(self, model_version: str) -> Dict[str, Any]:
+        """
+        group_id alanı null olan publisher/journal cluster'larını
+        ArticleEmbedding tablosundan alınan publisher/journal bilgisiyle doldurur.
+        Yeniden eğitim gerektirmez.
+        """
+        clusters = await Cluster.find({
+            "model_version": model_version,
+            "cluster_type": {"$in": ["publisher", "journal"]},
+            "group_id": None,
+        }).to_list()
+
+        if not clusters:
+            return {"patched": 0, "skipped": 0, "message": "Null group_id olan cluster bulunamadi."}
+
+        # Tüm article_id'leri topla
+        all_article_ids = list({art_id for c in clusters for art_id in c.article_ids[:1]})
+
+        embeddings_list = await ArticleEmbedding.find({
+            "article_id": {"$in": all_article_ids},
+            "model_version": model_version,
+        }).to_list()
+
+        emb_map: Dict[Any, ArticleEmbedding] = {e.article_id: e for e in embeddings_list}
+
+        patched = 0
+        skipped = 0
+        bulk_ops = []
+        for cluster in clusters:
+            sample_id = next(iter(cluster.article_ids), None)
+            if sample_id is None:
+                skipped += 1
+                continue
+
+            emb = emb_map.get(sample_id)
+            if emb is None:
+                skipped += 1
+                continue
+
+            if cluster.cluster_type == "publisher":
+                new_group_id = emb.article_publisher
+            else:
+                new_group_id = str(emb.article_journal_id) if emb.article_journal_id else None
+
+            if not new_group_id:
+                skipped += 1
+                continue
+
+            bulk_ops.append(UpdateOne({"_id": cluster.id}, {"$set": {"group_id": new_group_id}}))
+            patched += 1
+
+        if bulk_ops:
+            await Cluster.get_motor_collection().bulk_write(bulk_ops)
+
+        logger.info(f"patch_cluster_group_ids: patched={patched}, skipped={skipped}")
+        return {"model_version": model_version, "patched": patched, "skipped": skipped}
 
     # For the Entire Dataset ("All")
-    async def get_all_topic_trends(self, model_version: str):
+    async def get_all_topic_trends(self, model_version: str, top_n: int = None):
         clusters = await Cluster.find({
             "cluster_type": "all",
             "model_version": model_version
         }).to_list()
-        return await self._generate_trends_from_clusters(clusters, model_version)
+        return await self._generate_trends_from_clusters(clusters, model_version, top_n=top_n)
     # async def get_journal_topic_trends(self, journal_name: str, model_version: str) -> Optional[Dict[str, Any]]:
     #     clusters = await self.get_clusters_by_journal(journal_name, model_version)
     #     if not clusters:
@@ -1023,6 +1252,14 @@ class NLPService:
 
         return clusters
         
+    def _resolve_cluster_topic_tag(self, cluster) -> Optional[str]:
+        """DB'de saklanan label veya ilk keyword'ü döner; ikisi de yoksa None."""
+        if cluster.label and cluster.label != "Noise / Unclustered":
+            return cluster.label
+        if cluster.top_keywords:
+            return cluster.top_keywords[0]
+        return None
+
     async def _take_cluster_and_find_word(self, cluster_list):
         n = len(cluster_list)
         if n == 1: return cluster_list[0]

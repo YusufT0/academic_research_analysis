@@ -4,7 +4,7 @@ NLP ve Clustering analiz sonuçları için modeller
 """
 
 from datetime import datetime
-from typing import Optional, List, Union
+from typing import Optional, List
 from beanie import Document, PydanticObjectId
 from pydantic import Field
 
@@ -108,10 +108,10 @@ class Cluster(Document, TimestampMixin):
         ...,
         description="Yapılan clusterlamanin tipi."
     )
-    group_id: Optional[Union[PydanticObjectId, str]] = Field(
+    group_id: Optional[str] = Field(
         default=None,
         description="Cluster'ın kaynak publisher'ı ya da journal'ı. ALL seçildiyse None."
-    )    
+    )
     # İstatistikler
     article_count: int = Field(default=0, description="Cluster'daki makale sayısı")
     avg_similarity: Optional[float] = Field(

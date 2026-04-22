@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/Badge';
 import { getArticleStats, getCitationStats } from '@/lib/api';
 import type { ArticleStats, CitationStats } from '@/lib/types';
 import { CitationsSection } from './CitationsSection';
+import { TopicTrendsSection } from './TopicTrendsSection';
 
 function YearlyTrendChart({ data }: { data: Record<string, number> }) {
   const years = Object.entries(data)
@@ -323,6 +324,7 @@ export default function TrendsPage() {
       </Card>
 
       {/* Citations Section */}
+      <TopicTrendsSection />
       {citationStats && <CitationsSection data={citationStats} />}
     </div>
   );

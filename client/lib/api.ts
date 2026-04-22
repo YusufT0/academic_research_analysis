@@ -458,6 +458,48 @@ export async function getAuthorProfile(name: string) {
   return fetchApi<any>(`/authors/${encodeURIComponent(name)}`);
 }
 
+// ==================== NLP / Topic Trends ====================
+
+export async function getNlpStatus(): Promise<import('./types').NlpStatus> {
+  return fetchApi<import('./types').NlpStatus>('/nlp/status');
+}
+
+export async function getAllTopicTrends(model_version: string, top_n = 10): Promise<import('./types').TopicTrendsData> {
+  const params = new URLSearchParams({ model_version, top_n: String(top_n) });
+  return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_all_topic_trends?${params.toString()}`);
+}
+
+export async function getJournalTopicTrends(name: string, model_version: string, top_n = 10): Promise<import('./types').TopicTrendsData> {
+  const params = new URLSearchParams({ name, model_version, top_n: String(top_n) });
+  return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_journal_topic_trends?${params.toString()}`);
+}
+
+export async function getPublisherTopicTrends(name: string, model_version: string, top_n = 10): Promise<import('./types').TopicTrendsData> {
+  const params = new URLSearchParams({ name, model_version, top_n: String(top_n) });
+  return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_publisher_topic_trends?${params.toString()}`);
+}
+
+export async function listClusters(
+  model_version: string,
+  cluster_type: 'all' | 'journal' | 'publisher' = 'all',
+  group_id?: string,
+): Promise<{ clusters: import('./types').TopicCluster[] }> {
+  const params = new URLSearchParams({ model_version, cluster_type });
+  if (group_id) params.set('group_id', group_id);
+  return fetchApi<{ clusters: import('./types').TopicCluster[] }>(`/nlp/list_clusters?${params.toString()}`);
+}
+
+export async function getClusterTrendSeries(
+  cluster_id: number,
+  model_version: string,
+  cluster_type: 'all' | 'journal' | 'publisher' = 'all',
+  group_id?: string,
+): Promise<{ topic_tag: string; cluster_id: number; series: Array<{ date: string; count: number }> }> {
+  const params = new URLSearchParams({ cluster_id: String(cluster_id), model_version, cluster_type });
+  if (group_id) params.set('group_id', group_id);
+  return fetchApi(`/nlp/cluster_trend_series?${params.toString()}`);
+}
+
 export async function getAuthorArticles(name: string, page: number = 1, page_size: number = 15) {
   const params = new URLSearchParams();
   params.set('page', page.toString());

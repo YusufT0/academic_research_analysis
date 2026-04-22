@@ -297,6 +297,28 @@ export interface CitationExpandData {
   edges: CitationGraphEdge[];
 }
 
+// ==================== NLP / Topic Trends Types ====================
+
+export interface TopicCluster {
+  cluster_id: number;
+  topic_tag: string;
+  article_count: number;
+}
+
+export interface TopicTrendsData {
+  graph_data: Array<Record<string, string | number>>;
+  clusters: TopicCluster[];
+}
+
+export interface NlpStatus {
+  has_trained_model: boolean;
+  latest_model_version: string | null;
+  latest_training_date: string | null;
+  is_training: boolean;
+  cache_loaded: boolean;
+  cached_version: string | null;
+}
+
 // ==================== WebSocket Types ====================
 
 export interface ScraperEvent {
