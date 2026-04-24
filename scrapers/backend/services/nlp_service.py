@@ -11,6 +11,7 @@ from pymongo import UpdateOne
 from beanie import PydanticObjectId
 from collections import Counter
 import sys
+import asyncio
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -268,16 +269,51 @@ class NLPService:
             logger.info(f"Found {len(valid_articles)} valid articles")
             
             # 2. Metinleri temizle ve embedding oluştur
-            logger.info("Cleaning texts and generating embeddings...")
+            logger.info(f"Extracting keywords for {len(valid_articles)} articles in batch...")
+            abstracts = [article.abstract for article in valid_articles]
+            
+            # Windows CUDA Deadlock Fix: Initialize PyTorch models in the main thread
+            _ = self.kw_model
+            _ = self.embedder
+            
+            def _extract_batch():
+                from tqdm import tqdm
+                results = []
+                batch_size = 128
+                # Process in chunks to provide a progress bar
+                for i in tqdm(range(0, len(abstracts), batch_size), desc="Extracting keywords"):
+                    chunk = abstracts[i:i + batch_size]
+                    chunk_res = self.kw_model.extract_keywords(
+                        chunk, 
+                        keyphrase_ngram_range=(1, 2), 
+                        stop_words='english', 
+                        use_mmr=True,
+                        diversity=0.2,
+                        top_n=5
+                    )
+                    # KeyBERT returns List[Tuple] for single doc, List[List[Tuple]] for multiple
+                    if len(chunk) == 1:
+                        results.append(chunk_res)
+                    else:
+                        results.extend(chunk_res)
+                return results
+                
+            batch_extracted = await asyncio.to_thread(_extract_batch)
+            logger.success("Keywords extracted.")
+            
+            all_article_kws = [[item[0] for item in ext] for ext in batch_extracted]
+            
+            logger.info("Cleaning texts and arranging dates...")
             cleaned_texts = []
             article_ids = []
             article_keywords = []
             article_dates = []
             article_publishers = []
             article_journals = []
-            for article in valid_articles:
+            
+            for i, article in enumerate(valid_articles):
                 cleaned = self._clean_text(article.abstract)
-                kws = await self._extract_abstarct_keywords(article.abstract)
+                kws = all_article_kws[i]
                 date = await self._arrange_date(article.publication_date)
                 if date == None:
                     continue
@@ -290,19 +326,23 @@ class NLPService:
                     article_journals.append(article.journal_id)
             
             # Embedding
-            embeddings_full = self.embedder.encode(cleaned_texts, show_progress_bar=True)
+            def _encode():
+                return self.embedder.encode(cleaned_texts, batch_size=128, show_progress_bar=True)
+            embeddings_full = await asyncio.to_thread(_encode)
             logger.success(f"Generated {len(embeddings_full)} embeddings (dim: {embeddings_full.shape[1]})")
             
             # 3. UMAP ile boyut indirgeme
             logger.info("Reducing dimensions with UMAP...")
-            import umap
-            reducer = umap.UMAP(
-                n_neighbors=settings.nlp_umap_n_neighbors,
-                n_components=settings.nlp_umap_n_components,
-                metric='cosine',
-                random_state=42
-            )
-            embeddings_reduced = reducer.fit_transform(embeddings_full)
+            def _reduce():
+                import umap
+                reducer = umap.UMAP(
+                    n_neighbors=settings.nlp_umap_n_neighbors,
+                    n_components=settings.nlp_umap_n_components,
+                    metric='cosine',
+                    n_jobs=-1
+                )
+                return reducer.fit_transform(embeddings_full)
+            embeddings_reduced = await asyncio.to_thread(_reduce)
             logger.success(f"Reduced to {embeddings_reduced.shape[1]} dimensions")
             # Saving Embeddings.
             await self.embedding_repo.delete_by_model_version(model_version)
@@ -332,20 +372,23 @@ class NLPService:
             # 5. Eski verileri temizle (aynı versiyon varsa)
             
             def run_hdbscan(indices: list[int], min_cluster_size: int, min_samples: int):
+                import hdbscan
                 subset_reduced = embeddings_reduced[indices]
                 clusterer = hdbscan.HDBSCAN(
                     min_cluster_size=min_cluster_size,
-                    min_samples=min_samples
+                    min_samples=min_samples,
+                    core_dist_n_jobs=-1
                 )
                 return clusterer.fit_predict(subset_reduced)
 
             # --- Clustering for All ---
             logger.info("Clustering for All.")
             all_indices = list(range(len(article_ids)))
-            all_labels = run_hdbscan(
+            all_labels = await asyncio.to_thread(
+                run_hdbscan,
                 all_indices,
-                min_cluster_size=settings.nlp_min_cluster_size_all,
-                min_samples=settings.nlp_min_samples_all
+                settings.nlp_min_cluster_size_all,
+                settings.nlp_min_samples_all
             )
             n_clusters_all = len(set(all_labels)) - (1 if -1 in all_labels else 0)
             logger.success(f"Found {n_clusters_all} clusters for all.")
@@ -394,10 +437,11 @@ class NLPService:
                 if len(indices) < settings.nlp_min_cluster_size_publisher:
                     logger.warning(f"Skipping publisher '{publisher}': only {len(indices)} articles.")
                     continue
-                labels = run_hdbscan(
+                labels = await asyncio.to_thread(
+                    run_hdbscan,
                     indices,
-                    min_cluster_size=settings.nlp_min_cluster_size_publisher,
-                    min_samples=settings.nlp_min_samples_publisher
+                    settings.nlp_min_cluster_size_publisher,
+                    settings.nlp_min_samples_publisher
                 )
                 docs = await self._create_cluster_documents(
                     cluster_labels=labels,
@@ -442,10 +486,11 @@ class NLPService:
                 if len(indices) < settings.nlp_min_cluster_size_journal:
                     logger.warning(f"Skipping journal '{journal_id}': only {len(indices)} articles.")
                     continue
-                labels = run_hdbscan(
+                labels = await asyncio.to_thread(
+                    run_hdbscan,
                     indices,
-                    min_cluster_size=settings.nlp_min_cluster_size_journal,
-                    min_samples=settings.nlp_min_samples_journal
+                    settings.nlp_min_cluster_size_journal,
+                    settings.nlp_min_samples_journal
                 )
                 docs = await self._create_cluster_documents(
                     cluster_labels=labels,
@@ -1294,8 +1339,11 @@ class NLPService:
                 pairs.append((cluster_list[i], cluster_list[j]))
                 pair_indices.append((i, j))
         
-        # One single batch prediction on GPU
-        scores = self.cross_encoder.predict(pairs)
+        # One single batch prediction on GPU (disable progress bar to prevent terminal spam)
+        def _predict():
+            return self.cross_encoder.predict(pairs, batch_size=256, show_progress_bar=False)
+            
+        scores = await asyncio.to_thread(_predict)
         
         running_totals = [0.0] * n
         for idx, (i, j) in enumerate(pair_indices):
@@ -1307,7 +1355,8 @@ class NLPService:
         return cluster_list[max_idx]
 
     async def _extract_abstarct_keywords(self, text):
-        extracted = self.kw_model.extract_keywords(
+        def _extract():
+            return self.kw_model.extract_keywords(
                 text, 
                 keyphrase_ngram_range=(1, 2), 
                 stop_words='english', 
@@ -1315,6 +1364,7 @@ class NLPService:
                 diversity=0.2,
                 top_n=5 # Extract top 5 candidates to evaluate
             )
+        extracted = await asyncio.to_thread(_extract)
             
         kws = [item[0] for item in extracted]
         return kws

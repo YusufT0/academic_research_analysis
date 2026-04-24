@@ -10,7 +10,7 @@ colorama>=0.4.6
 
 # MongoDB & ORM
 motor>=3.3.0
-beanie>=1.25.0
+beanie>=1.25.0,<2.1.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
@@ -27,6 +27,7 @@ numpy
 scikit-learn
 nltk
 spacy
+keybert
 # Redis Cache
 redis[hiredis]>=5.0.0
 
