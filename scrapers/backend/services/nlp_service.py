@@ -322,7 +322,7 @@ class NLPService:
                     article_ids.append(article.id)
                     article_keywords.append(kws)
                     article_dates.append(str(date))
-                    article_publishers.append(article.source_website)
+                    article_publishers.append(article.publisher)
                     article_journals.append(article.journal_id)
             
             # Embedding
