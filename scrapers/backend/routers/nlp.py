@@ -303,6 +303,101 @@ async def list_clusters(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/patch_labels", summary="Cluster label'larını yeniden hesapla (train gerektirmez)")
+async def patch_cluster_labels(
+    model_version: str = Query(..., description="Patch uygulanacak model versiyonu"),
+    background_tasks: BackgroundTasks = None
+):
+    """
+    Verilen model versiyonundaki label=null veya top_keywords=[] olan cluster'ları
+    ArticleEmbedding'lerden keyword çekerek ve cross-encoder ile en temsili label'ı
+    hesaplayarak günceller. Yeni bir eğitim başlatmaz.
+    """
+    try:
+        result = await nlp_service.patch_cluster_labels(model_version=model_version)
+        return result
+    except Exception as e:
+        logger.error(f"Patch labels error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/patch_group_ids", summary="Publisher/journal cluster'larının null group_id'lerini doldur (train gerektirmez)")
+async def patch_cluster_group_ids(
+    model_version: str = Query(..., description="Patch uygulanacak model versiyonu"),
+):
+    try:
+        result = await nlp_service.patch_cluster_group_ids(model_version=model_version)
+        return result
+    except Exception as e:
+        logger.error(f"Patch group_ids error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/get_journal_topic_trends")
+async def list_journal_topic_trends(name: str, model_version: str, top_n: int = Query(10, ge=1, le=100)):
+    try:
+        topic_trends = await nlp_service.get_journal_topic_trends(journal_name=name, model_version=model_version, top_n=top_n)
+        return topic_trends
+    except Exception as e:
+        logger.error(f"Get Journal Topic Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/get_publisher_topic_trends")
+async def list_publisher_topic_trends(name: str, model_version: str, top_n: int = Query(10, ge=1, le=100)):
+    try:
+        topic_trends = await nlp_service.get_publisher_topic_trends(publisher_name=name, model_version=model_version, top_n=top_n)
+        return topic_trends
+    except Exception as e:
+        logger.error(f"Get Publisher Topic Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/get_all_topic_trends")
+async def list_all_topic_trends(model_version: str, top_n: int = Query(10, ge=1, le=100)):
+    try:
+        topic_trends = await nlp_service.get_all_topic_trends(model_version=model_version, top_n=top_n)
+        return topic_trends
+    except Exception as e:
+        logger.error(f"Get All Topic Trends error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/list_clusters", summary="Cluster metadatasını listele (graph data yok)")
+async def list_clusters_endpoint(
+    model_version: str,
+    cluster_type: str = Query("all"),
+    group_id: Optional[str] = Query(None),
+):
+    try:
+        return await nlp_service.list_clusters(
+            model_version=model_version,
+            cluster_type=cluster_type,
+            group_id=group_id,
+        )
+    except Exception as e:
+        logger.error(f"List clusters error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cluster_trend_series", summary="Tek bir cluster için zaman serisi")
+async def get_cluster_trend_series(
+    cluster_id: int,
+    model_version: str,
+    cluster_type: str = Query("all"),
+    group_id: Optional[str] = Query(None),
+):
+    try:
+        return await nlp_service.get_cluster_trend_series(
+            cluster_id=cluster_id,
+            model_version=model_version,
+            cluster_type=cluster_type,
+            group_id=group_id,
+        )
+    except Exception as e:
+        logger.error(f"Cluster trend series error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 @router.get("/clusters/{cluster_id}", summary="Cluster detayını getir")
 async def get_cluster_detail(
     cluster_id: int,
@@ -420,63 +515,78 @@ async def get_cluster_detail(
 async def get_cluster_articles(
     cluster_id: int,
     model_version: Optional[str] = Query(None, description="Model versiyonu (boş = en son)"),
-    limit: int = Query(100, ge=1, le=500, description="Makale limiti"),
-    skip: int = Query(0, ge=0, description="Atlanacak makale sayısı")
+    limit: int = Query(15, ge=1, le=100, description="Sayfa başına makale sayısı"),
+    skip: int = Query(0, ge=0, description="Atlanacak makale sayısı"),
+    search: Optional[str] = Query(None, description="Başlık arama terimi"),
 ):
     """
-    Belirli bir cluster'daki makaleleri sayfalı olarak döndürür (cached).
+    Belirli bir cluster'daki makaleleri backend'de sayfalama ve arama ile döndürür.
+    - search yoksa ilk sayfa için cache kullanılır.
+    - search varsa cache bypass edilir, MongoDB regex sorgusu yapılır.
     """
     try:
-        # Önce gerçek model version'ı belirle
+        # Model versiyonu belirle
         actual_mv = model_version
         if not actual_mv:
             status = await nlp_service.get_status()
             actual_mv = status.get("latest_model_version") or status.get("cached_version") or "latest"
-        
-        # Cache'den dene (ilk sayfa için)
+
+        # Arama varsa direkt DB'den al (cache bypass)
+        if search and search.strip():
+            result = await nlp_service.get_cluster_articles_filtered(
+                cluster_id=cluster_id,
+                model_version=actual_mv,
+                skip=skip,
+                limit=limit,
+                search=search,
+            )
+            if not result:
+                raise HTTPException(status_code=404, detail="Cluster bulunamadı")
+            return result
+
+        # Arama yok — ilk sayfa için cache dene
         if skip == 0:
             cached_articles = await cache_service.get_cluster_articles(cluster_id, actual_mv)
             if cached_articles:
                 logger.info(f"Cache HIT: cluster {cluster_id} articles")
-                articles = cached_articles[:limit]
+                page_articles = cached_articles[:limit]
                 return {
                     "cluster_id": cluster_id,
                     "total_count": len(cached_articles),
-                    "returned_count": len(articles),
                     "skip": skip,
                     "limit": limit,
-                    "articles": articles
+                    "articles": page_articles,
                 }
-        
-        # Cache'de yoksa DB'den al
+
+        # Cache miss — DB'den sayfalı çek
         logger.info(f"Cache MISS: cluster {cluster_id} articles - DB'den alınıyor")
-        result = await nlp_service.get_cluster_detail(
+        result = await nlp_service.get_cluster_articles_filtered(
             cluster_id=cluster_id,
-            model_version=model_version,
-            include_articles=True,
-            article_limit=limit + skip
+            model_version=actual_mv,
+            skip=skip,
+            limit=limit,
+            search=None,
         )
-        
+
         if not result:
             raise HTTPException(status_code=404, detail="Cluster bulunamadı")
-        
-        all_articles = result.get("articles", [])
-        articles = all_articles[skip:skip + limit]
-        
-        # İlk sayfa ise cache'le
+
+        # İlk sayfa ise tüm makaleleri cache'le (total_count kadar)
         if skip == 0:
-            await cache_service.set_cluster_articles(cluster_id, actual_mv, all_articles)
-            logger.info(f"Cluster {cluster_id} articles cached")
-        
-        return {
-            "cluster_id": cluster_id,
-            "total_count": result["article_count"],
-            "returned_count": len(articles),
-            "skip": skip,
-            "limit": limit,
-            "articles": articles
-        }
-        
+            # total_count kadar makale çek ve cache'e yaz
+            all_result = await nlp_service.get_cluster_articles_filtered(
+                cluster_id=cluster_id,
+                model_version=actual_mv,
+                skip=0,
+                limit=result["total_count"] or 500,
+                search=None,
+            )
+            if all_result:
+                await cache_service.set_cluster_articles(cluster_id, actual_mv, all_result["articles"])
+                logger.info(f"Cluster {cluster_id} articles cached ({len(all_result['articles'])} adet)")
+
+        return result
+
     except HTTPException:
         raise
     except Exception as e:

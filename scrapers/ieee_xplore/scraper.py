@@ -159,6 +159,9 @@ class IEEEXploreScraper:
         
         logger.section(f"TOPLAM {total_pages} SAYFA TARANACAK")
         
+        last_page_urls = set()
+        restart_count = 0
+
         # Tüm sayfaları tara
         while True:
             # Stop flag kontrolü - her sayfa öncesi
@@ -169,6 +172,32 @@ class IEEEXploreScraper:
             # Mevcut sayfadaki journal'ları parse et
             page_source = self.driver.page_source
             journals = JournalParser.extract_journals_from_page(page_source)
+            
+            current_urls = {j['url'] for j in journals if j.get('url')}
+            if current_urls and current_urls.issubset(last_page_urls):
+                logger.warning("Kopya liste tespit edildi (aynı sayfa tekrar yüklendi/aynı makaleler alındı)!")
+                if restart_count < 3:
+                    logger.info("Liste komple sıfırlanıyor, sayfa 1'e dönülüyor...")
+                    self.all_journals.clear()
+                    current_page = 1
+                    restart_count += 1
+                    last_page_urls.clear()
+                    
+                    self.driver.get(self.config.base_url)
+                    wait_for_page_load(self.driver)
+                    self._interruptible_sleep(2)
+                    
+                    # Update navigator info
+                    self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                    page_info = self.navigator.get_current_page_info()
+                    if 'total_pages' in page_info:
+                        total_pages = page_info['total_pages']
+                    continue
+                else:
+                    logger.error("Maksimum sayfa sıfırlama limitine ulaşıldı, geçiliyor.")
+                    break
+                    
+            last_page_urls = current_urls
             self.all_journals.extend(journals)
             
             logger.found(len(journals), f"journal (Sayfa {current_page})")
@@ -199,6 +228,7 @@ class IEEEXploreScraper:
         journal_home_url: str,
         depth: int = None,
         existing_urls: set = None,
+        issues_order: str = "newest_first",
     ):
         """
         Journal ana sayfasından Aims & Scope alır ve All Issues sayfasından
@@ -266,41 +296,63 @@ class IEEEXploreScraper:
             wait_for_page_load(self.driver)
             self.rate_limiter.check_and_handle_rate_limit()
 
-            # 5. Decade sekmeleri var mı?
+            # 5. Sayfa tipini tespit et: All Volumes mu, yoksa All Issues mi?
             page_source = self.driver.page_source
-            has_decades = IssuesPageParser.has_decade_tabs(page_source)
-            decade_tabs = IssuesPageParser.extract_decade_tab_texts(page_source) if has_decades else []
 
-            logger.info(f"Decade sekmeleri: {decade_tabs if has_decades else 'yok'}")
+            if IssuesPageParser.is_volumes_page(page_source):
+                # --- All Volumes tipi: her yıl doğrudan bir issue/volume URL'ine sahip ---
+                logger.info("All Volumes tipi sayfa tespit edildi")
+                volume_links = IssuesPageParser.extract_volumes_year_links(page_source)
+                if issues_order == "oldest_first":
+                    volume_links = list(reversed(volume_links))
+                logger.info(f"Volume/yıl linkleri: {[v['title'] for v in volume_links]}")
 
-            # 6. Her decade'i işle (yoksa tek geçiş)
-            for decade_idx, decade in enumerate(decade_tabs if has_decades else [None]):
-                if depth and count_new(all_issues) >= depth:
-                    break
+                for vol in volume_links:
+                    if depth and count_new(all_issues) >= depth:
+                        break
+                    all_issues.append({'url': vol['url'], 'title': vol['title']})
+                    logger.info(f"Volume eklendi: {vol['title']} -> {vol['url']}")
 
-                if decade_idx > 0:
-                    # Decade sekmesini tıkla
-                    try:
-                        tab_links = self.driver.find_elements(
-                            By.CSS_SELECTOR,
-                            ".issue-details-past-tabs:not(.year) li a"
-                        )
-                        for link in tab_links:
-                            if link.text.strip() == decade:
-                                self.driver.execute_script(
-                                    "arguments[0].scrollIntoView({block:'center'});", link
-                                )
-                                self.driver.execute_script("arguments[0].click();", link)
-                                self._interruptible_sleep(1.5)
-                                break
-                    except Exception as e:
-                        logger.warning(f"Decade sekmesi tıklanamadı ({decade}): {e}")
-                        continue
+            else:
+                # --- All Issues tipi: decade sekmeleri ve yıl listesi ---
+                has_decades = IssuesPageParser.has_decade_tabs(page_source)
+                decade_tabs = IssuesPageParser.extract_decade_tab_texts(page_source) if has_decades else []
 
-                # 7. Bu decade'deki yılları işle
-                done = self._process_year_list(all_issues, depth, existing_urls, count_new)
-                if done:
-                    break
+                logger.info(f"Decade sekmeleri: {decade_tabs if has_decades else 'yok'}")
+
+                # 6. Her decade'i işle (yoksa tek geçiş) — issues_order'a göre yön belirle
+                if has_decades:
+                    ordered_decade_tabs = list(reversed(decade_tabs)) if issues_order == "oldest_first" else decade_tabs
+                else:
+                    ordered_decade_tabs = [None]
+                for decade_idx, decade in enumerate(ordered_decade_tabs):
+                    if depth and count_new(all_issues) >= depth:
+                        break
+
+                    # oldest_first'te tüm decade'ler tıklanmalı (ilki de aktif değil)
+                    if has_decades and decade is not None and (decade_idx > 0 or issues_order == "oldest_first"):
+                        # Decade sekmesini tıkla
+                        try:
+                            tab_links = self.driver.find_elements(
+                                By.CSS_SELECTOR,
+                                ".issue-details-past-tabs:not(.year) li a"
+                            )
+                            for link in tab_links:
+                                if link.text.strip() == decade:
+                                    self.driver.execute_script(
+                                        "arguments[0].scrollIntoView({block:'center'});", link
+                                    )
+                                    self.driver.execute_script("arguments[0].click();", link)
+                                    self._interruptible_sleep(1.5)
+                                    break
+                        except Exception as e:
+                            logger.warning(f"Decade sekmesi tıklanamadı ({decade}): {e}")
+                            continue
+
+                    # 7. Bu decade'deki yılları işle
+                    done = self._process_year_list(all_issues, depth, existing_urls, count_new, issues_order)
+                    if done:
+                        break
 
             logger.success(
                 f"Toplam {len(all_issues)} issue bulundu ({count_new(all_issues)} yeni)"
@@ -317,7 +369,7 @@ class IEEEXploreScraper:
             traceback.print_exc()
             return aims_and_scope, all_issues
 
-    def _process_year_list(self, all_issues: list, depth, existing_urls: set, count_new) -> bool:
+    def _process_year_list(self, all_issues: list, depth, existing_urls: set, count_new, issues_order: str = "newest_first") -> bool:
         """
         Mevcut All Issues sayfasındaki yıl listesini işler.
         Doğrudan href'li yıllar issue olarak eklenir; href'siz yıllar tıklanıp
@@ -327,6 +379,8 @@ class IEEEXploreScraper:
             bool: depth dolmuşsa True
         """
         year_items = IssuesPageParser.extract_year_items(self.driver.page_source)
+        if issues_order == "oldest_first":
+            year_items = list(reversed(year_items))
         logger.info(f"Yıl listesi: {[y['year'] for y in year_items]}")
 
         for year_item in year_items:
@@ -365,6 +419,8 @@ class IEEEXploreScraper:
 
                     if clicked:
                         year_issues = IssuesPageParser.extract_issue_list(self.driver.page_source)
+                        if issues_order == "oldest_first":
+                            year_issues = list(reversed(year_issues))
                         all_issues.extend(year_issues)
                         logger.info(f"{year_text}: {len(year_issues)} issue bulundu")
                     else:
@@ -428,29 +484,32 @@ class IEEEXploreScraper:
 
         logger.success(f"  Issue: {issue_info.get('issue_number')} | {issue_info.get('date')}")
 
-        # Makale URL'lerini çıkar
-        article_urls = ArticleParser.extract_article_urls(page_source)
-        if not article_urls:
+        # Makale URL'lerini ve başlıklarını çıkar
+        article_stubs = ArticleParser.extract_article_urls(page_source)
+        if not article_stubs:
             logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
             return {'issue_info': issue_info, 'articles': []}
 
         if max_articles:
-            article_urls = article_urls[:max_articles]
+            article_stubs = article_stubs[:max_articles]
 
-        # UI'a makale listesini bildir
+        # UI'a makale listesini (başlıklarıyla) bildir
         if article_list_callback:
             try:
-                article_list_callback(['' for _ in article_urls])
+                article_list_callback([a.get('title', '') for a in article_stubs])
             except Exception:
                 pass
 
         articles = []
-        for idx, article_url in enumerate(article_urls, 1):
+        failed_stubs = []  # Yüklenemeyen makaleler için retry kuyruğu
+
+        for idx, article_stub in enumerate(article_stubs, 1):
+            article_url = article_stub['url']
             self.check_stop_flag()
 
             if article_progress_callback:
                 try:
-                    article_progress_callback(idx, len(article_urls), None)
+                    article_progress_callback(idx, len(article_stubs), None)
                 except Exception:
                     pass
 
@@ -460,10 +519,11 @@ class IEEEXploreScraper:
                     if article_url.startswith('/') else article_url
                 )
 
-                logger.info(f"[{idx}/{len(article_urls)}] Makale detayı alınıyor...")
+                logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor...")
 
                 if not self.selenium_driver.get(full_url, wait_after=2):
-                    logger.warning(f"Makale sayfası yüklenemedi: {article_url}")
+                    logger.warning(f"Makale sayfası yüklenemedi, retry kuyruğuna eklendi: {article_url}")
+                    failed_stubs.append(article_stub)
                     continue
 
                 wait_for_page_load(self.driver)
@@ -480,7 +540,7 @@ class IEEEXploreScraper:
                 if article_progress_callback:
                     try:
                         article_progress_callback(
-                            idx, len(article_urls),
+                            idx, len(article_stubs),
                             article_data.get('title') if article_data else None
                         )
                     except Exception:
@@ -493,8 +553,50 @@ class IEEEXploreScraper:
             except ScraperStoppedException:
                 raise
             except Exception as e:
-                logger.warning(f"Makale {idx} hatası: {e}")
+                logger.warning(f"Makale {idx} hatası, retry kuyruğuna eklendi: {e}")
+                failed_stubs.append(article_stub)
                 continue
+
+        # Retry kuyruğunu işle
+        if failed_stubs:
+            logger.info(f"{len(failed_stubs)} makale yüklenemedi, {len(failed_stubs)} saniye bekleniyor...")
+            self._interruptible_sleep(min(len(failed_stubs) * 2, 30))
+            logger.info(f"Retry başlıyor ({len(failed_stubs)} makale)...")
+
+            for retry_idx, article_stub in enumerate(failed_stubs, 1):
+                article_url = article_stub['url']
+                self.check_stop_flag()
+                try:
+                    full_url = (
+                        f"https://ieeexplore.ieee.org{article_url}"
+                        if article_url.startswith('/') else article_url
+                    )
+                    logger.info(f"[Retry {retry_idx}/{len(failed_stubs)}] {article_url}")
+
+                    if not self.selenium_driver.get(full_url, wait_after=4):
+                        logger.warning(f"Retry başarısız, makale atlanıyor: {article_url}")
+                        continue
+
+                    wait_for_page_load(self.driver)
+                    self.rate_limiter.check_and_handle_rate_limit()
+
+                    article_data = ArticleParser.extract_article_details(
+                        self.driver.page_source, full_url
+                    )
+                    if article_data and article_data.get('title'):
+                        articles.append(article_data)
+                        logger.success(f"Retry başarılı: {article_data['title'][:50]}...")
+                    else:
+                        logger.warning(f"Retry: makale detayları alınamadı ({article_url})")
+
+                    self._interruptible_sleep(2)
+                except RateLimitException:
+                    raise
+                except ScraperStoppedException:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Retry hatası ({article_url}): {e}")
+                    continue
 
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
@@ -509,6 +611,7 @@ class IEEEXploreScraper:
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
+        issues_order: str = "newest_first",
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın issue'larını ve makalelerini toplar.
@@ -547,6 +650,7 @@ class IEEEXploreScraper:
                 journal_home_url,
                 depth=depth,
                 existing_urls=existing_issue_urls,
+                issues_order=issues_order,
             )
             journal['aims_and_scope'] = aims_and_scope
 
@@ -559,6 +663,12 @@ class IEEEXploreScraper:
             skipped = len(all_issues) - len(new_issues)
             if skipped:
                 logger.info(f"{skipped} issue daha önce işlenmiş, atlanıyor. Yeni: {len(new_issues)}")
+
+            # Issue sırası toplama aşamasında uygulandı
+            if issues_order == "oldest_first":
+                logger.info("[IEEE] Issue sırası: eskiden yeniye (oldest_first)")
+            else:
+                logger.info("[IEEE] Issue sırası: yeniden eskiye (newest_first)")
 
             issues_to_process = new_issues if not depth else new_issues[:depth]
             logger.info(
@@ -573,10 +683,15 @@ class IEEEXploreScraper:
 
                 if issue_start_callback:
                     try:
+                        pending_titles = [
+                            s.get('title', f'Issue {i}')
+                            for i, s in enumerate(issues_to_process[issue_idx:], issue_idx + 1)
+                        ]
                         issue_start_callback(
                             issue_idx,
                             len(issues_to_process),
                             issue_stub.get('title', f'Issue {issue_idx}'),
+                            pending_titles,
                         )
                     except Exception:
                         pass

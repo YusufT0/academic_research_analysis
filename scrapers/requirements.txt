@@ -10,24 +10,24 @@ colorama>=0.4.6
 
 # MongoDB & ORM
 motor>=3.3.0
-beanie>=1.25.0
+beanie>=1.25.0,<2.1.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
 # FastAPI Backend
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
+PyMuPDF
 
 # NLP Related
 sentence-transformers
 umap-learn
 hdbscan
-keybert
 numpy
 scikit-learn
 nltk
 spacy
-
+keybert
 # Redis Cache
 redis[hiredis]>=5.0.0
 

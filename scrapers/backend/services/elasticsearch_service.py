@@ -309,6 +309,40 @@ class ElasticsearchService:
             logger.error("Suggest failed", prefix=prefix, error=str(e))
             return []
     
+    async def suggest_journals(self, prefix: str, limit: int = 15) -> List[str]:
+        """Dergi adı autocomplete — prefix eşleşmesi (case-insensitive)"""
+        if not self._client or not prefix:
+            return []
+
+        try:
+            result = await self._client.search(
+                index=self.articles_index,
+                body={
+                    "size": 0,
+                    "query": {
+                        "wildcard": {
+                            "journal_name": {
+                                "value": f"*{prefix}*",
+                                "case_insensitive": True,
+                            }
+                        }
+                    },
+                    "aggs": {
+                        "journal_names": {
+                            "terms": {
+                                "field": "journal_name",
+                                "size": limit,
+                            }
+                        }
+                    },
+                },
+            )
+            buckets = result.get("aggregations", {}).get("journal_names", {}).get("buckets", [])
+            return [b["key"] for b in buckets]
+        except Exception as e:
+            logger.error("Journal suggest failed", prefix=prefix, error=str(e))
+            return []
+
     async def get_facets(self) -> Dict[str, Any]:
         """Aggregation bazlı filtreler"""
         if not self._client:

@@ -375,8 +375,9 @@ function NodeDetailPanel({
             {!node.is_root && (
               <button
                 onClick={() => onExpand(node.id)}
-                disabled={expanding}
-                className="flex items-center gap-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50"
+                disabled={expanding || !node.cited_by_count}
+                title={!node.cited_by_count ? 'Bu makalenin atıfı bulunmamaktadır' : undefined}
+                className="flex items-center gap-1.5 text-xs bg-blue-50 hover:bg-blue-100 text-blue-700 font-medium py-1.5 px-3 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {expanding ? (
                   <div className="animate-spin h-3 w-3 border-2 border-blue-500 rounded-full border-t-transparent" />

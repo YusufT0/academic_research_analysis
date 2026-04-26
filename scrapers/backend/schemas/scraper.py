@@ -42,6 +42,7 @@ class ScraperProgress(BaseModel):
     current_article: Optional[str] = None
     current_article_index: int = 0
     total_articles: int = 0
+    pending_issues: List[str] = Field(default_factory=list)
 
     # İstatistikler
     journals_scraped: int = 0

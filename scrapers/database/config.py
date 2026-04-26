@@ -50,14 +50,18 @@ class DatabaseSettings:
     @property
     def connection_string(self) -> str:
         """Tam connection string oluştur"""
-        if self.mongodb_username and self.mongodb_password:
-            # URI'den protocol ve host'u ayır
+        # Use .strip() and check truthiness to avoid empty string bugs
+        user = (self.mongodb_username or "").strip()
+        password = (self.mongodb_password or "").strip()
+
+        if user and password:
             uri = self.mongodb_uri
             if "://" in uri:
                 protocol, rest = uri.split("://", 1)
-                return f"{protocol}://{self.mongodb_username}:{self.mongodb_password}@{rest}"
-        return self.mongodb_uri
-
+                return f"{protocol}://{user}:{password}@{rest}"
+                
+        # If no credentials, return the URI as 127.0.0.1 to avoid IPv6 issues
+        return self.mongodb_uri.replace("localhost", "127.0.0.1")
 # Singleton instance
 _settings: Optional[DatabaseSettings] = None
 

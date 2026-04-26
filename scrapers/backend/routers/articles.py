@@ -32,7 +32,9 @@ async def list_articles(
     journal_id: Optional[str] = Query(None, description="Dergi ID'si"),
     issue_id: Optional[str] = Query(None, description="Sayı ID'si"),
     source_website: Optional[str] = Query(None, description="Kaynak site"),
-    publication_year: Optional[int] = Query(None, description="Yayın yılı"),
+    publication_year: Optional[int] = Query(None, description="Yayın yılı (tam eşleşme)"),
+    year_min: Optional[int] = Query(None, description="Yayın yılı aralığı - başlangıç"),
+    year_max: Optional[int] = Query(None, description="Yayın yılı aralığı - bitiş"),
     open_access: Optional[bool] = Query(None, description="Açık erişim"),
     article_type: Optional[str] = Query(None, description="Makale tipi"),
     has_doi: Optional[bool] = Query(None, description="DOI var mı"),
@@ -51,55 +53,64 @@ async def list_articles(
     Cursor kullanılırken `page` parametresi yoksayılır.
     """
     # Build query
-    query = {}
+    # base_query: count için kullanılır (cursor _id range'i hariç, id exact match dahil)
+    base_query = {}
 
     if id:
         try:
-            query["_id"] = PydanticObjectId(id)
+            base_query["_id"] = PydanticObjectId(id)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid article ID")
 
     if journal_id:
         try:
-            query["journal_id"] = PydanticObjectId(journal_id)
+            base_query["journal_id"] = PydanticObjectId(journal_id)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid journal ID")
 
     if issue_id:
         try:
-            query["issue_id"] = PydanticObjectId(issue_id)
+            base_query["issue_id"] = PydanticObjectId(issue_id)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid issue ID")
 
     if source_website:
-        query["source_website"] = source_website
-    if publication_year:
-        query["publication_year"] = publication_year
+        base_query["source_website"] = source_website
+    if year_min is not None or year_max is not None:
+        year_filter: dict = {}
+        if year_min is not None:
+            year_filter["$gte"] = year_min
+        if year_max is not None:
+            year_filter["$lte"] = year_max
+        base_query["publication_year"] = year_filter
+    elif publication_year:
+        base_query["publication_year"] = publication_year
     if open_access is not None:
-        query["open_access"] = open_access
+        base_query["open_access"] = open_access
     if article_type:
-        query["article_type"] = article_type
+        base_query["article_type"] = article_type
     if has_doi is not None:
-        query["doi"] = {"$ne": None} if has_doi else None
+        base_query["doi"] = {"$ne": None} if has_doi else None
     if has_abstract is not None:
-        query["abstract"] = {"$ne": None} if has_abstract else None
+        base_query["abstract"] = {"$ne": None} if has_abstract else None
 
     sort_dir = 1 if sort_order == "asc" else -1
 
     # ── Keyset pagination (cursor) ──────────────────────────────────────────
     # cursor sağlandıysa skip() yerine _id karşılaştırması kullan — O(1) vs O(n)
+    # fetch_query: base_query üzerine cursor _id range'i eklenir
+    query = dict(base_query)
     use_keyset = cursor is not None
     if use_keyset:
         try:
             cursor_id = PydanticObjectId(cursor)
-            # Sıralama yönüne göre cursor'dan önce/sonra gelen dökümanlar
             id_op = "$gt" if sort_order == "asc" else "$lt"
             query["_id"] = {id_op: cursor_id}
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid cursor value")
 
-    # ── Total count (keyset'te toplam hala gerekli ama cursor yoksa hesapla) ──
-    total = await Article.find({k: v for k, v in query.items() if k != "_id"}).count()
+    # ── Total count: base_query kullan (cursor range'i değil, id exact match dahil) ──
+    total = await Article.find(base_query).count()
 
     # ── Fetch items ──────────────────────────────────────────────────────────
     if use_keyset:
@@ -161,6 +172,20 @@ async def list_articles(
         "has_prev": page > 1,
         "next_cursor": next_cursor,
     }
+
+
+@router.get("/year-range", summary="Makale yayın yılı min/max değerlerini getir")
+async def get_article_year_range():
+    """Veritabanındaki makalelerin en küçük ve en büyük yayın yılını döndürür."""
+    pipeline = [
+        {"$match": {"publication_year": {"$ne": None}}},
+        {"$group": {"_id": None, "min_year": {"$min": "$publication_year"}, "max_year": {"$max": "$publication_year"}}},
+    ]
+    collection = Article.get_pymongo_collection()
+    result = await collection.aggregate(pipeline).to_list(length=1)
+    if result:
+        return {"min_year": result[0]["min_year"], "max_year": result[0]["max_year"]}
+    return {"min_year": 2000, "max_year": 2025}
 
 
 @router.get("/search", summary="Makale ara")

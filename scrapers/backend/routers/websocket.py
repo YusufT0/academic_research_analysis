@@ -327,7 +327,10 @@ async def scraper_events_ws(
                 data = await websocket.receive_text()
                 if data == "ping":
                     ws_manager.update_pong(websocket)
-                    await websocket.send_json({"type": "pong"})
+                    try:
+                        await websocket.send_json({"type": "pong"})
+                    except (RuntimeError, Exception):
+                        break
                 else:
                     # JSON mesaj mı? (subscribe isteği olabilir)
                     try:

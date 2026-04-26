@@ -279,6 +279,7 @@ class ACMScraper:
         journal_code: str,
         depth: int = None,
         existing_urls: set = None,
+        issues_order: str = "newest_first",
     ) -> list:
         """
         LOI (Archive) sayfasından issue listesini toplar.
@@ -340,8 +341,9 @@ class ACMScraper:
             logger.success(f"Toplam {len(all_issues)} issue ({count_new()} yeni)")
             return all_issues
 
-        # 3. Her decade'i işle — en güncel decade'den başla (reversed)
-        for decade_idx, decade in enumerate(reversed(decade_tabs)):
+        # 3. Her decade'i işle — issues_order'a göre yön belirle
+        ordered_decades = decade_tabs if issues_order == "oldest_first" else list(reversed(decade_tabs))
+        for decade_idx, decade in enumerate(ordered_decades):
             self.check_stop_flag()
 
             if depth and count_new() >= depth:
@@ -372,7 +374,8 @@ class ACMScraper:
             )
             logger.info(f"Decade {decade['text']}: {len(year_info)} year sekmesi")
 
-            for year in reversed(year_info):
+            ordered_years = year_info if issues_order == "oldest_first" else list(reversed(year_info))
+            for year in ordered_years:
                 self.check_stop_flag()
 
                 if depth and count_new() >= depth:
@@ -660,6 +663,7 @@ class ACMScraper:
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
+        issues_order: str = "newest_first",
     ) -> List[Dict[str, Any]]:
         """
         Bir journal'ın aims & scope bilgisini alır ve issue'larını + makalelerini toplar.
@@ -708,6 +712,7 @@ class ACMScraper:
                 journal_code,
                 depth=depth,
                 existing_urls=existing_issue_urls,
+                issues_order=issues_order,
             )
 
             if not all_issues:
@@ -719,6 +724,12 @@ class ACMScraper:
             skipped = len(all_issues) - len(new_issues)
             if skipped:
                 logger.info(f"{skipped} issue zaten var, atlanıyor. Yeni: {len(new_issues)}")
+
+            # Issue sırası toplama aşamasında uygulandı
+            if issues_order == "oldest_first":
+                logger.info("[ACM] Issue sırası: eskiden yeniye (oldest_first)")
+            else:
+                logger.info("[ACM] Issue sırası: yeniden eskiye (newest_first)")
 
             issues_to_process = new_issues[:depth] if depth else new_issues
             logger.info(
@@ -733,10 +744,15 @@ class ACMScraper:
 
                 if issue_start_callback:
                     try:
+                        pending_titles = [
+                            s.get('title', f'Issue {i}')
+                            for i, s in enumerate(issues_to_process[issue_idx:], issue_idx + 1)
+                        ]
                         issue_start_callback(
                             issue_idx,
                             len(issues_to_process),
                             issue_stub.get('title', f'Issue {issue_idx}'),
+                            pending_titles,
                         )
                     except Exception:
                         pass

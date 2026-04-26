@@ -133,8 +133,23 @@ export function useScraperEvents(options: UseScraperEventsOptions = {}) {
         connect();
         return () => {
             intentionalCloseRef.current = true;
-            if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
-            if (wsRef.current) wsRef.current.close();
+            if (reconnectTimerRef.current) {
+                clearTimeout(reconnectTimerRef.current);
+                reconnectTimerRef.current = null;
+            }
+            const ws = wsRef.current;
+            wsRef.current = null;
+            if (ws) {
+                if (ws.readyState === WebSocket.CONNECTING) {
+                    // Henüz bağlantı kurulmadı — onopen'da kapat,
+                    // aksi hâlde "closed before connection established" hatası çıkar
+                    ws.onopen = () => ws.close();
+                    ws.onerror = null;
+                    ws.onclose = null;
+                } else {
+                    ws.close();
+                }
+            }
         };
     }, [connect]);
 

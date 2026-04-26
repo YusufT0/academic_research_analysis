@@ -349,11 +349,50 @@ class ScienceDirectScraper:
             traceback.print_exc()
             return {'aims_and_scope': None}
 
+    def _navigate_to_last_issues_page(self) -> None:
+        """Issues sayfasının son sayfasına gider (oldest_first için)."""
+        import re
+        # Önce "Last page" butonu dene
+        try:
+            last_btn = self.driver.find_element(
+                By.CSS_SELECTOR, "button[aria-label='Last page']:not([disabled])"
+            )
+            self.driver.execute_script("arguments[0].click();", last_btn)
+            self._interruptible_sleep(3)
+            handle_cookie_consent(self.driver)
+            logger.info("Son sayfaya gidildi (Last page butonu)")
+            return
+        except Exception:
+            pass
+
+        # "Go to page N" butonlarından en büyük sayıyı bul
+        try:
+            page_buttons = self.driver.find_elements(
+                By.CSS_SELECTOR, "button[aria-label^='Go to page']"
+            )
+            last_page = max(
+                (int(m.group()) for btn in page_buttons
+                 if (m := re.search(r'\d+', btn.get_attribute('aria-label') or ''))),
+                default=None
+            )
+            if last_page and last_page > 1:
+                base_url = self.driver.current_url.split('?')[0]
+                self.driver.get(f"{base_url}?page={last_page}")
+                self._interruptible_sleep(3)
+                handle_cookie_consent(self.driver)
+                logger.info(f"Son sayfaya gidildi: page={last_page}")
+                return
+        except Exception as e:
+            logger.warning(f"Son sayfa navigasyonu hatası: {e}")
+
+        logger.info("Tek sayfa veya son sayfa zaten aktif")
+
     def extract_all_issues_from_issues_page(
         self,
         journal_url: str,
         depth: int = None,
         existing_urls: set = None,
+        issues_order: str = "newest_first",
     ) -> list:
         """
         /issues sayfasına gider ve issue listesini döndürür (en yeni önce).
@@ -394,6 +433,10 @@ class ScienceDirectScraper:
             self._interruptible_sleep(3)
             handle_cookie_consent(self.driver)
 
+            # oldest_first: son sayfadan başla, geriye doğru git
+            if issues_order == "oldest_first":
+                self._navigate_to_last_issues_page()
+
             all_issues = []
 
             while True:  # pagination döngüsü
@@ -407,8 +450,11 @@ class ScienceDirectScraper:
                 if depth is None or _count_new(all_issues) + _count_new(current_page_issues) < depth:
                     closed_buttons = self.driver.find_elements(
                         By.CSS_SELECTOR,
-                        "li.accordion-panel button.accordion-panel-title[aria-expanded='false']"
+                        "#all-issues li.accordion-panel button.accordion-panel-title[aria-expanded='false']"
                     )
+                    # oldest_first: en alttaki accordion'dan başla (en eski issue'lar)
+                    if issues_order == "oldest_first":
+                        closed_buttons = list(reversed(closed_buttons))
                     logger.info(f"Bu sayfada {len(closed_buttons)} kapalı accordion var")
 
                     for btn in closed_buttons:
@@ -421,15 +467,21 @@ class ScienceDirectScraper:
 
                         try:
                             panel_id = btn.get_attribute('aria-controls')
-                            # Butonu görünür alana kaydır, sonra normal click
+                            # Butonu görünür alana kaydır, JS click ile tıkla
+                            # (sticky header/overlay nedeniyle normal click çalışmıyor)
                             self.driver.execute_script(
                                 "arguments[0].scrollIntoView({block:'center'});", btn
                             )
                             time.sleep(0.3)
-                            btn.click()
+                            self.driver.execute_script("arguments[0].click();", btn)
 
+                            # Önce butonun aria-expanded=true olmasını bekle (hızlı),
+                            # ardından panel içeriğinin yüklenmesini bekle
+                            WebDriverWait(self.driver, 10).until(
+                                lambda d: btn.get_attribute("aria-expanded") == "true"
+                            )
                             if panel_id:
-                                WebDriverWait(self.driver, 20).until(
+                                WebDriverWait(self.driver, 30).until(
                                     EC.presence_of_element_located((
                                         By.CSS_SELECTOR,
                                         f"[id='{panel_id}'] section.js-issue-list-content"
@@ -462,17 +514,26 @@ class ScienceDirectScraper:
                 if depth and new_so_far >= depth:
                     break
 
-                # 5. Sonraki sayfa var mı?
+                # 5. Sonraki/önceki sayfa var mı?
                 try:
-                    next_btn = self.driver.find_element(
-                        By.CSS_SELECTOR,
-                        "button[aria-label='Next page']:not([disabled])"
-                    )
-                    next_btn.click()
-                    self._interruptible_sleep(3)
-                    handle_cookie_consent(self.driver)
+                    if issues_order == "oldest_first":
+                        page_btn = self.driver.find_element(
+                            By.CSS_SELECTOR,
+                            "button[aria-label='Previous page']:not([disabled])"
+                        )
+                        page_btn.click()
+                        self._interruptible_sleep(3)
+                        handle_cookie_consent(self.driver)
+                    else:
+                        page_btn = self.driver.find_element(
+                            By.CSS_SELECTOR,
+                            "button[aria-label='Next page']:not([disabled])"
+                        )
+                        page_btn.click()
+                        self._interruptible_sleep(3)
+                        handle_cookie_consent(self.driver)
                 except Exception:
-                    logger.info("Issues sayfasında son sayfaya ulaşıldı")
+                    logger.info("Issues sayfasında ilk/son sayfaya ulaşıldı")
                     break
 
             logger.success(f"Toplam {len(all_issues)} issue bulundu ({_count_new(all_issues)} yeni)")
@@ -523,35 +584,36 @@ class ScienceDirectScraper:
         issue_info['url'] = self.driver.current_url
         logger.success(f"  Issue: {issue_info.get('issue_number')} | {issue_info.get('date')}")
 
-        # Makale URL'lerini al
-        article_urls = ArticleParser.extract_article_urls_from_issue(self.driver.page_source)
+        # Makale URL'lerini ve başlıklarını al
+        article_stubs = ArticleParser.extract_article_urls_from_issue(self.driver.page_source)
 
-        if not article_urls:
+        if not article_stubs:
             logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
             return {'issue_info': issue_info, 'articles': []}
 
         if max_articles:
-            article_urls = article_urls[:max_articles]
+            article_stubs = article_stubs[:max_articles]
             logger.info(f"  İlk {max_articles} makale işlenecek")
 
-        # Makale listesini UI'a bildir
+        # Makale listesini (başlıklarıyla birlikte) UI'a bildir
         if article_list_callback:
             try:
-                article_list_callback(['' for _ in article_urls])
+                article_list_callback([a.get('title', '') for a in article_stubs])
             except Exception:
                 pass
 
         articles = []
-        for idx, article_url in enumerate(article_urls, 1):
+        for idx, article_stub in enumerate(article_stubs, 1):
+            article_url = article_stub['url']
             self.check_stop_flag()
 
             if article_progress_callback:
                 try:
-                    article_progress_callback(idx, len(article_urls), None)
+                    article_progress_callback(idx, len(article_stubs), None)
                 except Exception:
                     pass
 
-            logger.section(f"  Makale {idx}/{len(article_urls)}")
+            logger.section(f"  Makale {idx}/{len(article_stubs)}")
             article_details = self.extract_article_details(article_url)
 
             if article_details:
@@ -566,7 +628,7 @@ class ScienceDirectScraper:
             if article_progress_callback:
                 try:
                     article_progress_callback(
-                        idx, len(article_urls),
+                        idx, len(article_stubs),
                         article_details.get('title') if article_details else None
                     )
                 except Exception:
@@ -712,6 +774,7 @@ class ScienceDirectScraper:
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
+        issues_order: str = "newest_first",
     ) -> list:
         """
         Bir journal'ın issue'larını ve makalelerini tarar.
@@ -744,6 +807,7 @@ class ScienceDirectScraper:
                 journal_info['url'],
                 depth=depth,
                 existing_urls=existing_issue_urls,
+                issues_order=issues_order,
             )
 
             if not all_issues:
@@ -760,6 +824,12 @@ class ScienceDirectScraper:
                     f"Yeni issue sayısı: {len(new_issues)}"
                 )
 
+            # Issue sırası toplama aşamasında uygulandı
+            if issues_order == "oldest_first":
+                logger.info("[SD] Issue sırası: eskiden yeniye (oldest_first)")
+            else:
+                logger.info("[SD] Issue sırası: yeniden eskiye (newest_first)")
+
             issues_to_process = new_issues if not depth else new_issues[:depth]
             logger.info(
                 f"Toplam {len(all_issues)} issue bulundu, "
@@ -774,10 +844,15 @@ class ScienceDirectScraper:
 
                 if issue_start_callback:
                     try:
+                        pending_titles = [
+                            s.get('title', f'Issue {i}')
+                            for i, s in enumerate(issues_to_process[issue_idx:], issue_idx + 1)
+                        ]
                         issue_start_callback(
                             issue_idx,
                             len(issues_to_process),
                             issue_stub.get('title', f'Issue {issue_idx}'),
+                            pending_titles,
                         )
                     except Exception:
                         pass
@@ -914,6 +989,9 @@ class ScienceDirectScraper:
         all_journals = []
         page_count = 0
         
+        last_page_urls = set()
+        restart_count = 0
+        
         while True:
             # Stop flag kontrolü - her sayfa öncesi
             self.check_stop_flag()
@@ -927,6 +1005,28 @@ class ScienceDirectScraper:
             
             # Mevcut sayfadaki journal'ları çıkar
             journals = self.extract_journals_from_current_page()
+            
+            current_urls = {j['url'] for j in journals if j.get('url')}
+            if current_urls and current_urls.issubset(last_page_urls):
+                logger.warning("Kopya liste tespit edildi (aynı sayfa tekrar yüklendi/aynı makaleler alındı)!")
+                if restart_count < 3:
+                    logger.info("Liste komple sıfırlanıyor, sayfa 1'e dönülüyor...")
+                    all_journals.clear()
+                    page_count = 0
+                    restart_count += 1
+                    last_page_urls.clear()
+                    
+                    self.driver.get(self.config.base_url)
+                    self._interruptible_sleep(3)
+                    handle_cookie_consent(self.driver)
+                    # update navigator info
+                    self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
+                    continue
+                else:
+                    logger.error("Maksimum sayfa sıfırlama limitine ulaşıldı, geçiliyor.")
+                    break
+                    
+            last_page_urls = current_urls
             
             # Sonuçları ekle
             for journal in journals:

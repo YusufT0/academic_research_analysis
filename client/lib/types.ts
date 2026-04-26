@@ -68,7 +68,6 @@ export interface Article {
   citation_percentile?: number | null;
   fwci?: number | null;
   last_citation_update_date?: string | null;
-  references?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -107,6 +106,7 @@ export interface ScraperStatus {
   current_issue_index: number;
   total_issues: number;
   completed_issues: IssueProgress[];
+  pending_issues: string[];
   article_list: string[];
   current_article: string | null;
   current_article_index: number;
@@ -160,6 +160,9 @@ export interface ArticleStats {
   by_year: Record<string, number>;
   top_keywords: Array<{ _id: string; count: number }>;
   top_authors: Array<{ _id: string; count: number }>;
+  unique_keywords_count: number;
+  unique_authors_count: number;
+  unique_years_count: number;
 }
 
 export interface CitationStats {
@@ -294,62 +297,26 @@ export interface CitationExpandData {
   edges: CitationGraphEdge[];
 }
 
-// ==================== NLP / AI Analysis Types ====================
+// ==================== NLP / Topic Trends Types ====================
 
-export interface NlpSearchArticle {
-  id: string;
-  title: string;
-  abstract?: string;
-  doi?: string;
-  url?: string;
-  keywords?: string[];
-  similarity_score?: number;
-  cluster_id?: number;
+export interface TopicCluster {
+  cluster_id: number;
+  topic_tag: string;
+  article_count: number;
 }
 
-export interface NlpSearchResponse {
-  query: string;
-  model_version: string;
-  similarity_score: number;
-  cluster_id: number | null;
-  cluster_label: string | null;
-  total_in_cluster: number | null;
-  articles: NlpSearchArticle[];
-}
-
-export type NlpBarChartData = Record<string, number>;
-
-export type NlpPieChartData = Record<string, number>;
-
-export interface NlpScatterPoint {
-  x: number;
-  y: number;
+export interface TopicTrendsData {
+  graph_data: Array<Record<string, string | number>>;
+  clusters: TopicCluster[];
 }
 
 export interface NlpStatus {
   has_trained_model: boolean;
   latest_model_version: string | null;
   latest_training_date: string | null;
-  latest_stats: Record<string, unknown> | null;
   is_training: boolean;
-  running_version: string | null;
   cache_loaded: boolean;
   cached_version: string | null;
-  pkl_model_available: boolean;
-  pkl_model_loaded: boolean;
-  pkl_model_path: string | null;
-}
-
-export interface JournalCitationMetrics {
-  id: string;
-  name: string;
-  openalex_id: string | null;
-  h_index: number | null;
-  i10_index: number | null;
-  average_citation_count: number | null;
-  total_citation_count: number;
-  historical_citation_data: Record<string, number>;
-  last_citation_update_date: string | null;
 }
 
 // ==================== WebSocket Types ====================

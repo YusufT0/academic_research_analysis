@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/Badge';
 import { getArticleStats, getCitationStats } from '@/lib/api';
 import type { ArticleStats, CitationStats } from '@/lib/types';
 import { CitationsSection } from './CitationsSection';
+import { TopicTrendsSection } from './TopicTrendsSection';
 
 function YearlyTrendChart({ data }: { data: Record<string, number> }) {
   const years = Object.entries(data)
@@ -307,15 +308,15 @@ export default function TrendsPage() {
               <p className="text-sm text-slate-500 mt-1">Toplam Makale</p>
             </div>
             <div className="text-center p-4 bg-slate-50 rounded-lg">
-              <p className="text-3xl font-bold text-blue-600">{stats.top_keywords.length}</p>
+              <p className="text-3xl font-bold text-blue-600">{stats.unique_keywords_count.toLocaleString()}</p>
               <p className="text-sm text-slate-500 mt-1">Farklı Anahtar Kelime</p>
             </div>
             <div className="text-center p-4 bg-slate-50 rounded-lg">
-              <p className="text-3xl font-bold text-purple-600">{stats.top_authors.length}</p>
+              <p className="text-3xl font-bold text-purple-600">{stats.unique_authors_count.toLocaleString()}</p>
               <p className="text-sm text-slate-500 mt-1">Farklı Yazar</p>
             </div>
             <div className="text-center p-4 bg-slate-50 rounded-lg">
-              <p className="text-3xl font-bold text-amber-600">{Object.keys(stats.by_year).length}</p>
+              <p className="text-3xl font-bold text-amber-600">{stats.unique_years_count.toLocaleString()}</p>
               <p className="text-sm text-slate-500 mt-1">Farklı Yıl</p>
             </div>
           </div>
@@ -323,6 +324,7 @@ export default function TrendsPage() {
       </Card>
 
       {/* Citations Section */}
+      <TopicTrendsSection />
       {citationStats && <CitationsSection data={citationStats} />}
     </div>
   );
