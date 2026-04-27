@@ -1267,7 +1267,7 @@ class NLPService:
         
         clusterer = hdbscan.HDBSCAN(
                 min_cluster_size=5,
-                min_samples=settings.nlp_min_samples
+                min_samples=settings.nlp_min_samples_all
             )
         cluster_labels = clusterer.fit_predict(embeddings_reduced)
 
