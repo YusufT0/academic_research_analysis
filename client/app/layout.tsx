@@ -15,7 +15,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Trend Analiz Sistemi | Akademik Araştırma",
+  title: "Akademik Trend Analiz Sistemi",
   description: "Yapay Zeka Destekli Bilimsel Dergilerin Trend Analiz Sistemi",
 };
 

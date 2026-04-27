@@ -466,10 +466,6 @@ export async function getAuthorProfile(name: string) {
 
 // ==================== NLP / Topic Trends ====================
 
-export async function getNlpStatus(): Promise<import('./types').NlpStatus> {
-  return fetchApi<import('./types').NlpStatus>('/nlp/status');
-}
-
 // ==================== Search / Autocomplete ====================
 
 export async function suggestJournals(q: string, limit = 15): Promise<string[]> {

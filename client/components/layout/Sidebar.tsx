@@ -15,12 +15,11 @@ import {
 } from 'lucide-react';
 
 const navigation = [
-  { name: 'Dashboard', href: '/', icon: LayoutDashboard },
+  { name: 'Genel Bakış', href: '/', icon: LayoutDashboard },
   { name: 'Makaleler', href: '/articles', icon: FileText },
   { name: 'Dergiler', href: '/journals', icon: BookOpen },
   { name: 'Yazarlar', href: '/authors', icon: Users },
   { name: 'Arama', href: '/search', icon: Search },
-  { name: 'Trendler', href: '/trends', icon: TrendingUp },
   { name: 'Atıf Haritası', href: '/citation-map', icon: Network },
   { name: 'Scraper', href: '/scrapers', icon: Database },
 ];
@@ -34,8 +33,8 @@ export default function Sidebar() {
       <div className="flex h-16 items-center gap-2 border-b border-slate-700 px-6">
         <TrendingUp className="h-8 w-8 text-emerald-500" />
         <div>
-          <h1 className="text-lg font-bold">Trend Analiz</h1>
-          <p className="text-xs text-slate-400">Akademik Araştırma</p>
+          <h1 className="text-medium font-bold">Akademik Trend</h1>
+          <p className="text-medium font-bold">Analiz Sistemi</p>
         </div>
       </div>
 
@@ -70,8 +69,8 @@ export default function Sidebar() {
             <Settings className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-sm font-medium">BM495 Projesi</p>
-            <p className="text-xs text-slate-400">2025-2026 Güz</p>
+            <p className="text-sm font-medium">BM495 - BM496</p>
+            <p className="text-xs text-slate-400">2025 - 2026</p>
           </div>
         </div>
       </div>

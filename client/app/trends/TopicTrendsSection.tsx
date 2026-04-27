@@ -117,6 +117,10 @@ export function TopicTrendsSection() {
   const [clusterSearch, setClusterSearch] = useState('');
   const [clusterPage, setClusterPage] = useState(0);
 
+  // ── Chart zoom ──
+  const [zoomStart, setZoomStart] = useState(0);
+  const [zoomEnd, setZoomEnd] = useState<number | null>(null);
+
   // ── Cluster article panel ──
   type ClusterArticle = { id: string; title: string; doi?: string; url?: string; publication_date?: string };
   const [openArticleClusterId, setOpenArticleClusterId] = useState<number | null>(null);
@@ -192,6 +196,8 @@ export function TopicTrendsSection() {
     setClusterArticles([]);
     setArticleSearch('');
     setArticlePage(0);
+    setZoomStart(0);
+    setZoomEnd(null);
     fetchTopN(name, resolvedN, modelVersion);
     fetchAllClusters(name, modelVersion);
   }
@@ -387,6 +393,70 @@ export function TopicTrendsSection() {
     return lines;
   }, [data, allClusters, visibleTopics]);
 
+  // Zoom-sliced data for chart rendering
+  const visibleChartData = useMemo(() => {
+    if (mergedGraphData.length === 0) return mergedGraphData;
+    const end = zoomEnd ?? mergedGraphData.length;
+    return mergedGraphData.slice(zoomStart, end);
+  }, [mergedGraphData, zoomStart, zoomEnd]);
+
+  const isZoomed = zoomStart > 0 || (zoomEnd !== null && zoomEnd < mergedGraphData.length);
+
+  // Refs so the native wheel listener always sees latest zoom state
+  const zoomStartRef = useRef(zoomStart);
+  const zoomEndRef = useRef(zoomEnd);
+  const mergedGraphDataLenRef = useRef(mergedGraphData.length);
+  useEffect(() => { zoomStartRef.current = zoomStart; }, [zoomStart]);
+  useEffect(() => { zoomEndRef.current = zoomEnd; }, [zoomEnd]);
+  useEffect(() => { mergedGraphDataLenRef.current = mergedGraphData.length; }, [mergedGraphData.length]);
+
+  // Chart container ref — passive:false blocks page scroll while over the chart.
+  // Depends on `data` so the listener is (re-)attached after the chart div renders.
+  const chartWrapperRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = chartWrapperRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const len = mergedGraphDataLenRef.current;
+      if (len === 0) return;
+      const curStart = zoomStartRef.current;
+      const curEnd = zoomEndRef.current ?? len;
+      const range = curEnd - curStart;
+      const step = Math.max(1, Math.floor(range * 0.12));
+
+      // Mouse ratio: 0 = sol kenar, 1 = sağ kenar
+      const rect = (el as HTMLDivElement).getBoundingClientRect();
+      const mouseRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+
+      if (e.deltaY < 0) {
+        // Zoom in — fareye yakın taraf daha az kırpılır
+        const cutLeft = Math.round(step * mouseRatio);
+        const cutRight = Math.round(step * (1 - mouseRatio));
+        const newStart = Math.min(curStart + cutLeft, curEnd - 3);
+        const newEnd = Math.max(curEnd - cutRight, newStart + 3);
+        setZoomStart(newStart);
+        setZoomEnd(newEnd);
+      } else {
+        // Zoom out — fareye yakın taraf daha az genişler
+        const addLeft = Math.round(step * mouseRatio);
+        const addRight = Math.round(step * (1 - mouseRatio));
+        const newStart = Math.max(0, curStart - addLeft);
+        const newEnd = Math.min(len, curEnd + addRight);
+        setZoomStart(newStart);
+        setZoomEnd(newEnd === len ? null : newEnd);
+      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+
+  function resetZoom() {
+    setZoomStart(0);
+    setZoomEnd(null);
+  }
+
   const filteredAll = useMemo(() => {
     if (!clusterSearch.trim()) return allClusters;
     const q = clusterSearch.toLowerCase();
@@ -424,7 +494,7 @@ export function TopicTrendsSection() {
             <button
               key={m}
               onClick={() => handleModeChange(m)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
                 mode === m
                   ? 'bg-emerald-600 text-white'
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -500,7 +570,7 @@ export function TopicTrendsSection() {
                   setSubmittedName(pub.value);
                   fetchBoth(pub.value);
                 }}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
                   submittedName === pub.value
                     ? 'bg-blue-600 text-white'
                     : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -533,7 +603,7 @@ export function TopicTrendsSection() {
         {!loading && !error && data && data.graph_data.length > 0 && (
           <>
             {/* Top-N selector row */}
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <p className="text-sm text-slate-500">
                 Grafik: en yuksek{' '}
                 <span className="font-semibold text-slate-700">{topN}</span> konu
@@ -542,14 +612,28 @@ export function TopicTrendsSection() {
                     ({data.clusters.length} konu mevcut)
                   </span>
                 )}
+                {isZoomed && (
+                  <span className="ml-2 text-xs text-emerald-600">
+                    • {visibleChartData.length} / {mergedGraphData.length} tarih gösteriliyor
+                  </span>
+                )}
               </p>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-1 flex-wrap">
+                {isZoomed && (
+                  <button
+                    onClick={resetZoom}
+                    className="cursor-pointer px-2.5 py-1 rounded text-xs font-medium bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors mr-1"
+                    title="Zoom'u sıfırla"
+                  >
+                    ↺ Zoom Sıfırla
+                  </button>
+                )}
                 <span className="text-xs text-slate-500 mr-1">Grafik:</span>
                 {TOP_N_OPTIONS.map((n) => (
                   <button
                     key={n}
                     onClick={() => handleTopNChange(n)}
-                    className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${
+                    className={`cursor-pointer px-2.5 py-1 rounded text-xs font-medium transition-colors ${
                       topN === n
                         ? 'bg-emerald-600 text-white'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -561,42 +645,72 @@ export function TopicTrendsSection() {
               </div>
             </div>
 
-            {/* LineChart */}
-            <ResponsiveContainer width="100%" height={400}>
-              <LineChart data={mergedGraphData} margin={{ top: 10, right: 20, left: 0, bottom: 60 }}>
-                <XAxis
-                  dataKey="date"
-                  angle={-35}
-                  textAnchor="end"
-                  tick={{ fontSize: 11 }}
-                  interval="preserveStartEnd"
-                />
-                <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                <Tooltip content={<CustomTooltip />} />
-                {chartLines.map((cluster) => {
-                  const color = topicColorMap.get(cluster.topic_tag) ?? '#94a3b8';
-                  return (
-                    <Line
-                      key={cluster.cluster_id}
-                      type="monotone"
-                      dataKey={cluster.topic_tag}
-                      name={cluster.topic_tag}
-                      stroke={color}
-                      strokeWidth={2}
-                      dot={false}
-                      connectNulls
-                      activeDot={{ r: 7, strokeWidth: 2, stroke: '#fff', fill: color }}
-                    />
-                  );
-                })}
-              </LineChart>
-            </ResponsiveContainer>
+            {/* LineChart — mouse wheel zoom (scroll locked via passive:false native listener) */}
+            <div
+              ref={chartWrapperRef}
+              style={{ touchAction: 'none', userSelect: 'none' }}
+              title="Fare tekerleği ile zoom yapabilirsiniz"
+              className="relative"
+            >
+              <ResponsiveContainer width="100%" height={400}>
+                <LineChart data={visibleChartData} margin={{ top: 10, right: 20, left: 0, bottom: 60 }}>
+                  <XAxis
+                    dataKey="date"
+                    angle={-35}
+                    textAnchor="end"
+                    tick={{ fontSize: 11 }}
+                    interval="preserveStartEnd"
+                  />
+                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                  <Tooltip content={<CustomTooltip />} />
+                  {chartLines.map((cluster) => {
+                    const color = topicColorMap.get(cluster.topic_tag) ?? '#94a3b8';
+                    return (
+                      <Line
+                        key={cluster.cluster_id}
+                        type="monotone"
+                        dataKey={cluster.topic_tag}
+                        name={cluster.topic_tag}
+                        stroke={color}
+                        strokeWidth={2}
+                        dot={false}
+                        connectNulls
+                        activeDot={{ r: 7, strokeWidth: 2, stroke: '#fff', fill: color }}
+                      />
+                    );
+                  })}
+                </LineChart>
+              </ResponsiveContainer>
+              {isZoomed && (
+                <button
+                  onClick={resetZoom}
+                  className="cursor-pointer absolute top-2 right-2 px-2 py-1 text-xs font-medium rounded-lg bg-white border border-amber-300 text-amber-700 hover:bg-amber-50 shadow-sm transition-colors"
+                >
+                  ↺ Zoom Sıfırla
+                </button>
+              )}
+            </div>
 
             {/* Top-N badge list — click to toggle */}
             <div>
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">
-                Grafikteki Konular (Top {topN}) — Tikla: Goster/Gizle
-              </p>
+              <div className="flex items-center justify-between mb-3">
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                  Grafikteki Konular (Top {topN}) — Tıkla: Göster/Gizle
+                </p>
+                <button
+                  onClick={() => {
+                    const allVisible = data.clusters.every(c => visibleTopics.has(c.topic_tag));
+                    if (allVisible) {
+                      setVisibleTopics(new Set());
+                    } else {
+                      setVisibleTopics(new Set(data.clusters.map(c => c.topic_tag)));
+                    }
+                  }}
+                  className="cursor-pointer text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors flex-shrink-0"
+                >
+                  {data.clusters.every(c => visibleTopics.has(c.topic_tag)) ? 'Hepsini Gizle' : 'Hepsini Göster'}
+                </button>
+              </div>
               <div className="flex flex-wrap gap-2">
                 {data.clusters.map((cluster, idx) => {
                   const color = COLOR_PALETTE[idx % COLOR_PALETTE.length];
@@ -606,7 +720,7 @@ export function TopicTrendsSection() {
                       key={cluster.cluster_id}
                       onClick={() => toggleVisible(cluster)}
                       title={`${cluster.article_count} makale — tikla: ${visible ? 'gizle' : 'goster'}`}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+                      className={`cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
                         visible
                           ? 'border-transparent text-white shadow-sm'
                           : 'border-slate-300 text-slate-400 bg-white'
@@ -640,9 +754,9 @@ export function TopicTrendsSection() {
                 </span>
                 <button
                   onClick={() => setFullListOpen((v) => !v)}
-                  className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                  className="cursor-pointer text-xs text-emerald-600 hover:text-emerald-700 font-medium"
                 >
-                  {fullListOpen ? 'Kapat ▲' : 'Ac ▼'}
+                  {fullListOpen ? 'Kapat ▲' : 'Aç ▼'}
                 </button>
               </div>
 

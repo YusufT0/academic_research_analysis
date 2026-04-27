@@ -68,6 +68,7 @@ export interface Article {
   citation_percentile?: number | null;
   fwci?: number | null;
   last_citation_update_date?: string | null;
+  references?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -317,6 +318,52 @@ export interface NlpStatus {
   is_training: boolean;
   cache_loaded: boolean;
   cached_version: string | null;
+  pkl_model_available?: boolean;
+}
+
+// ==================== NLP Search Types ====================
+
+export interface NlpSearchArticle {
+  id: string;
+  title: string;
+  abstract?: string;
+  doi?: string;
+  url?: string;
+  keywords?: string[];
+  similarity_score?: number;
+  cluster_id?: number;
+}
+
+export interface NlpSearchResponse {
+  query: string;
+  model_version: string;
+  similarity_score: number;
+  cluster_id: number | null;
+  cluster_label: string | null;
+  total_in_cluster: number | null;
+  articles: NlpSearchArticle[];
+}
+
+export type NlpBarChartData = Record<string, number>;
+export type NlpPieChartData = Record<string, number>;
+
+export interface NlpScatterPoint {
+  x: number;
+  y: number;
+}
+
+// ==================== Journal Citation Metrics ====================
+
+export interface JournalCitationMetrics {
+  id: string;
+  name: string;
+  openalex_id: string | null;
+  h_index: number | null;
+  i10_index: number | null;
+  average_citation_count: number | null;
+  total_citation_count: number;
+  historical_citation_data: Record<string, number>;
+  last_citation_update_date: string | null;
 }
 
 // ==================== WebSocket Types ====================
