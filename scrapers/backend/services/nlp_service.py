@@ -678,7 +678,7 @@ class NLPService:
 
         }
         
-        dates =  [art.publication_date for art in self.articles]
+        dates =  [art.article_dates for art in self.articles]
         for date in dates:
             fin_date = self._arrange_date(date)
             if fin_date == None:
