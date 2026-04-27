@@ -73,7 +73,11 @@ class NLPService:
     """
     
     _instance: Optional["NLPService"] = None
-    
+    PREFIX_DATES =PREFIX_DATES = {
+            "january" : "1", "february" : "2", "march" : "3", "april" : "4",
+            "may" : "5", "june" : "6", "july" : "7", "august" : "8",
+            "september" : "9", "october" : "10", "november" : "11", "december" : "12"
+        }  
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -613,24 +617,22 @@ class NLPService:
         
         return cluster_docs
     
-    # searc_similar ve graph_input fonksiyonları _search_similar_clusters kullancak.
-    # Sadece return typeları farklı.
     async def _arrange_date (self, publication_date):
 
-        prefix_dates = {
-            "january" : "1",
-            "february" : "2",
-            "march" : "3",
-            "april" : "4",
-            "may" : "5",
-            "june" : "6",
-            "july" : "7",
-            "august" : "8",
-            "september" : "9",
-            "october" : "10",
-            "november" : "11",
-            "december" : "12"
-            }
+        # prefix_dates = {
+        #     "january" : "1",
+        #     "february" : "2",
+        #     "march" : "3",
+        #     "april" : "4",
+        #     "may" : "5",
+        #     "june" : "6",
+        #     "july" : "7",
+        #     "august" : "8",
+        #     "september" : "9",
+        #     "october" : "10",
+        #     "november" : "11",
+        #     "december" : "12"
+        #     }
         date_fin = None
         date = publication_date
         if date is None:
@@ -643,7 +645,7 @@ class NLPService:
             # print(f"Trying to fetch date from the string: {date}")
             d = date.lower()
             est_date = ""
-            for month, number in prefix_dates.items():
+            for month, number in self.PREFIX_DATES.items():
                 if month in d:
                     # [\D]*? -> Skip any number of non-digit characters 
                     # (\d{4}) -> Capture exactly 4 digits 
@@ -665,61 +667,24 @@ class NLPService:
                     
                     break
         return date_fin
+    
     async def get_date_graph_input(self):
 
         """
         Bu servis dökümanların yazıldığı tarihleri temizleyip datetime olarak frontend'e gönderir.
         Bu fonksiyonun çalışabilmesi için self.articles boş olmamalı. Yani self._search_similar_articles en az 1 kez çalıştırılmalı.
         """
-        prefix_dates = {
-            "january" : "1",
-            "february" : "2",
-            "march" : "3",
-            "april" : "4",
-            "may" : "5",
-            "june" : "6",
-            "july" : "7",
-            "august" : "8",
-            "september" : "9",
-            "october" : "10",
-            "november" : "11",
-            "december" : "12"
-            }
         result = {
 
         }
         
         dates =  [art.publication_date for art in self.articles]
         for date in dates:
-            try:
-                dt_object = datetime.fromisoformat(date)
-                result[dt_object] = result.get(dt_object, 0) + 1
-            except:
-                logger.debug(f"Date not ISO-parseable, attempting string extraction: {date}")
-                d = date.lower()
-                est_date = ""
-                for month, number in prefix_dates.items():
-                    if month in d:
-                        # [\D]*? -> Skip any number of non-digit characters 
-                        # (\d{4}) -> Capture exactly 4 digits 
-                        pattern = rf"{month}[\D]*?(\d{{4}})"
-                        match = re.search(pattern, d)
-                        
-                        if match:
-                            year = match.group(1) # This is the 4-digit year
-                            est_date = f"{year}-{number.zfill(2)}-01" # Adding -01 makes it a valid ISO date
-                            
-                            try:
-                                dt_object = datetime.fromisoformat(est_date)
-                                result[dt_object] = result.get(dt_object, 0) + 1
-                                logger.debug(f"Date parsed successfully: {est_date}")
-                            except ValueError:
-                                logger.warning(f"Failed to parse date string: {est_date}")
-                        else:
-                            logger.debug(f"Found month '{month}' but no 4-digit year near it in: {date}")
-                        
-                        break
-                    
+            fin_date = self._arrange_date(date)
+            if fin_date == None:
+                continue
+            result[fin_date] = result.get(fin_date, 0) + 1
+                   
         return result
     
     async def get_scatter_graph_input(self):
@@ -736,8 +701,6 @@ class NLPService:
 
         return scatter_data
         
-        pass
-
     async def _extract_relevance_of_articles(self):
         scores = []
         article_ids = self.best_cluster.article_ids
@@ -1370,29 +1333,23 @@ class NLPService:
         return kws
 
     async def _extract_cluster_keywords(self):
-
         '''
-        Fonksiyon, makalelerin abstractlarının içinden en önemli kelimeleri fetch ederek bizim sorgumuzla kıyaslar.
-        Sonuçta da bizim sorgumuza en çok benzeyen ve en önemli olan çıktılara ait bir liste verir.
+        Makalelerin önceden çıkarılmış veritabanındaki kelimelerini 
+        sorgumuzla kıyaslar ve en ilgili olanları döndürür.
         '''
-        abstracts = [self._preprocess_scientific_text(art.abstract) for art in self.articles]
-        
         all_keywords_per_abstract = []
         all_pairs_to_score = []
 
-        for text in abstracts:
-            # Extract a few candidate keywords to compare against the query
-            extracted = self.kw_model.extract_keywords(
-                text, 
-                keyphrase_ngram_range=(1, 2), 
-                stop_words='english', 
-                use_mmr=True,
-                diversity=0.2,
-                top_n=5 # Extract top 5 candidates to evaluate
-            )
+        # loop through the articles and pull their pre-computed keywords.
+        for art in self.articles:
+            # Assuming 'article_keywords' is loaded into the object when fetched from the DB
+            # If your object uses a different property name for the DB field, adjust this accordingly.
+            kws = art.article_keywords 
             
-            # KeyBERT returns [('keyword', score), ...]. Extract just the text.
-            kws = [item[0] for item in extracted]
+            # Fallback just in case some articles missed the keyword extraction phase
+            if not kws:
+                continue 
+                
             all_keywords_per_abstract.append(kws)
             
             for kw in kws:
@@ -1401,6 +1358,7 @@ class NLPService:
         if not all_pairs_to_score:
             return []
             
+        # Evaluate the pairs in bulk just like before
         all_scores = await self._eval_keywords(all_pairs_to_score)
 
         final_max_keywords = []
@@ -1418,6 +1376,7 @@ class NLPService:
                 score_idx += 1
             
             final_max_keywords.append((best_kw, max_score))
+            
         self.relevant_keywords = final_max_keywords
         return self.relevant_keywords
 
@@ -1463,9 +1422,8 @@ class NLPService:
         query_cleaned = self._clean_text(query)
         query_embedding = self.embedder.encode([query_cleaned])
         self.encoded_query = query_embedding
-        clusters = await self.cluster_repo.find_by_model_version(model_version, include_noise=False)
+        clusters = await self.cluster_repo.find_by_model_version_on_all(model_version, include_noise=False)
 
-       
         best_cluster = None
         max_similarity = -1
         centroid_list = [cluster.centroid_full for cluster in clusters]
@@ -1519,8 +1477,8 @@ class NLPService:
                 "articles": []
             }
 
-        self.articles = await Article.find(
-            {"_id": {"$in": best_cluster.article_ids}}
+        self.articles = await ArticleEmbedding.find(
+            {"article_id": {"$in": best_cluster.article_ids}, "model_version" : model_version}
         ).to_list()
 
         return {
@@ -1534,11 +1492,7 @@ class NLPService:
 
                 {
                     "id": str(a.id),
-                    "title": a.title,
-                    "abstract": a.abstract[:300] + "..." if a.abstract and len(a.abstract) > 300 else a.abstract,
-                    "doi": a.doi,
-                    "url": a.url,
-                    "keywords": a.keywords
+                    "keywords": a.article_keywords
                 }
                 for a in self.articles[:top_k]
             ]

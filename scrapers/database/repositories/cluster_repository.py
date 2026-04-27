@@ -42,7 +42,20 @@ class ClusterRepository(BaseRepository[Cluster]):
             query["cluster_id"] = {"$ne": -1}
         print("TRYING TO FIND")
         return await Cluster.find(query).to_list()
-    
+
+    async def find_by_model_version_on_all(
+        self, 
+        model_version: str,
+        include_noise: bool = False
+    ) -> List[Cluster]:
+        """Model versiyonuna göre tüm cluster'ları getir"""
+        query = {"model_version": model_version, "cluster_type" : "all"}
+        if not include_noise:
+            query["cluster_id"] = {"$ne": -1}
+        print("TRYING TO FIND")
+        return await Cluster.find(query).to_list()
+
+
     async def find_cluster_by_article(
         self, 
         article_id: PydanticObjectId,
