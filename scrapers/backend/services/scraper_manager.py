@@ -838,6 +838,18 @@ class ScraperManager:
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[IEEE Thread] {journal_name}: Makale yok, journal kaydedildi")
+
+                        if articles_created > 0 and self._loop:
+                            async def _ieee_journal_cluster_update():
+                                try:
+                                    from backend.services.nlp_service import NLPService
+                                    result = await NLPService().assign_new_articles()
+                                    logger.success(f"[IEEE Thread] Incremental clustering tamamland\u0131: {result}")
+                                except FileNotFoundError:
+                                    logger.info("[IEEE Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")
+                                except Exception as _e:
+                                    logger.warning(f"[IEEE Thread] Incremental clustering hatas\u0131: {_e}")
+                            asyncio.run_coroutine_threadsafe(_ieee_journal_cluster_update(), self._loop)
                     
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık
@@ -1266,6 +1278,18 @@ class ScraperManager:
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[SD Thread] {journal_name}: Makale yok, journal kaydedildi")
+
+                        if articles_created > 0 and self._loop:
+                            async def _sd_journal_cluster_update():
+                                try:
+                                    from backend.services.nlp_service import NLPService
+                                    result = await NLPService().assign_new_articles()
+                                    logger.success(f"[SD Thread] Incremental clustering tamamland\u0131: {result}")
+                                except FileNotFoundError:
+                                    logger.info("[SD Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")
+                                except Exception as _e:
+                                    logger.warning(f"[SD Thread] Incremental clustering hatas\u0131: {_e}")
+                            asyncio.run_coroutine_threadsafe(_sd_journal_cluster_update(), self._loop)
                     
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık
@@ -1689,6 +1713,18 @@ class ScraperManager:
                         else:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[ACM Thread] {journal_name}: Makale yok, journal kaydedildi")
+
+                        if articles_created > 0 and self._loop:
+                            async def _acm_journal_cluster_update():
+                                try:
+                                    from backend.services.nlp_service import NLPService
+                                    result = await NLPService().assign_new_articles()
+                                    logger.success(f"[ACM Thread] Incremental clustering tamamland\u0131: {result}")
+                                except FileNotFoundError:
+                                    logger.info("[ACM Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")
+                                except Exception as _e:
+                                    logger.warning(f"[ACM Thread] Incremental clustering hatas\u0131: {_e}")
+                            asyncio.run_coroutine_threadsafe(_acm_journal_cluster_update(), self._loop)
 
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık

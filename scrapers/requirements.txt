@@ -23,7 +23,7 @@ PyMuPDF
 sentence-transformers
 umap-learn
 hdbscan
-numpy
+numpy>=1.23.0,<2.0
 scikit-learn
 nltk
 spacy

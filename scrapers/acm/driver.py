@@ -255,11 +255,20 @@ class SeleniumDriver:
         """Sayfanın yüklenmesini bekle (CDP veya Selenium moduna göre)"""
         if self._cdp_active and self._sb:
             # CDP modunda: polling ile readyState kontrol et
+            # Her evaluate çağrısına ayrı timeout uygula — modal kapat / navigasyon
+            # sonrası CDP bağlantısı askıya alınırsa sonsuz bloklanmayı önler.
             for _ in range(timeout * 2):
                 try:
-                    state = self._sb.cdp.evaluate("document.readyState")
-                    if state == "complete":
-                        return True
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                    try:
+                        future = executor.submit(self._sb.cdp.evaluate, "document.readyState")
+                        state = future.result(timeout=2.0)
+                        if state == "complete":
+                            return True
+                    except concurrent.futures.TimeoutError:
+                        pass  # CDP evaluate askıda, sonraki iterasyonda tekrar dene
+                    finally:
+                        executor.shutdown(wait=False)
                 except Exception:
                     pass
                 time.sleep(0.5)
