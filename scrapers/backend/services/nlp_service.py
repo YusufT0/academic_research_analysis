@@ -4,6 +4,7 @@ Clustering ve embedding iş mantığı
 """
 
 import re
+import joblib
 # import pickle
 from datetime import datetime
 from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Union
@@ -345,9 +346,17 @@ class NLPService:
                     metric='cosine',
                     n_jobs=-1
                 )
-                return reducer.fit_transform(embeddings_full)
-            embeddings_reduced = await asyncio.to_thread(_reduce)
+                reduced = reducer.fit_transform(embeddings_full)
+                return reducer, reduced
+            umap_reducer, embeddings_reduced = await asyncio.to_thread(_reduce)
             logger.success(f"Reduced to {embeddings_reduced.shape[1]} dimensions")
+
+            # Save fitted UMAP model to disk
+            models_dir = Path(__file__).parent.parent.parent / "nlp_models"
+            models_dir.mkdir(parents=True, exist_ok=True)
+            umap_path = models_dir / f"umap_{model_version}.joblib"
+            joblib.dump(umap_reducer, umap_path)
+            logger.info(f"UMAP model saved to {umap_path}")
             # Saving Embeddings.
             await self.embedding_repo.delete_by_model_version(model_version)
             await self.cluster_repo.delete_by_model_version(model_version)
@@ -375,27 +384,34 @@ class NLPService:
             
             # 5. Eski verileri temizle (aynı versiyon varsa)
             
-            def run_hdbscan(indices: list[int], min_cluster_size: int, min_samples: int):
+            def run_hdbscan(indices: list[int], min_cluster_size: int, min_samples: int, save_path: str = None):
                 import hdbscan
                 subset_reduced = embeddings_reduced[indices]
                 clusterer = hdbscan.HDBSCAN(
                     min_cluster_size=min_cluster_size,
                     min_samples=min_samples,
-                    core_dist_n_jobs=-1
+                    core_dist_n_jobs=-1,
+                    prediction_data=True
                 )
-                return clusterer.fit_predict(subset_reduced)
+                labels = clusterer.fit_predict(subset_reduced)
+                if save_path:
+                    joblib.dump(clusterer, save_path)
+                return labels
 
             # --- Clustering for All ---
             logger.info("Clustering for All.")
             all_indices = list(range(len(article_ids)))
+            hdbscan_all_path = str(models_dir / f"hdbscan_all_{model_version}.joblib")
             all_labels = await asyncio.to_thread(
                 run_hdbscan,
                 all_indices,
                 settings.nlp_min_cluster_size_all,
-                settings.nlp_min_samples_all
+                settings.nlp_min_samples_all,
+                hdbscan_all_path
             )
             n_clusters_all = len(set(all_labels)) - (1 if -1 in all_labels else 0)
             logger.success(f"Found {n_clusters_all} clusters for all.")
+            logger.info(f"HDBSCAN (all) model saved to {hdbscan_all_path}")
 
             # Build extracted_keywords_map: article_id -> extracted keywords from training
             extracted_keywords_map = {article_ids[i]: article_keywords[i] for i in range(len(article_ids))}
@@ -545,6 +561,221 @@ class NLPService:
             logger.error(f"Training failed: {e}")
             raise
     
+    async def assign_new_articles(
+        self,
+        model_version: Optional[str] = None,
+        min_abstract_length: int = 50
+    ) -> Dict[str, Any]:
+        """
+        Incremental clustering: yeni scrape edilen (henüz embedding'i olmayan)
+        makaleleri mevcut UMAP + HDBSCAN modellerine göre kümelere atar.
+
+        1. ArticleEmbedding koleksiyonunda ID'si bulunmayan Article'ları getirir ($nin).
+        2. Embedding üretir.
+        3. Kaydedilmiş UMAP reducer ile transform() yapar.
+        4. Kaydedilmiş HDBSCAN clusterer ile approximate_predict() yapar.
+        5. Yeni ArticleEmbedding dokümanlarını ve cluster güncellemelerini DB'ye yazar.
+        """
+        _ensure_nlp_imports()
+
+        # Resolve model version
+        if not model_version:
+            model_version = await self._resolve_model_db_first(auto_train=False)
+
+        logger.section(f"Incremental Assignment Started - {model_version}")
+
+        models_dir = Path(__file__).parent.parent.parent / "nlp_models"
+        umap_path = models_dir / f"umap_{model_version}.joblib"
+        hdbscan_path = models_dir / f"hdbscan_all_{model_version}.joblib"
+
+        if not umap_path.exists() or not hdbscan_path.exists():
+            raise FileNotFoundError(
+                f"Saved models not found for version '{model_version}'. "
+                f"Expected: {umap_path}, {hdbscan_path}. "
+                "Run train_clustering first to create the models."
+            )
+
+        # 1. Fetch article IDs that already have embeddings for this version
+        logger.info("Fetching existing embedding article IDs...")
+        existing_embeddings = await ArticleEmbedding.find(
+            {"model_version": model_version},
+            projection_model=None
+        ).to_list()
+        existing_article_ids = [emb.article_id for emb in existing_embeddings]
+        logger.info(f"Found {len(existing_article_ids)} articles already embedded.")
+
+        # 2. Fetch new articles: have abstract, ID not in existing embeddings
+        logger.info("Querying for new (un-embedded) articles...")
+        new_articles = await Article.find({
+            "abstract": {"$exists": True, "$ne": None},
+            "_id": {"$nin": existing_article_ids}
+        }).to_list()
+
+        # Filter by abstract length
+        valid_new = [
+            a for a in new_articles
+            if a.abstract and len(a.abstract) >= min_abstract_length
+        ]
+
+        if not valid_new:
+            logger.info("No new articles to assign.")
+            return {
+                "model_version": model_version,
+                "new_articles_found": 0,
+                "assigned": 0,
+                "status": "no_new_articles"
+            }
+
+        logger.info(f"Found {len(valid_new)} new articles to assign.")
+
+        # 3. Extract keywords for new articles
+        logger.info("Extracting keywords for new articles...")
+        abstracts = [a.abstract for a in valid_new]
+        _ = self.kw_model
+        _ = self.embedder
+
+        def _extract_batch():
+            from tqdm import tqdm
+            results = []
+            batch_size = 128
+            for i in tqdm(range(0, len(abstracts), batch_size), desc="Extracting keywords (new)"):
+                chunk = abstracts[i:i + batch_size]
+                chunk_res = self.kw_model.extract_keywords(
+                    chunk,
+                    keyphrase_ngram_range=(1, 2),
+                    stop_words='english',
+                    use_mmr=True,
+                    diversity=0.2,
+                    top_n=5
+                )
+                if len(chunk) == 1:
+                    results.append(chunk_res)
+                else:
+                    results.extend(chunk_res)
+            return results
+
+        batch_extracted = await asyncio.to_thread(_extract_batch)
+        all_article_kws = [[item[0] for item in ext] for ext in batch_extracted]
+        logger.success("Keywords extracted for new articles.")
+
+        # 4. Clean texts, arrange dates, build parallel lists
+        logger.info("Cleaning texts and arranging dates for new articles...")
+        cleaned_texts = []
+        article_ids = []
+        article_keywords = []
+        article_dates = []
+        article_publishers = []
+        article_journals = []
+
+        for i, article in enumerate(valid_new):
+            cleaned = self._clean_text(article.abstract)
+            kws = all_article_kws[i]
+            date = await self._arrange_date(article.publication_date)
+            if date is None:
+                continue
+            if cleaned:
+                cleaned_texts.append(cleaned)
+                article_ids.append(article.id)
+                article_keywords.append(kws)
+                article_dates.append(str(date))
+                article_publishers.append(article.publisher)
+                article_journals.append(article.journal_id)
+
+        if not cleaned_texts:
+            logger.info("No valid new articles after cleaning.")
+            return {
+                "model_version": model_version,
+                "new_articles_found": len(valid_new),
+                "assigned": 0,
+                "status": "no_valid_articles_after_cleaning"
+            }
+
+        # 5. Generate full embeddings
+        logger.info(f"Generating embeddings for {len(cleaned_texts)} new articles...")
+        def _encode():
+            return self.embedder.encode(cleaned_texts, batch_size=128, show_progress_bar=True)
+        embeddings_full = await asyncio.to_thread(_encode)
+        logger.success(f"Generated {len(embeddings_full)} embeddings (dim: {embeddings_full.shape[1]})")
+
+        # 6. Load saved UMAP and project into existing space
+        logger.info(f"Loading UMAP model from {umap_path}...")
+        def _transform():
+            reducer = joblib.load(umap_path)
+            return reducer.transform(embeddings_full)
+        embeddings_reduced = await asyncio.to_thread(_transform)
+        logger.success(f"Projected new articles to {embeddings_reduced.shape[1]} dimensions.")
+
+        # 7. Load saved HDBSCAN and approximate_predict
+        logger.info(f"Loading HDBSCAN model from {hdbscan_path}...")
+        def _predict():
+            import hdbscan as _hdbscan
+            clusterer = joblib.load(hdbscan_path)
+            labels, strengths = _hdbscan.approximate_predict(clusterer, embeddings_reduced)
+            return labels, strengths
+        cluster_labels, cluster_strengths = await asyncio.to_thread(_predict)
+        n_assigned = int((cluster_labels != -1).sum())
+        n_noise = int((cluster_labels == -1).sum())
+        logger.success(f"Assigned {n_assigned} articles to clusters, {n_noise} marked as noise.")
+
+        # 8. Save new ArticleEmbedding documents
+        logger.info("Saving new embeddings to database...")
+        embedding_docs = []
+        for i, art_id in enumerate(article_ids):
+            embedding_doc = ArticleEmbedding(
+                article_id=art_id,
+                embedding_full=embeddings_full[i].tolist(),
+                embedding_reduced=embeddings_reduced[i].tolist(),
+                text_cleaned=cleaned_texts[i],
+                model_version=model_version,
+                article_dates=article_dates[i],
+                article_keywords=article_keywords[i],
+                article_publisher=article_publishers[i],
+                article_journal_id=article_journals[i]
+            )
+            embedding_docs.append(embedding_doc)
+
+        await self.embedding_repo.bulk_create(embedding_docs)
+        logger.success(f"Saved {len(embedding_docs)} new embeddings.")
+
+        # 9. Update existing "all" clusters with newly assigned article IDs
+        logger.info("Updating cluster documents with new article IDs...")
+        cluster_updates: Dict[int, List[PydanticObjectId]] = {}
+        for i, label in enumerate(cluster_labels):
+            label_int = int(label)
+            if label_int not in cluster_updates:
+                cluster_updates[label_int] = []
+            cluster_updates[label_int].append(article_ids[i])
+
+        updated_count = 0
+        for cluster_id, new_art_ids in cluster_updates.items():
+            cluster_doc = await Cluster.find_one({
+                "cluster_id": cluster_id,
+                "model_version": model_version,
+                "cluster_type": "all"
+            })
+            if cluster_doc:
+                await cluster_doc.update({
+                    "$push": {"article_ids": {"$each": new_art_ids}},
+                    "$inc": {"article_count": len(new_art_ids)}
+                })
+                updated_count += 1
+
+        logger.success(f"Updated {updated_count} cluster documents.")
+
+        # Refresh cache
+        await self._load_cache(model_version)
+
+        logger.section("Incremental Assignment Completed")
+
+        return {
+            "model_version": model_version,
+            "new_articles_found": len(valid_new),
+            "assigned": n_assigned,
+            "noise": n_noise,
+            "total_embeddings_saved": len(embedding_docs),
+            "status": "completed"
+        }
+
     async def _create_cluster_documents(
         self,
         cluster_labels: "np.ndarray",

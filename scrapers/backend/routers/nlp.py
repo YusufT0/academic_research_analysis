@@ -98,6 +98,17 @@ async def get_nlp_status():
         logger.error(f"Status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/train_incremental", summary= "Add to the model existing.")
+async def add_new_articles(
+    model_version: Optional[str] = Query(None, description="Model version"),
+    min_abstract_length: Optional[int] = Query(50, description="Minimum abstract length")
+):
+    try:
+        return await nlp_service.assign_new_articles(model_version=model_version, min_abstract_length=min_abstract_length)
+    except Exception as e:
+        logger.error(f"Incremental training error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/train", response_model=TrainResponse, summary="Yeni clustering modeli eğit")
 async def train_clustering(

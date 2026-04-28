@@ -55,8 +55,8 @@ class ArticleEmbedding(Document, TimestampMixin):
     )
  
     class Settings:
-        # name = "article_embeddings_sample"
-        name = "article_embeddings"
+        name = "article_embeddings_sample"
+        # name = "article_embeddings"
         indexes = [
             [("article_id", 1)],
             [("model_version", 1)],
@@ -131,8 +131,8 @@ class Cluster(Document, TimestampMixin):
     model_version: str = Field(..., description="Clustering model versiyonu")
     
     class Settings:
-        # name = "clusters_sample"
-        name = "clusters"
+        name = "clusters_sample"
+        # name = "clusters"
         indexes = [
             [("cluster_id", 1), ("model_version", 1)],
             [("article_ids", 1)],
