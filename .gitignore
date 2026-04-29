@@ -10,3 +10,4 @@ coverage
 .coverage
 .pytest_cache
 my-env/
+*.joblib

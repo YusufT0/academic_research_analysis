@@ -843,7 +843,7 @@ class ScraperManager:
                             async def _ieee_journal_cluster_update():
                                 try:
                                     from backend.services.nlp_service import NLPService
-                                    result = await NLPService().assign_new_articles()
+                                    result = await NLPService().assign_new_articles(min_abstract_length=50)
                                     logger.success(f"[IEEE Thread] Incremental clustering tamamland\u0131: {result}")
                                 except FileNotFoundError:
                                     logger.info("[IEEE Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")

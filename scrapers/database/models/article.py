@@ -66,7 +66,7 @@ class Article(Document, TimestampMixin):
     content_hash: Optional[str] = Field(None, description="İçerik hash'i - değişiklik tespiti için")
     
     class Settings:
-        name = "articles_sample"
+        name = "articles"
         # name = "articles"
         # for development purposes.
         indexes = [
