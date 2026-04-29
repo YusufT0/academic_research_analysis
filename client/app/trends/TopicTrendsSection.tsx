@@ -156,10 +156,12 @@ export function TopicTrendsSection() {
         result = await getPublisherTopicTrends(name ?? '', mv, n);
       }
       if (!result) {
+        isZoomingRef.current = false;
         setData({ graph_data: [], clusters: [] });
         setVisibleTopics(new Set());
         return;
       }
+      isZoomingRef.current = false;
       setData(result);
       setVisibleTopics(new Set(result.clusters.map((c) => c.topic_tag)));
     } catch {
@@ -402,6 +404,9 @@ export function TopicTrendsSection() {
 
   const isZoomed = zoomStart > 0 || (zoomEnd !== null && zoomEnd < mergedGraphData.length);
 
+  // true → zoom hareketi sırasında (animasyon kapalı), false → yeni veri yüklenince (animasyon açık)
+  const isZoomingRef = useRef(false);
+
   // Refs so the native wheel listener always sees latest zoom state
   const zoomStartRef = useRef(zoomStart);
   const zoomEndRef = useRef(zoomEnd);
@@ -418,6 +423,7 @@ export function TopicTrendsSection() {
     if (!el) return;
     function onWheel(e: WheelEvent) {
       e.preventDefault();
+      isZoomingRef.current = true;
       const len = mergedGraphDataLenRef.current;
       if (len === 0) return;
       const curStart = zoomStartRef.current;
@@ -453,6 +459,7 @@ export function TopicTrendsSection() {
   }, [data]);
 
   function resetZoom() {
+    isZoomingRef.current = true;
     setZoomStart(0);
     setZoomEnd(null);
   }
@@ -675,6 +682,9 @@ export function TopicTrendsSection() {
                         strokeWidth={2}
                         dot={false}
                         connectNulls
+                        isAnimationActive={!isZoomingRef.current}
+                        animationDuration={600}
+                        animationEasing="ease-out"
                         activeDot={{ r: 7, strokeWidth: 2, stroke: '#fff', fill: color }}
                       />
                     );
