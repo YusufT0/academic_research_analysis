@@ -165,7 +165,7 @@ export function TopicTrendsSection() {
       setData(result);
       setVisibleTopics(new Set(result.clusters.map((c) => c.topic_tag)));
     } catch {
-      setError('Veri yuklenirken hata olustu.');
+      setError('Veri yüklenirken hata oluştu.');
       setData(null);
     } finally {
       setLoading(false);
@@ -485,7 +485,7 @@ export function TopicTrendsSection() {
       <CardHeader>
         <CardTitle>Konu Trend Analizi</CardTitle>
         <CardDescription>
-          NLP kumeleme modeline gore konu trendleri
+          NLP kümeleme modeline göre konu trendleri
           {nlpStatus?.latest_model_version && (
             <span className="ml-2 text-xs text-slate-400">
               (model: {nlpStatus.latest_model_version})
@@ -507,7 +507,7 @@ export function TopicTrendsSection() {
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              {m === 'all' ? 'Tumu' : m === 'journal' ? 'Dergi Bazli' : 'Yayinci Bazli'}
+              {m === 'all' ? 'Tümü' : m === 'journal' ? 'Dergi Bazlı' : 'Yayıncı Bazlı'}
             </button>
           ))}
         </div>
@@ -532,7 +532,7 @@ export function TopicTrendsSection() {
                 }}
                 onFocus={() => journalSuggestions.length > 0 && setShowJournalSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowJournalSuggestions(false), 150)}
-                placeholder="Dergi adi girin..."
+                placeholder="Dergi adı girin..."
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
               {showJournalSuggestions && journalSuggestions.length > 0 && (
@@ -592,7 +592,7 @@ export function TopicTrendsSection() {
         {/* No model */}
         {noModel && (
           <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-600 text-sm">
-            Henuz egitilmis bir NLP modeli bulunmuyor. Model egitildikten sonra konu trendleri burada gorunecektir.
+            Henüz eğitilmiş bir NLP modeli bulunmuyor. Model eğitildikten sonra konu trendleri burada görünecektir.
           </div>
         )}
 
@@ -612,7 +612,7 @@ export function TopicTrendsSection() {
             {/* Top-N selector row */}
             <div className="flex items-center justify-between flex-wrap gap-2">
               <p className="text-sm text-slate-500">
-                Grafik: en yuksek{' '}
+                Grafik: en yüksek{' '}
                 <span className="font-semibold text-slate-700">{topN}</span> konu
                 {data.clusters.length < topN && data.clusters.length > 0 && (
                   <span className="ml-1 text-slate-400">
@@ -729,7 +729,7 @@ export function TopicTrendsSection() {
                     <button
                       key={cluster.cluster_id}
                       onClick={() => toggleVisible(cluster)}
-                      title={`${cluster.article_count} makale — tikla: ${visible ? 'gizle' : 'goster'}`}
+                      title={`${cluster.article_count} makale — tıkla: ${visible ? 'gizle' : 'göster'}`}
                       className={`cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
                         visible
                           ? 'border-transparent text-white shadow-sm'
@@ -755,7 +755,7 @@ export function TopicTrendsSection() {
             <div className="border border-slate-200 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
                 <span className="text-sm font-semibold text-slate-700">
-                  Tum Konular
+                  Tüm Konular
                   {allClusters.length > 0 && (
                     <span className="ml-2 text-xs font-normal text-slate-400">
                       ({allClusters.length} konu)
@@ -788,22 +788,22 @@ export function TopicTrendsSection() {
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400 pb-1 border-b border-slate-100">
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                      Top {topN} — gorunuyor
+                      Top {topN} — görünüyor
                     </span>
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-400" />
-                      Eklendi (Top {topN} disi)
+                      Eklendi (Top {topN} dışı)
                     </span>
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" />
-                      Gizli (tikla: goster)
+                      Gizli (tıkla: göster)
                     </span>
                   </div>
 
                   {/* Loading */}
                   {allLoading && (
                     <div className="text-center py-6 text-sm text-slate-400 animate-pulse">
-                      Konular yukleniyor...
+                      Konular yükleniyor...
                     </div>
                   )}
 
@@ -850,7 +850,7 @@ export function TopicTrendsSection() {
                                 : 'bg-slate-100 text-slate-500'
                             }`}
                           >
-                            {isFetching ? 'Yukleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
+                            {isFetching ? 'Yükleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
                           </span>
                           {/* Article list toggle button */}
                           <button
@@ -884,9 +884,9 @@ export function TopicTrendsSection() {
                             </div>
 
                             {clusterArticlesLoading ? (
-                              <p className="text-xs text-slate-400 animate-pulse px-4 py-3">Makaleler yukleniyor...</p>
+                              <p className="text-xs text-slate-400 animate-pulse px-4 py-3">Makaleler yükleniyor...</p>
                             ) : clusterArticles.length === 0 ? (
-                              <p className="text-xs text-slate-400 px-4 py-3">Makale bulunamadi.</p>
+                              <p className="text-xs text-slate-400 px-4 py-3">Makale bulunamadı.</p>
                             ) : (
                               <>
                                 <ul className="divide-y divide-indigo-100">
@@ -905,7 +905,7 @@ export function TopicTrendsSection() {
                                         onClick={(e) => e.stopPropagation()}
                                         className="flex-shrink-0 px-2.5 py-1 text-xs font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors whitespace-nowrap"
                                       >
-                                        Goruntule →
+                                        Görüntüle →
                                       </Link>
                                     </li>
                                   ))}
@@ -923,7 +923,7 @@ export function TopicTrendsSection() {
                                       disabled={articlePage === 0 || clusterArticlesLoading}
                                       className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
-                                      ← Onceki
+                                      ← Önceki
                                     </button>
                                     <span className="text-xs text-slate-500">
                                       {articlePage + 1} / {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE)}
@@ -950,7 +950,7 @@ export function TopicTrendsSection() {
                   })}
 
                   {!allLoading && pagedAll.length === 0 && (
-                    <p className="text-sm text-slate-400 text-center py-4">Sonuc bulunamadi.</p>
+                    <p className="text-sm text-slate-400 text-center py-4">Sonuç bulunamadı.</p>
                   )}
 
                   {/* Pagination */}
@@ -961,7 +961,7 @@ export function TopicTrendsSection() {
                         disabled={clusterPage === 0}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        Onceki
+                        Önceki
                       </button>
                       <span className="text-xs text-slate-500">
                         {clusterPage + 1} / {totalPages}
@@ -986,8 +986,8 @@ export function TopicTrendsSection() {
         {!loading && !error && data && data.graph_data.length === 0 && (
           <div className="text-center py-10 text-slate-500 text-sm">
             {mode !== 'all'
-              ? 'Bu yayinci/dergi icin cluster verisi bulunamadi. Modeli yeniden egiterek publisher/journal clustering ekleyebilirsiniz.'
-              : 'Bu sorgu icin grafik verisi bulunamadi.'}
+              ? 'Bu yayıncı/dergi için cluster verisi bulunamadı. Modeli yeniden eğiterek publisher/journal clustering ekleyebilirsiniz.'
+              : 'Bu sorgu için grafik verisi bulunamadı.'}
           </div>
         )}
       </CardContent>
