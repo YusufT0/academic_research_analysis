@@ -911,7 +911,7 @@ class NLPService:
         
         dates =  [art.article_dates for art in self.articles]
         for date in dates:
-            fin_date = self._arrange_date(date)
+            fin_date = await self._arrange_date(date)
             if fin_date == None:
                 continue
             result[fin_date] = result.get(fin_date, 0) + 1
@@ -919,6 +919,8 @@ class NLPService:
         return result
     
     async def get_scatter_graph_input(self):
+        if not self.relevant_keywords:
+            return []
         visualization_reducer = umap.UMAP(n_neighbors=5, n_components=2, metric='cosine', random_state=42)
         embedded_words = [self.embedder.encode(word[0]) for word in self.relevant_keywords]
         coords = visualization_reducer.fit_transform(embedded_words)
@@ -1620,6 +1622,8 @@ class NLPService:
         '''
         words_and_counts = {}
         final_max_keywords = await self._extract_cluster_keywords()
+        if not final_max_keywords:
+            return words_and_counts
         clusters = await self._take_keywords_and_transform(final_max_keywords)
         
         for key in clusters.keys():
@@ -1711,8 +1715,13 @@ class NLPService:
             }
 
         self.articles = await ArticleEmbedding.find(
-            {"article_id": {"$in": best_cluster.article_ids}, "model_version" : model_version}
+            {"article_id": {"$in": best_cluster.article_ids}, "model_version": best_cluster.model_version}
         ).to_list()
+
+        top_embeddings = self.articles[:top_k]
+        article_ids = [ae.article_id for ae in top_embeddings]
+        article_docs = await Article.find({"_id": {"$in": article_ids}}).to_list()
+        article_map = {str(a.id): a for a in article_docs}
 
         return {
             "query": query,
@@ -1722,12 +1731,17 @@ class NLPService:
             "cluster_label": best_cluster.label,
             "total_in_cluster": best_cluster.article_count,
             "articles": [
-
                 {
-                    "id": str(a.id),
-                    "keywords": a.article_keywords
+                    "id": str(ae.article_id),
+                    "title": article_map[str(ae.article_id)].title if str(ae.article_id) in article_map else None,
+                    "abstract": article_map[str(ae.article_id)].abstract if str(ae.article_id) in article_map else None,
+                    "doi": article_map[str(ae.article_id)].doi if str(ae.article_id) in article_map else None,
+                    "url": article_map[str(ae.article_id)].url if str(ae.article_id) in article_map else None,
+                    "keywords": ae.article_keywords,
+                    "cluster_id": best_cluster.cluster_id,
+                    "similarity_score": float(max_similarity),
                 }
-                for a in self.articles[:top_k]
+                for ae in top_embeddings
             ]
         }
     async def get_status(self) -> Dict[str, Any]:
