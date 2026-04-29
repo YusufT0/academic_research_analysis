@@ -35,6 +35,7 @@ async def list_articles(
     publication_year: Optional[int] = Query(None, description="Yayın yılı (tam eşleşme)"),
     year_min: Optional[int] = Query(None, description="Yayın yılı aralığı - başlangıç"),
     year_max: Optional[int] = Query(None, description="Yayın yılı aralığı - bitiş"),
+    include_no_date: bool = Query(True, description="Yayın yılı olmayan makaleleri dahil et"),
     open_access: Optional[bool] = Query(None, description="Açık erişim"),
     article_type: Optional[str] = Query(None, description="Makale tipi"),
     has_doi: Optional[bool] = Query(None, description="DOI var mı"),
@@ -82,7 +83,13 @@ async def list_articles(
             year_filter["$gte"] = year_min
         if year_max is not None:
             year_filter["$lte"] = year_max
-        base_query["publication_year"] = year_filter
+        if include_no_date:
+            base_query["$or"] = [
+                {"publication_year": year_filter},
+                {"publication_year": None},
+            ]
+        else:
+            base_query["publication_year"] = year_filter
     elif publication_year:
         base_query["publication_year"] = publication_year
     if open_access is not None:

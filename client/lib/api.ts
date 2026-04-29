@@ -134,6 +134,7 @@ export interface ArticleFilters {
   publication_year?: number;
   year_min?: number;
   year_max?: number;
+  include_no_date?: boolean;
   open_access?: boolean;
   article_type?: string;
   has_doi?: boolean;
@@ -154,6 +155,7 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.publication_year) params.set('publication_year', filters.publication_year.toString());
   if (filters.year_min !== undefined) params.set('year_min', filters.year_min.toString());
   if (filters.year_max !== undefined) params.set('year_max', filters.year_max.toString());
+  if (filters.include_no_date !== undefined) params.set('include_no_date', filters.include_no_date.toString());
   if (filters.open_access !== undefined) params.set('open_access', filters.open_access.toString());
   if (filters.article_type) params.set('article_type', filters.article_type);
   if (filters.has_doi !== undefined) params.set('has_doi', filters.has_doi.toString());
