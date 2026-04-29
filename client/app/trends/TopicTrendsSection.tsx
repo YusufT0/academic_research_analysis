@@ -89,6 +89,7 @@ export function TopicTrendsSection() {
   const [journalSuggestions, setJournalSuggestions] = useState<string[]>([]);
   const [showJournalSuggestions, setShowJournalSuggestions] = useState(false);
   const journalInputRef = useRef<HTMLDivElement>(null);
+  const suppressSuggestRef = useRef(false);
   const [submittedName, setSubmittedName] = useState('');
 
   // ── NLP model ──
@@ -248,6 +249,10 @@ export function TopicTrendsSection() {
   useEffect(() => {
     if (mode !== 'journal' || !nameInput.trim()) {
       setJournalSuggestions([]);
+      return;
+    }
+    if (suppressSuggestRef.current) {
+      suppressSuggestRef.current = false;
       return;
     }
     const t = setTimeout(() => {
@@ -542,6 +547,7 @@ export function TopicTrendsSection() {
                       key={name}
                       onMouseDown={(e) => {
                         e.preventDefault();
+                        suppressSuggestRef.current = true;
                         setNameInput(name);
                         setShowJournalSuggestions(false);
                         setSubmittedName(name);
@@ -680,7 +686,13 @@ export function TopicTrendsSection() {
                         name={cluster.topic_tag}
                         stroke={color}
                         strokeWidth={2}
-                        dot={false}
+                        dot={(dotProps: { cx?: number; cy?: number; index: number; payload: Record<string, unknown> }) => {
+                          const { cx, cy, index, payload } = dotProps;
+                          if (cx == null || cy == null || payload[cluster.topic_tag] == null) return <g />;
+                          const firstIdx = visibleChartData.findIndex(d => d[cluster.topic_tag] != null);
+                          if (index !== firstIdx) return <g />;
+                          return <circle cx={cx} cy={cy} r={3} fill={color} stroke="#fff" strokeWidth={1.5} />;
+                        }}
                         connectNulls
                         isAnimationActive={!isZoomingRef.current}
                         animationDuration={600}
