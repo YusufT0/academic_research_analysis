@@ -608,6 +608,7 @@ class IEEEXploreScraper:
         max_articles: int = 100,
         article_progress_callback=None,
         article_list_callback=None,
+        journal_name_callback=None,
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
@@ -641,6 +642,30 @@ class IEEEXploreScraper:
         if not journal_home_url:
             logger.warning(f"{journal_name}: URL bulunamadı, atlanıyor")
             return []
+
+        # Tekil URL analizi akışında gerçek journal adını sayfadan çözümle
+        if journal.get('resolve_name_from_url'):
+            full_home_url = (
+                f"https://ieeexplore.ieee.org{journal_home_url}"
+                if journal_home_url.startswith('/') else journal_home_url
+            )
+            try:
+                if self.selenium_driver.get(full_home_url, wait_after=3):
+                    wait_for_page_load(self.driver)
+                    resolved_name = JournalParser.extract_journal_name_from_journal_page(self.driver.page_source)
+                    if resolved_name:
+                        journal['name'] = resolved_name
+                        journal_name = resolved_name
+                        if journal_name_callback:
+                            try:
+                                journal_name_callback(resolved_name)
+                            except Exception:
+                                pass
+                        logger.success(f"IEEE journal adı çözümlendi: {resolved_name}")
+                    else:
+                        logger.warning("IEEE journal adı çözümlenemedi, mevcut isim kullanılacak")
+            except Exception as e:
+                logger.warning(f"IEEE journal adı çözümleme hatası: {e}")
 
         logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_name}")
 

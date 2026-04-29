@@ -362,3 +362,26 @@ async def get_single_journal_status(scraper_type: str = Query("ieee")):
     if not getter:
         raise HTTPException(status_code=400, detail="Geçersiz scraper_type")
     return getter()
+
+
+@router.post(
+    "/stop",
+    summary="Tekil journal scraping durdur",
+)
+async def stop_single_journal(scraper_type: str = Query(..., description="Durdurulacak scraper tipi: ieee, sciencedirect veya acm")):
+    """Çalışmakta olan tekil journal scraping işlemini durdurur."""
+    manager = get_scraper_manager()
+    stop_map = {
+        "ieee": manager.stop_ieee,
+        "sciencedirect": manager.stop_sciencedirect,
+        "acm": manager.stop_acm,
+    }
+    stopper = stop_map.get(scraper_type)
+    if not stopper:
+        raise HTTPException(status_code=400, detail="Geçersiz scraper_type")
+    try:
+        success = await stopper()
+        return {"success": success}
+    except Exception as e:
+        logger.error(f"Stop single journal error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

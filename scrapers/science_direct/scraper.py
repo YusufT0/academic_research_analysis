@@ -312,7 +312,7 @@ class ScienceDirectScraper:
             journal_url: Journal'ın ana sayfası URL'i
 
         Returns:
-            dict: {'aims_and_scope': html_str veya None}
+            dict: {'aims_and_scope': html_str veya None, 'journal_name': str veya None}
         """
         try:
             full_url = f"https://www.sciencedirect.com{journal_url}" if journal_url.startswith('/') else journal_url
@@ -322,6 +322,7 @@ class ScienceDirectScraper:
             handle_cookie_consent(self.driver)
 
             page_source = self.driver.page_source
+            journal_name = JournalParser.extract_journal_name_from_journal_page(page_source)
             has_about = JournalParser.has_about_nav_item(page_source)
 
             aims_and_scope = None
@@ -341,13 +342,13 @@ class ScienceDirectScraper:
             else:
                 logger.warning("Aims & scope bulunamadı")
 
-            return {'aims_and_scope': aims_and_scope}
+            return {'aims_and_scope': aims_and_scope, 'journal_name': journal_name}
 
         except Exception as e:
             logger.failed("Journal about info çıkarma hatası", e)
             import traceback
             traceback.print_exc()
-            return {'aims_and_scope': None}
+            return {'aims_and_scope': None, 'journal_name': None}
 
     def _navigate_to_last_issues_page(self) -> None:
         """Issues sayfasının son sayfasına gider (oldest_first için)."""
@@ -771,6 +772,7 @@ class ScienceDirectScraper:
         max_articles: int = None,
         article_progress_callback=None,
         article_list_callback=None,
+        journal_name_callback=None,
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
@@ -800,6 +802,14 @@ class ScienceDirectScraper:
             # 1. Journal about bilgilerini (aims & scope) çıkar
             about_info = self.extract_journal_about_info(journal_info['url'])
             journal_info.update(about_info)
+            if journal_info.get('resolve_name_from_url') and about_info.get('journal_name'):
+                journal_info['name'] = about_info['journal_name']
+                if journal_name_callback:
+                    try:
+                        journal_name_callback(about_info['journal_name'])
+                    except Exception:
+                        pass
+                logger.success(f"ScienceDirect journal adı çözümlendi: {journal_info['name']}")
 
             # 2. /issues sayfasından issue listesini al
             # existing_issue_urls geçilir → yalnızca yeni issue'lar depth'e sayılır

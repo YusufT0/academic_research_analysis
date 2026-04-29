@@ -381,6 +381,48 @@ export async function getSingleJournalScraperStatus(scraperType: string) {
   return fetchApi(`/scrapers/journal/status?scraper_type=${scraperType}`);
 }
 
+export interface AnalysisStep {
+  status: 'pending' | 'running' | 'done' | 'error';
+  message: string;
+}
+
+export interface AnalysisTaskProgress {
+  task_id: string;
+  status: 'running' | 'done' | 'done_with_errors' | 'error';
+  steps: {
+    cluster_update: AnalysisStep;
+    openalex: AnalysisStep;
+    elasticsearch: AnalysisStep;
+  };
+  result: {
+    model_version: string;
+    new_articles_found: number;
+    assigned: number;
+    noise: number;
+    total_embeddings_saved: number;
+    status: string;
+    affected_clusters: { cluster_id: number; topic_tag: string; article_count: number }[];
+  } | null;
+  error: string | null;
+}
+
+export async function startJournalAnalysis(
+  journalId: string,
+  modelVersion?: string | null,
+): Promise<{ task_id: string; status: string }> {
+  const params = new URLSearchParams({ journal_id: journalId });
+  if (modelVersion) params.set('model_version', modelVersion);
+  return fetchApi<{ task_id: string; status: string }>(`/nlp/assign_for_journal?${params.toString()}`, { method: 'POST' });
+}
+
+export async function getAnalysisProgress(taskId: string): Promise<AnalysisTaskProgress> {
+  return fetchApi<AnalysisTaskProgress>(`/nlp/analysis_progress/${taskId}`);
+}
+
+export async function stopSingleJournalScraper(scraperType: string): Promise<{ success: boolean }> {
+  return fetchApi<{ success: boolean }>(`/scrapers/journal/stop?scraper_type=${scraperType}`, { method: 'POST' });
+}
+
 
 // ==================== Elasticsearch Search ====================
 

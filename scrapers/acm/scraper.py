@@ -660,6 +660,7 @@ class ACMScraper:
         max_articles: int = None,
         article_progress_callback=None,
         article_list_callback=None,
+        journal_name_callback=None,
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
@@ -695,6 +696,30 @@ class ACMScraper:
         if not journal_code:
             logger.warning(f"{journal_name}: Journal kodu bulunamadı")
             return []
+
+        # Tekil URL analizi akışında gerçek journal adını sayfadan çözümle
+        if journal.get('resolve_name_from_url'):
+            journal_page_url = f"{self.ACM_BASE}/journal/{journal_code}"
+            try:
+                if self.selenium_driver.get(journal_page_url, wait_after=3):
+                    self._close_modals()
+                    wait_for_page_load(self.selenium_driver)
+                    resolved_name = JournalParser.extract_journal_name_from_journal_page(
+                        self.selenium_driver.page_source
+                    )
+                    if resolved_name:
+                        journal['name'] = resolved_name
+                        journal_name = resolved_name
+                        if journal_name_callback:
+                            try:
+                                journal_name_callback(resolved_name)
+                            except Exception:
+                                pass
+                        logger.success(f"ACM journal adı çözümlendi: {resolved_name}")
+                    else:
+                        logger.warning("ACM journal adı çözümlenemedi, mevcut isim kullanılacak")
+            except Exception as e:
+                logger.warning(f"ACM journal adı çözümleme hatası: {e}")
 
         logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_name} ({journal_code})")
 

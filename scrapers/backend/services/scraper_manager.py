@@ -284,8 +284,25 @@ class ScraperProgress:
             except Exception:
                 pass
         
-        # Track UI-facing metric changes to keep the frontend progress bar fluid
-        if name in ('current_journal_index', 'current_issue_index', 'current_article_index', 'article_list', 'completed_issues', 'journals_scraped', 'articles_scraped', 'articles_updated', 'errors_count'):
+        # Track UI-facing changes to keep frontend state in sync (queue + progress)
+        if name in (
+            'current_journal',
+            'current_journal_index',
+            'current_issue',
+            'current_issue_index',
+            'total_issues',
+            'completed_issues',
+            'pending_issues',
+            'article_list',
+            'current_article',
+            'current_article_index',
+            'total_articles',
+            'journals_scraped',
+            'issues_scraped',
+            'articles_scraped',
+            'articles_updated',
+            'errors_count',
+        ):
             # Sadece koşuyorken ilerlemeyi fırlat (başlangıçtaki resetleri yoksaymak için)
             if getattr(self, '_status', None) == ScraperStatus.RUNNING:
                 try:
@@ -497,6 +514,7 @@ class ScraperManager:
                 "punumber": punumber,
                 "open_access": False,
                 "aims_and_scope": None,
+                "resolve_name_from_url": True,
             }]
             self._ieee_single_journal_override = single_journal_list
             return await self.start_ieee(
@@ -514,6 +532,7 @@ class ScraperManager:
                 "url": url,
                 "slug": journal_slug,
                 "open_access": False,
+                "resolve_name_from_url": True,
             }]
             self._sd_single_journal_override = single_journal_list
             return await self.start_sciencedirect(
@@ -531,6 +550,7 @@ class ScraperManager:
                 "url": f"/journal/{acm_id}",   # ACM DB'de relative path saklıyor
                 "code": acm_id,                 # ACM scraper.scrape_journal_articles bunu bekliyor
                 "open_access": False,
+                "resolve_name_from_url": True,
             }]
             self._acm_single_journal_override = single_journal_list
             return await self.start_acm(
@@ -588,6 +608,7 @@ class ScraperManager:
         print(f"[IEEE Thread] Başlatılıyor, headless={self.ieee_headless}", flush=True)
         
         scraper = None
+        nlp_futures: List[concurrent.futures.Future] = []
         
         try:
             _load_scraper_modules()
@@ -727,6 +748,16 @@ class ScraperManager:
                         'article_list': article_titles[:30],
                     }]
                     progress.completed_issues = new_issues
+                    # Son tamamlanan issue'nun "aktif" satırda tekrar görünmesini engelle
+                    progress.current_issue = None
+                    progress.pending_issues = []
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def _ieee_journal_name_cb(resolved_name: str):
+                    progress.current_journal = resolved_name
 
                 try:
                     import time
@@ -769,11 +800,23 @@ class ScraperManager:
                         max_articles=self.ieee_max_articles,
                         article_progress_callback=_ieee_article_cb,
                         article_list_callback=_ieee_article_list_cb,
+                        journal_name_callback=_ieee_journal_name_cb,
                         existing_issue_urls=existing_issue_urls,
                         issue_start_callback=_ieee_issue_start_cb,
                         issue_complete_callback=_ieee_issue_complete_cb,
                         issues_order=self.ieee_issues_order,
                     )
+
+                    if self._ieee_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                        logger.warning("[IEEE Thread] Stop sinyali sonrası journal kaydı atlandı")
+                        break
+
+                    resolved_journal_name = journal.get('name', journal_name)
+                    if resolved_journal_name != journal_name:
+                        journal_name = resolved_journal_name
+                        progress.current_journal = resolved_journal_name
 
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
@@ -839,7 +882,7 @@ class ScraperManager:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[IEEE Thread] {journal_name}: Makale yok, journal kaydedildi")
 
-                        if articles_created > 0 and self._loop:
+                        if articles_created > 0 and self._loop and not progress.is_single_journal_mode:
                             async def _ieee_journal_cluster_update():
                                 try:
                                     from backend.services.nlp_service import NLPService
@@ -849,7 +892,12 @@ class ScraperManager:
                                     logger.info("[IEEE Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")
                                 except Exception as _e:
                                     logger.warning(f"[IEEE Thread] Incremental clustering hatas\u0131: {_e}")
-                            asyncio.run_coroutine_threadsafe(_ieee_journal_cluster_update(), self._loop)
+                            nlp_future = asyncio.run_coroutine_threadsafe(
+                                _ieee_journal_cluster_update(), self._loop
+                            )
+                            nlp_futures.append(nlp_future)
+                        elif articles_created > 0 and progress.is_single_journal_mode:
+                            progress.add_log("info", "Tekil URL modu: incremental NLP scraping aşamasında atlandı, analyzing aşamasında çalışacak")
                     
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık
@@ -867,6 +915,28 @@ class ScraperManager:
                 import time
                 time.sleep(2)
             
+            if progress.status == ScraperStatus.RUNNING and nlp_futures:
+                # Scraping döngüsü bitti; artık arka plan NLP işleri bekleniyor.
+                # UI'da stale "Dergi Kuyruğu" görünmemesi için aktif/pending alanları temizle.
+                progress.current_journal = None
+                progress.pending_journals = []
+                progress.current_issue = None
+                progress.pending_issues = []
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
+                progress.add_log("info", f"Arka plan NLP işleri bekleniyor ({len(nlp_futures)})")
+                for nlp_future in nlp_futures:
+                    if self._ieee_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper durduruldu")
+                        break
+                    try:
+                        nlp_future.result(timeout=600)
+                    except Exception as e:
+                        logger.warning(f"[IEEE Thread] Arka plan NLP işi beklenirken hata: {e}")
+
             if progress.status == ScraperStatus.RUNNING:
                 progress.status = ScraperStatus.COMPLETED
                 progress.add_log("success", "IEEE scraper tamamlandı")
@@ -1024,6 +1094,7 @@ class ScraperManager:
         print(f"[SD Thread] Başlatılıyor, headless={self.sciencedirect_headless}", flush=True)
         
         scraper = None
+        nlp_futures: List[concurrent.futures.Future] = []
         
         try:
             _load_scraper_modules()
@@ -1164,6 +1235,15 @@ class ScraperManager:
                         'article_list': article_titles[:30],
                     }]
                     progress.completed_issues = new_issues
+                    progress.current_issue = None
+                    progress.pending_issues = []
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def _sd_journal_name_cb(resolved_name: str):
+                    progress.current_journal = resolved_name
 
                 try:
                     import time
@@ -1209,11 +1289,23 @@ class ScraperManager:
                         max_articles=self.sciencedirect_max_articles,
                         article_progress_callback=_sd_article_cb,
                         article_list_callback=_sd_article_list_cb,
+                        journal_name_callback=_sd_journal_name_cb,
                         existing_issue_urls=existing_issue_urls,
                         issue_start_callback=_sd_issue_start_cb,
                         issue_complete_callback=_sd_issue_complete_cb,
                         issues_order=self.sciencedirect_issues_order,
                     )
+
+                    if self._sciencedirect_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                        logger.warning("[SD Thread] Stop sinyali sonrası journal kaydı atlandı")
+                        break
+
+                    resolved_journal_name = journal.get('name', journal_name)
+                    if resolved_journal_name != journal_name:
+                        journal_name = resolved_journal_name
+                        progress.current_journal = resolved_journal_name
 
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
@@ -1263,7 +1355,7 @@ class ScraperManager:
                         articles_created, articles_updated, issues_created = future.result(timeout=60)
 
                         progress.completed_journals.append({
-                            'name': journal_name,
+                            'name': journal.get('name', journal_name),
                             'articles_count': articles_created,
                             'issues': progress.completed_issues.copy(),
                         })
@@ -1279,7 +1371,7 @@ class ScraperManager:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[SD Thread] {journal_name}: Makale yok, journal kaydedildi")
 
-                        if articles_created > 0 and self._loop:
+                        if articles_created > 0 and self._loop and not progress.is_single_journal_mode:
                             async def _sd_journal_cluster_update():
                                 try:
                                     from backend.services.nlp_service import NLPService
@@ -1289,7 +1381,12 @@ class ScraperManager:
                                     logger.info("[SD Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")
                                 except Exception as _e:
                                     logger.warning(f"[SD Thread] Incremental clustering hatas\u0131: {_e}")
-                            asyncio.run_coroutine_threadsafe(_sd_journal_cluster_update(), self._loop)
+                            nlp_future = asyncio.run_coroutine_threadsafe(
+                                _sd_journal_cluster_update(), self._loop
+                            )
+                            nlp_futures.append(nlp_future)
+                        elif articles_created > 0 and progress.is_single_journal_mode:
+                            progress.add_log("info", "Tekil URL modu: incremental NLP scraping aşamasında atlandı, analyzing aşamasında çalışacak")
                     
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık
@@ -1307,6 +1404,26 @@ class ScraperManager:
                 import time
                 time.sleep(2)
             
+            if progress.status == ScraperStatus.RUNNING and nlp_futures:
+                progress.current_journal = None
+                progress.pending_journals = []
+                progress.current_issue = None
+                progress.pending_issues = []
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
+                progress.add_log("info", f"Arka plan NLP işleri bekleniyor ({len(nlp_futures)})")
+                for nlp_future in nlp_futures:
+                    if self._sciencedirect_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper durduruldu")
+                        break
+                    try:
+                        nlp_future.result(timeout=600)
+                    except Exception as e:
+                        logger.warning(f"[SD Thread] Arka plan NLP işi beklenirken hata: {e}")
+
             if progress.status == ScraperStatus.RUNNING:
                 progress.status = ScraperStatus.COMPLETED
                 progress.add_log("success", "ScienceDirect scraper tamamlandı")
@@ -1462,6 +1579,7 @@ class ScraperManager:
         print(f"[ACM Thread] Başlatılıyor, headless={self.acm_headless}", flush=True)
         
         scraper = None
+        nlp_futures: List[concurrent.futures.Future] = []
         
         try:
             _load_scraper_modules()
@@ -1602,6 +1720,15 @@ class ScraperManager:
                         'article_list': article_titles[:30],
                     }]
                     progress.completed_issues = new_issues
+                    progress.current_issue = None
+                    progress.pending_issues = []
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def _acm_journal_name_cb(resolved_name: str):
+                    progress.current_journal = resolved_name
 
                 try:
                     import time
@@ -1644,11 +1771,23 @@ class ScraperManager:
                         max_articles=self.acm_max_articles,
                         article_progress_callback=_acm_article_cb,
                         article_list_callback=_acm_article_list_cb,
+                        journal_name_callback=_acm_journal_name_cb,
                         existing_issue_urls=existing_issue_urls,
                         issue_start_callback=_acm_issue_start_cb,
                         issue_complete_callback=_acm_issue_complete_cb,
                         issues_order=self.acm_issues_order,
                     )
+
+                    if self._acm_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                        logger.warning("[ACM Thread] Stop sinyali sonrası journal kaydı atlandı")
+                        break
+
+                    resolved_journal_name = journal.get('name', journal_name)
+                    if resolved_journal_name != journal_name:
+                        journal_name = resolved_journal_name
+                        progress.current_journal = resolved_journal_name
 
                     try:
                         from backend.core.metrics import SCRAPER_DURATION
@@ -1714,7 +1853,7 @@ class ScraperManager:
                             progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
                             logger.info(f"[ACM Thread] {journal_name}: Makale yok, journal kaydedildi")
 
-                        if articles_created > 0 and self._loop:
+                        if articles_created > 0 and self._loop and not progress.is_single_journal_mode:
                             async def _acm_journal_cluster_update():
                                 try:
                                     from backend.services.nlp_service import NLPService
@@ -1724,7 +1863,12 @@ class ScraperManager:
                                     logger.info("[ACM Thread] NLP modeli bulunamad\u0131, incremental clustering atland\u0131")
                                 except Exception as _e:
                                     logger.warning(f"[ACM Thread] Incremental clustering hatas\u0131: {_e}")
-                            asyncio.run_coroutine_threadsafe(_acm_journal_cluster_update(), self._loop)
+                            nlp_future = asyncio.run_coroutine_threadsafe(
+                                _acm_journal_cluster_update(), self._loop
+                            )
+                            nlp_futures.append(nlp_future)
+                        elif articles_created > 0 and progress.is_single_journal_mode:
+                            progress.add_log("info", "Tekil URL modu: incremental NLP scraping aşamasında atlandı, analyzing aşamasında çalışacak")
 
                 except ScraperStoppedException:
                     # Stop sinyali alındı - döngüden çık
@@ -1742,6 +1886,26 @@ class ScraperManager:
                 import time
                 time.sleep(2)
             
+            if progress.status == ScraperStatus.RUNNING and nlp_futures:
+                progress.current_journal = None
+                progress.pending_journals = []
+                progress.current_issue = None
+                progress.pending_issues = []
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
+                progress.add_log("info", f"Arka plan NLP işleri bekleniyor ({len(nlp_futures)})")
+                for nlp_future in nlp_futures:
+                    if self._acm_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper durduruldu")
+                        break
+                    try:
+                        nlp_future.result(timeout=600)
+                    except Exception as e:
+                        logger.warning(f"[ACM Thread] Arka plan NLP işi beklenirken hata: {e}")
+
             if progress.status == ScraperStatus.RUNNING:
                 progress.status = ScraperStatus.COMPLETED
                 progress.add_log("success", "ACM scraper tamamlandı")

@@ -14,6 +14,39 @@ logger = get_logger('science_direct')
 
 class JournalParser:
     """Journal bilgilerini parse eden sınıf"""
+
+    @staticmethod
+    def extract_journal_name_from_journal_page(page_source: str) -> str:
+        """
+        ScienceDirect journal sayfasından dergi adını çıkarır.
+
+        Hedef yapı:
+        <h1 ...><a id="journal-title"><span class="anchor-text">...</span></a></h1>
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+
+            title_link = soup.find('a', id='journal-title')
+            if title_link:
+                text_span = title_link.find('span', class_='anchor-text')
+                if text_span:
+                    journal_name = text_span.get_text(strip=True)
+                    if journal_name:
+                        return journal_name
+                journal_name = title_link.get_text(strip=True)
+                if journal_name:
+                    return journal_name
+
+            # Fallback: h1 içeriği
+            h1 = soup.find('h1')
+            if h1:
+                journal_name = h1.get_text(strip=True)
+                return journal_name or None
+
+            return None
+        except Exception as e:
+            logger.warning(f"Journal adı çıkarma hatası: {e}")
+            return None
     
     @staticmethod
     def extract_journals_from_page(page_source: str) -> list:

@@ -22,6 +22,7 @@ import {
 } from '@/lib/api';
 import type { TopicTrendsData, TopicCluster, NlpStatus } from '@/lib/types';
 import Link from 'next/link';
+import { UrlAnalysisTab, type UrlAnalysisResult } from './UrlAnalysisTab';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -42,7 +43,7 @@ const PUBLISHERS = [
 
 const CLUSTER_PAGE_SIZE = 20;
 
-type Mode = 'all' | 'journal' | 'publisher';
+type Mode = 'all' | 'journal' | 'publisher' | 'url';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -122,6 +123,9 @@ export function TopicTrendsSection() {
   const [zoomStart, setZoomStart] = useState(0);
   const [zoomEnd, setZoomEnd] = useState<number | null>(null);
 
+  // ── Journal name for url-mode (set after URL analysis completes) ──
+  const [urlJournalName, setUrlJournalName] = useState<string>('');
+
   // ── Cluster article panel ──
   type ClusterArticle = { id: string; title: string; doi?: string; url?: string; publication_date?: string };
   const [openArticleClusterId, setOpenArticleClusterId] = useState<number | null>(null);
@@ -151,8 +155,12 @@ export function TopicTrendsSection() {
       let result: TopicTrendsData;
       if (mode === 'all') {
         result = await getAllTopicTrends(mv, n);
-      } else if (mode === 'journal') {
+      } else if (mode === 'journal' || (mode === 'url' && name)) {
         result = await getJournalTopicTrends(name ?? '', mv, n);
+      } else if (mode === 'url') {
+        // url mode but no journal name yet — skip
+        setLoading(false);
+        return;
       } else {
         result = await getPublisherTopicTrends(name ?? '', mv, n);
       }
@@ -176,8 +184,8 @@ export function TopicTrendsSection() {
   async function fetchAllClusters(name: string | undefined, mv: string) {
     setAllLoading(true);
     try {
-      const clusterType = mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher';
-      const groupId = mode !== 'all' ? (name ?? '') : undefined;
+      const clusterType = (mode === 'all' || mode === 'url') ? 'all' : mode === 'journal' ? 'journal' : 'publisher';
+      const groupId = (mode !== 'all' && mode !== 'url') ? (name ?? '') : undefined;
       const res = await listClusters(mv, clusterType, groupId);
       setAllClusters(res.clusters);
     } catch {
@@ -293,12 +301,26 @@ export function TopicTrendsSection() {
     setError(null);
     setNameInput('');
     setSubmittedName('');
+    setUrlJournalName('');
     setVisibleTopics(new Set());
     setFullListOpen(false);
     setClusterSearch('');
     setClusterPage(0);
     setJournalSuggestions([]);
     setShowJournalSuggestions(false);
+  }
+
+  function handleUrlAnalysisComplete(result: UrlAnalysisResult) {
+    isZoomingRef.current = false;
+    setData(result.trendsData);
+    setAllClusters(result.allClusters);
+    setUrlJournalName(result.journalName);
+    setSubmittedName(result.journalName);
+    setSeriesCache(new Map());
+    setFetchingTopics(new Set());
+    setZoomStart(0);
+    setZoomEnd(null);
+    setVisibleTopics(new Set((result.trendsData?.clusters ?? []).map((c) => c.topic_tag)));
   }
 
   function handleTopNChange(n: number) {
@@ -320,8 +342,8 @@ export function TopicTrendsSection() {
     const willBeVisible = !visibleTopics.has(tag);
 
     if (willBeVisible && !topNSet.has(tag) && !seriesCache.has(tag) && modelVersion) {
-      const clusterType = (mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher') as 'all' | 'journal' | 'publisher';
-      const groupId = mode !== 'all' ? submittedName : undefined;
+      const clusterType = (mode === 'all' || mode === 'url' ? 'all' : mode === 'journal' ? 'journal' : 'publisher') as 'all' | 'journal' | 'publisher';
+      const groupId = (mode !== 'all' && mode !== 'url') ? submittedName : undefined;
       setFetchingTopics((prev) => new Set(prev).add(tag));
       getClusterTrendSeries(cluster.cluster_id, modelVersion, clusterType, groupId)
         .then((res) => {
@@ -501,8 +523,8 @@ export function TopicTrendsSection() {
 
       <CardContent className="space-y-6">
         {/* Mode selector */}
-        <div className="flex gap-2">
-          {(['all', 'journal', 'publisher'] as Mode[]).map((m) => (
+        <div className="flex gap-2 flex-wrap">
+          {(['all', 'journal', 'publisher', 'url'] as Mode[]).map((m) => (
             <button
               key={m}
               onClick={() => handleModeChange(m)}
@@ -512,7 +534,7 @@ export function TopicTrendsSection() {
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              {m === 'all' ? 'Tümü' : m === 'journal' ? 'Dergi Bazlı' : 'Yayıncı Bazlı'}
+              {m === 'all' ? 'Tümü' : m === 'journal' ? 'Dergi Bazlı' : m === 'publisher' ? 'Yayıncı Bazlı' : 'URL Analizi'}
             </button>
           ))}
         </div>
@@ -595,6 +617,23 @@ export function TopicTrendsSection() {
           </div>
         )}
 
+        {/* URL Analysis tab */}
+        {mode === 'url' && (
+          <>
+            <UrlAnalysisTab
+              modelVersion={modelVersion}
+              topN={topN}
+              onAnalysisComplete={handleUrlAnalysisComplete}
+            />
+            {urlJournalName && data && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
+                <span className="font-medium">Gösterilen dergi:</span>
+                <span className="font-semibold text-slate-800">{urlJournalName}</span>
+              </div>
+            )}
+          </>
+        )}
+
         {/* No model */}
         {noModel && (
           <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-600 text-sm">
@@ -613,7 +652,7 @@ export function TopicTrendsSection() {
         )}
 
         {/* Chart section */}
-        {!loading && !error && data && data.graph_data.length > 0 && (
+        {!loading && !error && data && data.graph_data.length > 0 && (mode !== 'url' || !!urlJournalName) && (
           <>
             {/* Top-N selector row */}
             <div className="flex items-center justify-between flex-wrap gap-2">
@@ -686,6 +725,7 @@ export function TopicTrendsSection() {
                         name={cluster.topic_tag}
                         stroke={color}
                         strokeWidth={2}
+                        opacity={1}
                         dot={(dotProps: { cx?: number; cy?: number; index: number; payload: Record<string, unknown> }) => {
                           const { cx, cy, index, payload } = dotProps;
                           if (cx == null || cy == null || payload[cluster.topic_tag] == null) return <g />;
@@ -997,7 +1037,9 @@ export function TopicTrendsSection() {
         {/* Empty state */}
         {!loading && !error && data && data.graph_data.length === 0 && (
           <div className="text-center py-10 text-slate-500 text-sm">
-            {mode !== 'all'
+            {mode === 'url'
+              ? 'Analiz tamamlandı ancak grafik verisi bulunamadı. Scraping sonuçları kümelerle eşleşmemiş olabilir.'
+              : mode !== 'all'
               ? 'Bu yayıncı/dergi için cluster verisi bulunamadı. Modeli yeniden eğiterek publisher/journal clustering ekleyebilirsiniz.'
               : 'Bu sorgu için grafik verisi bulunamadı.'}
           </div>
