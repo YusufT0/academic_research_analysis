@@ -31,12 +31,19 @@ class ScraperProgress(BaseModel):
     """Tek bir scraper'ın ilerleme durumu"""
     scraper_type: ScraperType
     status: ScraperStatus
-    
+
     # İlerleme
     current_journal: Optional[str] = None
     current_journal_index: int = 0
     total_journals: int = 0
-    
+    pending_journals: List[str] = Field(default_factory=list)
+    completed_journals: List[Dict[str, Any]] = Field(default_factory=list)
+    article_list: List[str] = Field(default_factory=list)
+    current_article: Optional[str] = None
+    current_article_index: int = 0
+    total_articles: int = 0
+    pending_issues: List[str] = Field(default_factory=list)
+
     # İstatistikler
     journals_scraped: int = 0
     issues_scraped: int = 0

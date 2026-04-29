@@ -8,7 +8,7 @@ from .driver import SeleniumDriver
 from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
 from .rate_limiter import RateLimiter
-from .scraper import ScienceDirectScraper
+from .scraper import ScienceDirectScraper, ScraperStoppedException
 from .utils import handle_cookie_consent, print_article_summary
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     'ArticleParser',
     'RateLimiter',
     'ScienceDirectScraper',
+    'ScraperStoppedException',
     'handle_cookie_consent',
     'print_article_summary',
 ]

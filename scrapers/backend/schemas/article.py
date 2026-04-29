@@ -47,6 +47,7 @@ class ArticleResponse(BaseModel):
     doi: Optional[str] = None
     
     abstract: Optional[str] = None
+    introduction: Optional[str] = None
     keywords: List[str] = Field(default_factory=list)
     authors: List[str] = Field(default_factory=list)
     
@@ -60,6 +61,15 @@ class ArticleResponse(BaseModel):
     
     pdf_url: Optional[str] = None
     citation_count: int = 0
+    references: List[str] = Field(default_factory=list)
+    
+    # OpenAlex ve Atıf Alanları
+    openalex_id: Optional[str] = None
+    is_openalex_indexed: bool = False
+    historical_citation_data: dict = Field(default_factory=dict)
+    citation_percentile: Optional[float] = None
+    fwci: Optional[float] = None
+    last_citation_update_date: Optional[datetime] = None
     
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -77,6 +87,7 @@ class ArticleListResponse(BaseModel):
     total_pages: int
     has_next: bool
     has_prev: bool
+    next_cursor: Optional[str] = None
 
 
 class ArticleStatsResponse(BaseModel):
@@ -89,3 +100,18 @@ class ArticleStatsResponse(BaseModel):
     open_access_count: int
     top_keywords: List[dict]
     top_authors: List[dict]
+
+class ArticleCitationMetricsResponse(BaseModel):
+    """Makale Atıf ve Etki Metrikleri Response"""
+    id: str
+    doi: Optional[str] = None
+    citation_count: int = 0
+    openalex_id: Optional[str] = None
+    is_openalex_indexed: bool = False
+    historical_citation_data: dict = Field(default_factory=dict, description="Yıllara göre atıf sayıları {2023: 10}")
+    citation_percentile: Optional[float] = None
+    fwci: Optional[float] = None
+    last_citation_update_date: Optional[datetime] = None
+    
+    class Config:
+        from_attributes = True

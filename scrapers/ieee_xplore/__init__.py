@@ -10,7 +10,7 @@ from .driver import SeleniumDriver
 from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
 from .utils import handle_cookie_consent, wait_for_page_load
-from .scraper import IEEEXploreScraper
+from .scraper import IEEEXploreScraper, ScraperStoppedException
 from .rate_limiter import IEEERateLimiter, RateLimitException
 
 __all__ = [
@@ -23,6 +23,7 @@ __all__ = [
     'handle_cookie_consent',
     'wait_for_page_load',
     'IEEEXploreScraper',
+    'ScraperStoppedException',
     'IEEERateLimiter',
     'RateLimitException',
 ]

@@ -1,57 +1,69 @@
 """
 Database Configuration
-Pydantic Settings ile konfigürasyon yönetimi
 """
 
+import os
 from typing import Optional
-from pydantic_settings import BaseSettings
-from pydantic import Field
+from dotenv import load_dotenv
 
+# dotenv'ı manuel yükle (döngüsel importu önlemek için Backend ayarlarına bağımlı kalmak istemiyorsak)
+load_dotenv()
 
-class DatabaseSettings(BaseSettings):
+class DatabaseSettings:
     """MongoDB bağlantı ayarları"""
     
-    # Connection
-    mongodb_uri: str = Field(
-        default="mongodb://localhost:27017",
-        description="MongoDB connection URI"
-    )
-    mongodb_database: str = Field(
-        default="academic_research",
-        description="Database adı"
-    )
+    @property
+    def mongodb_uri(self) -> str:
+        return os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+        
+    @property
+    def mongodb_database(self) -> str:
+        return os.getenv("MONGODB_DATABASE", "academic_research")
+        
+    @property
+    def mongodb_username(self) -> Optional[str]:
+        return os.getenv("MONGODB_USERNAME")
+        
+    @property
+    def mongodb_password(self) -> Optional[str]:
+        return os.getenv("MONGODB_PASSWORD")
+
     
-    # Authentication (opsiyonel)
-    mongodb_username: Optional[str] = Field(default=None)
-    mongodb_password: Optional[str] = Field(default=None)
-    
-    # Connection Pool
-    mongodb_min_pool_size: int = Field(default=1)
-    mongodb_max_pool_size: int = Field(default=10)
+    # Connection Pool — env override olarak MONGODB_MIN_POOL_SIZE / MONGODB_MAX_POOL_SIZE ayarlayın
+    @property
+    def mongodb_min_pool_size(self) -> int:
+        return int(os.getenv("MONGODB_MIN_POOL_SIZE", "5"))
+
+    @property
+    def mongodb_max_pool_size(self) -> int:
+        return int(os.getenv("MONGODB_MAX_POOL_SIZE", "50"))
     
     # Timeouts (ms)
-    mongodb_connect_timeout_ms: int = Field(default=5000)
-    mongodb_server_selection_timeout_ms: int = Field(default=5000)
-    
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"  # Diğer env değişkenlerini yoksay
+    @property
+    def mongodb_connect_timeout_ms(self) -> int:
+        return 5000
+        
+    @property
+    def mongodb_server_selection_timeout_ms(self) -> int:
+        return 5000
     
     @property
     def connection_string(self) -> str:
         """Tam connection string oluştur"""
-        if self.mongodb_username and self.mongodb_password:
-            # URI'den protocol ve host'u ayır
-            if "://" in self.mongodb_uri:
-                protocol, rest = self.mongodb_uri.split("://", 1)
-                return f"{protocol}://{self.mongodb_username}:{self.mongodb_password}@{rest}"
-        return self.mongodb_uri
+        # Use .strip() and check truthiness to avoid empty string bugs
+        user = (self.mongodb_username or "").strip()
+        password = (self.mongodb_password or "").strip()
 
-
+        if user and password:
+            uri = self.mongodb_uri
+            if "://" in uri:
+                protocol, rest = uri.split("://", 1)
+                return f"{protocol}://{user}:{password}@{rest}"
+                
+        # If no credentials, return the URI as 127.0.0.1 to avoid IPv6 issues
+        return self.mongodb_uri.replace("localhost", "127.0.0.1")
 # Singleton instance
 _settings: Optional[DatabaseSettings] = None
-
 
 def get_database_settings() -> DatabaseSettings:
     """Database settings singleton'ı getir"""

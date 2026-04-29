@@ -29,6 +29,9 @@ class IEEERateLimiter:
         "automatically paused access",
         "download"
     ]
+
+    # WAF / güvenlik reddi sayfası belirteci (body düz metin olarak gelir)
+    URL_REJECTED_KEYWORD = "the requested url was rejected"
     
     def __init__(self, driver, pause_duration: int = 300):
         """
@@ -50,17 +53,29 @@ class IEEERateLimiter:
             bool: Rate limiting varsa True, yoksa False
         """
         try:
-            # error-message-container div'ini bul
+            # 1. WAF / güvenlik reddi: "The requested URL was rejected"
+            try:
+                body_text = self.driver.find_element(By.TAG_NAME, 'body').text.lower()
+                if self.URL_REJECTED_KEYWORD in body_text:
+                    logger.warning("=" * 60)
+                    logger.warning("IEEE XPLORE URL REDDİ TESPİT EDİLDİ!")
+                    logger.warning("Mesaj: 'The requested URL was rejected'")
+                    logger.warning("=" * 60)
+                    self.rate_limit_detected = True
+                    return True
+            except Exception:
+                pass
+
+            # 2. error-message-container div'ini bul (indirme limiti)
             error_containers = self.driver.find_elements(
-                By.CLASS_NAME, 
+                By.CLASS_NAME,
                 self.ERROR_CONTAINER_CLASS
             )
-            
+
             for container in error_containers:
                 try:
                     text = container.text.lower()
-                    
-                    # Tüm anahtar kelimelerin olup olmadığını kontrol et
+
                     if all(keyword in text for keyword in self.ERROR_TEXT_KEYWORDS):
                         logger.warning("=" * 60)
                         logger.warning("IEEE XPLORE RATE LIMIT UYARISI TESPİT EDİLDİ!")
@@ -68,11 +83,11 @@ class IEEERateLimiter:
                         logger.warning("=" * 60)
                         self.rate_limit_detected = True
                         return True
-                except:
+                except Exception:
                     continue
-            
+
             return False
-            
+
         except NoSuchElementException:
             return False
         except Exception as e:

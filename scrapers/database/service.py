@@ -21,6 +21,24 @@ from utils.logger import get_logger
 logger = get_logger('database_service')
 
 
+def _get_cache():
+    """Lazy import to avoid circular dependency"""
+    try:
+        from backend.services.cache_service import cache_service
+        return cache_service
+    except Exception:
+        return None
+
+
+def _get_es():
+    """Lazy import to avoid circular dependency"""
+    try:
+        from backend.services.elasticsearch_service import elasticsearch_service
+        return elasticsearch_service
+    except Exception:
+        return None
+
+
 class DatabaseService:
     """
     Database Service
@@ -71,6 +89,9 @@ class DatabaseService:
         Returns:
             tuple: (Journal, created: bool)
         """
+        import time
+        start_time = time.time()
+        
         journal, created = await self.journal_repo.upsert(
             name=name,
             source_website=source_website,
@@ -82,11 +103,24 @@ class DatabaseService:
             **kwargs
         )
         
+        try:
+            from backend.core.metrics import DB_OPERATION_DURATION
+            DB_OPERATION_DURATION.labels(operation="upsert_journal").observe(time.time() - start_time)
+        except ImportError:
+            pass
+        
+        _cache = _get_cache()
         if created:
             logger.success(f"Yeni dergi eklendi: {name}")
+            if _cache:
+                await _cache.invalidate_pattern("stats:*")
+                await _cache.invalidate_pattern("search:*")
         else:
             logger.info(f"Dergi güncellendi: {name}")
-        
+            if _cache:
+                await _cache.invalidate_pattern("search:*")
+                await _cache.invalidate_journal(str(journal.id))
+
         return journal, created
     
     async def get_journal(
@@ -97,6 +131,29 @@ class DatabaseService:
         """Dergi getir"""
         return await self.journal_repo.find_by_name(name, source_website)
     
+    async def recalculate_journal_counts(self, journal_id) -> Optional[Journal]:
+        """
+        Derginin sayı ve makale sayılarını gerçek DB verilerinden yeniden hesapla.
+        Yarım kalan scrape sonrası tutarsız sayıları düzeltir.
+        """
+        issue_count = await Issue.find({"journal_id": journal_id}).count()
+        article_count = await Article.find({"journal_id": journal_id}).count()
+
+        journal = await Journal.get(journal_id)
+        if journal:
+            journal.issue_count = issue_count
+            journal.article_count = article_count
+            journal.touch()
+            await journal.save()
+
+        _cache = _get_cache()
+        if _cache:
+            await _cache.invalidate_journal(str(journal_id))
+            await _cache.invalidate_pattern("search:*")
+            await _cache.invalidate_pattern("stats:*")
+
+        return journal
+
     async def get_all_journals(
         self,
         source_website: Optional[str] = None
@@ -130,6 +187,9 @@ class DatabaseService:
         Returns:
             tuple: (Issue, created: bool)
         """
+        import time
+        start_time = time.time()
+        
         issue, created = await self.issue_repo.upsert(
             journal_id=journal.id,
             journal_name=journal.name,
@@ -140,6 +200,12 @@ class DatabaseService:
             status=status,
             **kwargs
         )
+        
+        try:
+            from backend.core.metrics import DB_OPERATION_DURATION
+            DB_OPERATION_DURATION.labels(operation="upsert_issue").observe(time.time() - start_time)
+        except ImportError:
+            pass
         
         if created:
             # Dergi sayı sayısını güncelle
@@ -186,6 +252,9 @@ class DatabaseService:
         Returns:
             tuple: (Article, created: bool)
         """
+        import time
+        start_time = time.time()
+        
         article, created = await self.article_repo.upsert(
             url=url,
             title=title,
@@ -204,13 +273,36 @@ class DatabaseService:
             **kwargs
         )
         
+        try:
+            from backend.core.metrics import DB_OPERATION_DURATION
+            DB_OPERATION_DURATION.labels(operation="upsert_article").observe(time.time() - start_time)
+        except ImportError:
+            pass
+        
         if created:
             # Sayı ve dergi makale sayılarını güncelle
             await self.issue_repo.increment_article_count(issue.id)
             await self.journal_repo.increment_counts(issue.journal_id, article_increment=1)
             logger.success(f"Yeni makale eklendi: {title[:50]}...")
+            
+            _cache = _get_cache()
+            if _cache:
+                await _cache.invalidate_pattern("stats:*")
+                await _cache.invalidate_pattern("articles_search_*")
+                await _cache.invalidate_pattern("es_search_*")
+                await _cache.invalidate_pattern("search:*")
         else:
             logger.info(f"Makale güncellendi: {title[:50]}...")
+        
+        # ES indexing
+        from backend.core.config import settings
+        _es = _get_es()
+        if _es and _es.is_connected and settings.elasticsearch_auto_sync:
+            doc = article.model_dump()
+            doc["id"] = str(article.id)
+            if article.journal_id: doc["journal_id"] = str(article.journal_id)
+            if article.issue_id: doc["issue_id"] = str(article.issue_id)
+            await _es.index_article(doc)
         
         return article, created
     
@@ -231,6 +323,7 @@ class DatabaseService:
         """
         created_count = 0
         updated_count = 0
+        articles = []
         
         for data in articles_data:
             if not data.get('url') or not data.get('title'):
@@ -244,6 +337,7 @@ class DatabaseService:
             data['source_website'] = issue.source_website
             
             article, created = await self.article_repo.upsert(**data)
+            articles.append(article)
             
             if created:
                 created_count += 1
@@ -254,7 +348,26 @@ class DatabaseService:
         if created_count > 0:
             await self.issue_repo.increment_article_count(issue.id, created_count)
             await self.journal_repo.increment_counts(issue.journal_id, article_increment=created_count)
-        
+            
+            _cache = _get_cache()
+            if _cache:
+                await _cache.invalidate_pattern("stats:*")
+                await _cache.invalidate_pattern("articles_search_*")
+                await _cache.invalidate_pattern("es_search_*")
+                await _cache.invalidate_pattern("search:*")
+            
+        from backend.core.config import settings
+        _es = _get_es()
+        if articles and _es and _es.is_connected and settings.elasticsearch_auto_sync:
+            es_docs = []
+            for a in articles:
+                d = a.model_dump()
+                d["id"] = str(a.id)
+                if a.journal_id: d["journal_id"] = str(a.journal_id)
+                if a.issue_id: d["issue_id"] = str(a.issue_id)
+                es_docs.append(d)
+            await _es.bulk_index(es_docs)
+            
         logger.found(created_count, f"yeni makale eklendi, {updated_count} güncellendi")
         
         return created_count, updated_count

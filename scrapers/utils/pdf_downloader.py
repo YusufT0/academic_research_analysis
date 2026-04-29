@@ -25,6 +25,8 @@ try:
 except ImportError:
     from .compress_pdfs import PDFCompressor
 
+from backend.core.config import settings
+
 
 class ProxyConfig:
     """Proxy yapılandırma sınıfı"""
@@ -189,12 +191,12 @@ class PDFDownloader:
                         stats['failed'] += 1
                         continue
                 
-                response = session.get(pdf_url, timeout=60, stream=True)
+                response = session.get(pdf_url, timeout=settings.pdf_download_timeout, stream=True)
                 response.raise_for_status()
                 
                 # Dosyayı kaydet
                 with open(filepath, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
+                    for chunk in response.iter_content(chunk_size=settings.pdf_download_chunk_size):
                         if chunk:
                             f.write(chunk)
                 

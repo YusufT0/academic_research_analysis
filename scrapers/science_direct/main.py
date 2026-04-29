@@ -75,7 +75,7 @@ async def main():
             # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
             # ============================================================
             logger.header("ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA")
-            logger.info(f"{len(all_journals)} journal için veritabanı kontrolü yapılıyor...")
+            logger.info(f"{len(all_journals)} journal için veri tabanı kontrolü yapılıyor...")
             
             # Journal repository'yi başlat
             journal_repo = JournalRepository()
@@ -92,7 +92,7 @@ async def main():
                 'Toplam Journal': len(all_journals),
                 'Yeni (DB\'de yok)': new_count,
                 'Mevcut (DB\'de var)': existing_count
-            }, "Veritabanı Durumu")
+            }, "Veri Tabanı Durumu")
             
             # Journal'ları öncelik sistemine göre sırala
             all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
@@ -116,41 +116,58 @@ async def main():
             
             for idx, journal in enumerate(all_journals, 1):
                 logger.section(f"Journal {idx}/{len(all_journals)}: {journal['name']}")
-                
-                # Her journal için makaleleri tara (max 5 makale - çok uzun sürmemesi için)
-                articles = scraper.scrape_journal_articles(journal, max_articles=100)
-                
-                # Veri yöneticisine kaydet (makale olsun olmasın journal'ı kaydet)
-                # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
+
+                # Her journal için issue'ları ve makaleleri tara
+                issue_results = scraper.scrape_journal_articles(
+                    journal, depth=1, max_articles=100
+                )
+
                 # Journal verisi hazırla
                 journal_info = {
                     'name': journal['name'],
                     'url': journal.get('url'),
                     'publisher': 'Elsevier',
                     'open_access': journal.get('open_access', False),
-                    'letter_group': journal.get('letter_group')
+                    'letter_group': journal.get('letter_group'),
+                    'aims_and_scope': journal.get('aims_and_scope'),
                 }
-                
-                # Issue verisi (ScienceDirect'te genelde Most Recent Issue)
-                issue_data = {
-                    'issue_number': journal.get('issue_number'),
-                    'date': journal.get('issue_date'),
-                    'url': journal.get('issue_url')
-                }
-                
-                # Database'e kaydet
-                result = await db_service.add_journal_with_issue_and_articles(
-                    journal_data=journal_info,
-                    issue_data=issue_data,
-                    articles_data=articles or [],  # Boş liste olabilir
-                    source_website='sciencedirect'
+
+                # Journal'ı DB'ye ekle / güncelle
+                journal_doc, journal_created = await db_service.add_journal(
+                    source_website='sciencedirect',
+                    **journal_info
                 )
-                
-                total_articles_created += result['articles_created']
-                total_articles_updated += result['articles_updated']
-                
-                if articles:
-                    logger.success(f"{journal['name']}: {result['articles_created']} yeni, {result['articles_updated']} güncelleme")
+
+                journal_articles_created = 0
+                journal_articles_updated = 0
+
+                # Her issue için ayrı ayrı kaydet
+                for issue_result in issue_results:
+                    issue_data = issue_result['issue_info']
+                    articles_data = issue_result['articles']
+
+                    issue_doc, issue_created = await db_service.add_issue(
+                        journal=journal_doc,
+                        issue_number=issue_data.get('issue_number'),
+                        date=issue_data.get('date'),
+                        url=issue_data.get('url'),
+                        status=issue_data.get('status'),
+                    )
+
+                    created, updated = await db_service.add_articles_bulk(
+                        issue_doc, articles_data
+                    )
+                    journal_articles_created += created
+                    journal_articles_updated += updated
+
+                total_articles_created += journal_articles_created
+                total_articles_updated += journal_articles_updated
+
+                if issue_results:
+                    logger.success(
+                        f"{journal['name']}: {journal_articles_created} yeni, "
+                        f"{journal_articles_updated} güncelleme"
+                    )
                 else:
                     logger.info(f"{journal['name']}: Makale yok, journal kaydedildi")
                 

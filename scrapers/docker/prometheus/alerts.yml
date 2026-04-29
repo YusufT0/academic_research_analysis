@@ -1,0 +1,121 @@
+groups:
+  - name: academic_scraper_alerts
+    interval: 30s
+    rules:
+
+      # ─── Circuit Breaker ───────────────────────────────────────────────────
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state == 1
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Circuit breaker is OPEN for {{ $labels.breaker }}"
+          description: >
+            The circuit breaker for "{{ $labels.breaker }}" has been open for more than 1 minute.
+            Scraper errors are being suppressed. Investigate the root cause.
+
+      # ─── Dead Letter Queue ─────────────────────────────────────────────────
+      - alert: DLQDepthHigh
+        expr: stream_dlq_size > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Dead Letter Queue has {{ $value }} unprocessed messages"
+          description: >
+            The Redis Streams DLQ has exceeded 100 messages for 5 minutes.
+            Citation or ES indexing workers may be failing.
+
+      - alert: DLQDepthCritical
+        expr: stream_dlq_size > 500
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ critically deep: {{ $value }} messages"
+          description: >
+            The DLQ has > 500 messages. Stream processing is severely degraded.
+            Check stream_service logs and OpenAlex/ES connectivity.
+
+      # ─── Scraper Stopped / Stalled ─────────────────────────────────────────
+      - alert: ScraperNotScraping
+        expr: increase(scraper_articles_total[2h]) == 0 and active_scrapers > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Scraper {{ $labels.source }} has scraped 0 articles in 2 hours"
+          description: >
+            Scraper "{{ $labels.source }}" reports as active but has not scraped any
+            articles in the last 2 hours. It may be stalled, blocked by a CAPTCHA,
+            or stuck on a network error.
+
+      - alert: NoActiveScrapers
+        expr: active_scrapers == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "No scrapers are currently running"
+          description: >
+            No scrapers have been active for 30 minutes. This may be normal
+            (all done) or indicate an unexpected shutdown.
+
+      # ─── High Scraper Error Rate ───────────────────────────────────────────
+      - alert: ScraperHighErrorRate
+        expr: >
+          rate(scraper_errors_total[10m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High scraper error rate for {{ $labels.source }}: {{ $value | humanize }}/s"
+          description: >
+            Scraper "{{ $labels.source }}" error type "{{ $labels.error_type }}" is
+            occurring at > 0.1/s over the last 10 minutes.
+
+      # ─── HTTP Latency ──────────────────────────────────────────────────────
+      - alert: APIHighLatency
+        expr: >
+          histogram_quantile(0.95,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API p95 latency is {{ $value }}s (threshold: 2s)"
+          description: >
+            The 95th percentile API response time has exceeded 2 seconds for
+            5 minutes. Check MongoDB slow queries and Redis latency.
+
+      # ─── Database Slow Operations ──────────────────────────────────────────
+      - alert: SlowDBOperations
+        expr: >
+          histogram_quantile(0.95,
+            rate(db_operation_duration_seconds_bucket[5m])
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "MongoDB p95 {{ $labels.operation }} latency is {{ $value }}s"
+          description: >
+            MongoDB operation "{{ $labels.operation }}" p95 latency exceeded 500ms.
+            Consider adding indexes or increasing the connection pool.
+
+      # ─── Cache Health ──────────────────────────────────────────────────────
+      - alert: LowCacheHitRate
+        expr: >
+          rate(cache_hits_total[10m]) /
+          (rate(cache_hits_total[10m]) + rate(cache_misses_total[10m]) + 0.001) < 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Cache hit rate is below 50%: {{ $value | humanizePercentage }}"
+          description: >
+            The Redis cache hit rate has dropped below 50% for 15 minutes.
+            This increases DB load significantly. Check TTL configuration
+            and whether cache invalidation is too aggressive.

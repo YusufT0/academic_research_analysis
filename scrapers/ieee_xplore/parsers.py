@@ -4,6 +4,7 @@ HTML parsing functions for IEEE Xplore scraper
 
 import re
 import sys
+from typing import Optional, List, Dict
 from bs4 import BeautifulSoup
 
 sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
@@ -13,7 +14,78 @@ logger = get_logger('ieee_xplore')
 
 class JournalParser:
     """Journal bilgilerini parse eden sınıf"""
-    
+
+    @staticmethod
+    def extract_aims_and_scope(page_source: str) -> Optional[str]:
+        """
+        Journal ana sayfasındaki <section class="aimsAndScope"> bileşeninden
+        Aims & Scope metnini çıkarır.
+
+        Args:
+            page_source: Sayfa HTML içeriği
+
+        Returns:
+            str: Aims & scope düz metin veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            section = soup.find('section', class_='aimsAndScope')
+            if not section:
+                return None
+            # col-21-24 sütununu bul (varsa), yoksa section'ın kendisini kullan
+            content_col = section.find('div', class_='col-21-24')
+            if not content_col:
+                content_col = section
+            # h2 başlığını çıkar
+            h2 = content_col.find('h2')
+            if h2:
+                h2.decompose()
+            text = content_col.get_text(separator=' ', strip=True)
+            return text if text else None
+        except Exception as e:
+            logger.warning(f"Aims & scope çıkarma hatası: {e}")
+            return None
+
+    @staticmethod
+    def extract_all_issues_tab_url(page_source: str) -> Optional[str]:
+        """
+        Navigasyon çubuğundan 'All Issues' tab linkini çıkarır.
+
+        Args:
+            page_source: Sayfa HTML içeriği
+
+        Returns:
+            str: All Issues sayfasının relative URL'i veya None
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+            # stats-jhp-AllIssues class'ına sahip link
+            link = soup.find('a', class_='stats-jhp-AllIssues')
+            if link and link.get('href'):
+                return link['href']
+            # Fallback: title="All Issues" olan link
+            link = soup.find('a', title='All Issues')
+            if link and link.get('href'):
+                return link['href']
+            # All Volumes butonu (bazı journal'larda All Issues yerine kullanılır)
+            link = soup.find('a', class_='stats-jhp-AllVolumes')
+            if link and link.get('href'):
+                logger.info("All Volumes linki bulundu, All Issues yerine kullanılacak")
+                return link['href']
+            link = soup.find('a', title='All Volumes')
+            if link and link.get('href'):
+                logger.info("All Volumes linki bulundu (title), All Issues yerine kullanılacak")
+                return link['href']
+            # Fallback: metin içinde 'All Volumes' geçen link
+            for a in soup.find_all('a', href=True):
+                if a.get_text(strip=True) == 'All Volumes':
+                    logger.info("All Volumes linki bulundu (text), All Issues yerine kullanılacak")
+                    return a['href']
+            return None
+        except Exception as e:
+            logger.warning(f"All Issues/Volumes linki çıkarma hatası: {e}")
+            return None
+
     @staticmethod
     def extract_journals_from_page(page_source: str) -> list:
         """
@@ -315,8 +387,8 @@ class ArticleParser:
             
             logger.found(len(result_items), "item")
             
-            article_urls = []
-            
+            articles = []
+
             for idx, item in enumerate(result_items, 1):
                 try:
                     # h2 içindeki article linkini bul
@@ -324,27 +396,28 @@ class ArticleParser:
                     if not h2_title:
                         # Mobile için alternatif selector
                         h2_title = item.find('h2', class_='result-item-title')
-                    
+
                     if not h2_title:
                         # Başlık bulunamadı, muhtemelen "Table of Contents" gibi link olmayan item
                         continue
-                    
+
                     # h2 içindeki a tag'ini bul
                     article_link = h2_title.find('a', href=True)
-                    
+
                     if article_link and article_link.get('href'):
                         article_url = article_link['href']
-                        
+
                         # /document/ ile başlayan linkler makale linkleridir
                         if '/document/' in article_url:
-                            article_urls.append(article_url)
-                            logger.info(f"  {len(article_urls)}. {article_url}")
-                    
+                            title_text = article_link.get_text(strip=True)
+                            articles.append({'url': article_url, 'title': title_text})
+                            logger.info(f"  {len(articles)}. {title_text[:60]}")
+
                 except Exception as e:
                     continue
-            
-            logger.found(len(article_urls), "makale URL'i")
-            return article_urls
+
+            logger.found(len(articles), "makale URL'i")
+            return articles
             
         except Exception as e:
             logger.failed("Makale URL çıkarma hatası", e)
@@ -486,11 +559,154 @@ class ArticleParser:
             
             if not article_details['introduction']:
                 logger.warning("Introduction bulunamadı")
-            
+
             return article_details
-            
+
         except Exception as e:
             logger.failed("Makale detay çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return None
+
+
+class IssuesPageParser:
+    """All Issues sayfasını parse eden sınıf"""
+
+    @staticmethod
+    def has_decade_tabs(page_source: str) -> bool:
+        """
+        Sayfada onlık (2020s, 2010s …) sekmeleri var mı kontrol eder.
+
+        Returns:
+            bool: Decade sekmeleri mevcutsa True
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' not in (div.get('class') or []):
+                return True
+        return False
+
+    @staticmethod
+    def extract_decade_tab_texts(page_source: str) -> List[str]:
+        """
+        Decade sekme metinlerini sırayla döndürür: ['2020s', '2010s', ...].
+        En üstteki (aktif) sekme ilk sıradadır.
+
+        Returns:
+            list[str]: Decade metinleri
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' not in (div.get('class') or []):
+                texts = []
+                for li in div.find_all('li'):
+                    text = li.get_text(strip=True)
+                    if text:
+                        texts.append(text)
+                return texts
+        return []
+
+    @staticmethod
+    def extract_year_items(page_source: str) -> List[Dict]:
+        """
+        Yıl listesini döndürür.
+
+        Yılda tek issue varsa <a href="..."> doğrudan issue linki içerir.
+        Birden fazla issue varsa <a> href'siz olup tıklanarak genişletilir.
+
+        Returns:
+            list[dict]: [{'year': str, 'href': str|None}, ...]
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        year_div = None
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' in (div.get('class') or []):
+                year_div = div
+                break
+        if not year_div:
+            return []
+
+        items = []
+        for li in year_div.find_all('li'):
+            a = li.find('a')
+            if a:
+                year_text = a.get_text(strip=True)
+                href = a.get('href')  # None → birden fazla issue (tıklanmalı)
+                if year_text:
+                    items.append({'year': year_text, 'href': href})
+        return items
+
+    @staticmethod
+    def extract_issue_list(page_source: str) -> List[Dict]:
+        """
+        Yıl tıklandıktan sonra beliren issue listesini parse eder.
+
+        Returns:
+            list[dict]: [{'url': str, 'title': str}, ...]
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        issues = []
+        for container in soup.find_all('section', class_='issue-container'):
+            volume_el = container.find('strong')
+            volume = volume_el.get_text(strip=True) if volume_el else ''
+            for issue_div in container.find_all('div', class_='issue-details'):
+                a = issue_div.find('a')
+                if a and a.get('href'):
+                    label = a.get_text(strip=True)
+                    title = f"{volume} {label}".strip() if volume else label
+                    issues.append({'url': a['href'], 'title': title})
+        return issues
+
+    @staticmethod
+    def is_volumes_page(page_source: str) -> bool:
+        """
+        Sayfanın 'All Volumes' tipi olup olmadığını tespit eder.
+
+        All Volumes sayfalarında decade sekmesi yoktur; bunun yerine yıl numaraları
+        (2026, 2025, ...) doğrudan href ile 'issue-details-past-tabs' div'inde
+        listelenir ve ayrı bir 'year'-classed div bulunmaz.
+
+        Returns:
+            bool: All Volumes tipi sayfa ise True
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        # year-classed div varsa bu normal bir All Issues sayfasıdır
+        year_divs = [d for d in soup.find_all('div', class_='issue-details-past-tabs')
+                     if 'year' in (d.get('class') or [])]
+        if year_divs:
+            return False
+        # Non-year issue-details-past-tabs div'inde href'li linkler bulunuyorsa volumes sayfasıdır
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' in (div.get('class') or []):
+                continue
+            links = div.find_all('a', href=True)
+            if links:
+                return True
+        return False
+
+    @staticmethod
+    def extract_volumes_year_links(page_source: str) -> List[Dict]:
+        """
+        All Volumes sayfasındaki yıl → URL eşlemelerini döndürür.
+
+        'issue-details-past-tabs' (non-year) div'indeki her <a> elementi birer
+        volume/yıl kaydı olarak alınır.
+
+        Returns:
+            list[dict]: [{'url': str, 'title': str}, ...] (sayfadaki sıraya göre, yeni→eski)
+        """
+        soup = BeautifulSoup(page_source, 'html.parser')
+        items = []
+        for div in soup.find_all('div', class_='issue-details-past-tabs'):
+            if 'year' in (div.get('class') or []):
+                continue
+            for li in div.find_all('li'):
+                a = li.find('a', href=True)
+                if a:
+                    title = a.get_text(strip=True)
+                    href = a['href']
+                    if title and href:
+                        items.append({'url': href, 'title': title})
+            if items:
+                break  # İlk eşleşen div yeterli
+        return items

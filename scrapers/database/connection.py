@@ -11,7 +11,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
 
 from .config import get_database_settings, DatabaseSettings
-from .models import Journal, Issue, Article
+from .models import Journal, Issue, Article, ArticleEmbedding, Cluster, AnalysisRun
 
 import sys
 from pathlib import Path
@@ -94,7 +94,7 @@ class DatabaseConnection:
                 try:
                     await init_beanie(
                         database=self._client[self.settings.mongodb_database],
-                        document_models=[Journal, Issue, Article]
+                        document_models=[Journal, Issue, Article, ArticleEmbedding, Cluster, AnalysisRun]
                     )
                     logger.success("Beanie ODM initialize edildi")
                 except Exception as beanie_error:
@@ -105,6 +105,15 @@ class DatabaseConnection:
                         raise beanie_error
                 
                 self._initialized = True
+
+                # Pool size'ı Prometheus'a kaydet
+                try:
+                    from backend.core.metrics import MONGODB_POOL_MAX_SIZE, MONGODB_POOL_MIN_SIZE
+                    MONGODB_POOL_MAX_SIZE.set(self.settings.mongodb_max_pool_size)
+                    MONGODB_POOL_MIN_SIZE.set(self.settings.mongodb_min_pool_size)
+                except Exception:
+                    pass
+
                 return True
                 
             except Exception as e:

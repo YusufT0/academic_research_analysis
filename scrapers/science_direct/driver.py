@@ -29,24 +29,8 @@ logger = get_logger('science_direct')
 from .config import ProxyConfig
 
 
-# Farklı User Agent'lar (content error durumunda değiştirmek için)
-USER_AGENTS = [
-    # Chrome Windows
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    # Chrome Mac
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    # Firefox Windows
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0",
-    # Edge
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0",
-    # Safari Mac
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-]
+# Farklı User Agent'lar utils altından import ediliyor
+from utils.user_agents import USER_AGENTS
 
 
 class SeleniumDriver:
@@ -233,6 +217,9 @@ class SeleniumDriver:
                 chrome_options.add_argument('--ignore-ssl-errors')
                 chrome_options.add_argument('--allow-insecure-localhost')
                 
+                # Proxy loopback bypass
+                chrome_options.add_argument('--proxy-bypass-list=<-loopback>')
+                
                 logger.success(f"Proxy yapılandırıldı: {self.proxy_config.proxy_host}:{self.proxy_config.proxy_port}")
                 logger.success("SSL sertifika doğrulaması devre dışı (proxy için)")
             
@@ -258,7 +245,9 @@ class SeleniumDriver:
             # Bu sayede her iki durumda da aynı davranış olur
             seleniumwire_options = {
                 'verify_ssl': False,
-                'suppress_connection_errors': True
+                'suppress_connection_errors': True,
+                'connection_timeout': 60,  # Proxy yavaşsa bağlantı kopmaması için artırıldı
+                'connection_keep_alive': True # Bağlantıyı canlı tut
             }
             
             # Proxy varsa proxy ayarlarını ekle
@@ -275,27 +264,79 @@ class SeleniumDriver:
                 logger.info("  - SSL doğrulama: Devre dışı")
             else:
                 logger.info("Proxy kullanılmıyor (selenium-wire aktif)")
+            # Sistemdeki Chrome versiyonunu tespit etmeye çalış
+            import subprocess
+            import re
+            import sys
+            import os
             
+            client_version = None
+            try:
+                output = ""
+                if sys.platform == "win32":
+                    paths = [
+                        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"
+                    ]
+                    for path in paths:
+                        if os.path.exists(path):
+                            cmd = f'(Get-Item "{path}").VersionInfo.ProductVersion'
+                            result = subprocess.run(["powershell", "-command", cmd], capture_output=True, text=True)
+                            output = result.stdout.strip()
+                            if output:
+                                break
+                elif sys.platform.startswith("linux"):
+                    for cmd_name in ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]:
+                        try:
+                            result = subprocess.run([cmd_name, "--version"], capture_output=True, text=True)
+                            if result.stdout:
+                                output = result.stdout.strip()
+                                break
+                        except Exception:
+                            continue
+                elif sys.platform == "darwin":
+                    path = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+                    if os.path.exists(path):
+                        result = subprocess.run([path, "--version"], capture_output=True, text=True)
+                        output = result.stdout.strip()
+                            
+                if output:
+                    match = re.search(r'(\d+)\.', output)
+                    if match:
+                        client_version = int(match.group(1))
+                        logger.info(f"Oto-tespit edilen Chrome sürümü ({sys.platform}): {client_version}")
+            except Exception as e:
+                logger.debug(f"Chrome sürümü tespit edilemedi: {e}")
+                
             if self.use_undetected:
                 # undetected-chromedriver kullan (Cloudflare bypass)
-                logger.info("undetected-chromedriver kullanılıyor (Cloudflare bypass)")
+                logger.info(f"undetected-chromedriver kullanılıyor (Cloudflare bypass, v{client_version or 'auto'})")
                 
                 # selenium-wire + undetected-chromedriver kombinasyonu
                 try:
-                    self.driver = WireChrome(
-                        options=chrome_options,
-                        seleniumwire_options=seleniumwire_options,
-                        version_main=142
-                    )
+                    kwargs = {
+                        "options": chrome_options,
+                        "seleniumwire_options": seleniumwire_options
+                    }
+                    if client_version:
+                        kwargs["version_main"] = client_version
+                        
+                    self.driver = WireChrome(**kwargs)
                     logger.success("selenium-wire + undetected-chromedriver aktif")
                 except Exception as e:
                     logger.warning(f"WireChrome hatası, normal uc.Chrome deneniyor: {e}")
                     # Fallback: normal uc.Chrome with seleniumwire_options
-                    self.driver = uc.Chrome(
-                        options=chrome_options, 
-                        version_main=142,
-                        seleniumwire_options=seleniumwire_options
-                    )
+                    # Options objesi kullanılmış olabilir, yeniden oluşturalım:
+                    fallback_options = self._configure_chrome_options()
+                    
+                    fallback_kwargs = {
+                        "options": fallback_options,
+                        "seleniumwire_options": seleniumwire_options
+                    }
+                    if client_version:
+                        fallback_kwargs["version_main"] = client_version
+                        
+                    self.driver = uc.Chrome(**fallback_kwargs)
                     logger.success("uc.Chrome + seleniumwire aktif")
                 
             else:
