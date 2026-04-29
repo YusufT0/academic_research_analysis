@@ -120,7 +120,13 @@ function ArticleCard({ article }: { article: Article }) {
               </h3>
 
               <div className="flex flex-wrap items-center gap-2 mt-2">
-                <span className="text-sm text-slate-600 font-medium">{article.journal_name}</span>
+                <Link
+                  href={`/journals?journal_id=${article.journal_id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-sm text-slate-600 font-medium hover:text-emerald-700 hover:underline cursor-pointer transition-colors"
+                >
+                  {article.journal_name}
+                </Link>
                 {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
                 <Badge variant={sourceBadgeVariant}>{sourceLabel}</Badge>
                 {article.article_type && (
@@ -166,19 +172,17 @@ function ArticleCard({ article }: { article: Article }) {
               {article.authors.length > 0 && (
                 <p className="text-sm text-slate-500 mt-2">
                   {article.authors.slice(0, 3).map((author, i) => (
-                    <span key={i}>
-                      <Link 
-                        href={`/authors/${encodeURIComponent(author)}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="hover:text-indigo-600 hover:underline transition-colors"
-                      >
-                        {author}
-                      </Link>
-                      {i < Math.min(article.authors.length, 3) - 1 ? ', ' : ''}
-                    </span>
+                    <Link
+                      key={i}
+                      href={`/authors/${encodeURIComponent(author)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center px-2.5 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
+                    >
+                      {author}
+                    </Link>
                   ))}
                   {article.authors.length > 3 && (
-                    <span className="text-slate-400"> ve {article.authors.length - 3} diğer</span>
+                    <span className="text-xs text-slate-400">+{article.authors.length - 3} diğer</span>
                   )}
                 </p>
               )}
@@ -357,9 +361,10 @@ function ArticleCard({ article }: { article: Article }) {
                       <Link
                         key={i}
                         href={`/authors/${encodeURIComponent(author)}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm rounded-full shadow-sm hover:border-amber-300 hover:text-amber-800 hover:bg-amber-50 transition-all cursor-pointer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
                       >
-                        <span className="text-[10px] text-slate-400 font-mono">{i + 1}</span>
+                        <span className="text-[10px] text-emerald-500 font-mono">{i + 1}</span>
                         {author}
                       </Link>
                     ))}
@@ -423,7 +428,17 @@ function ArticleCard({ article }: { article: Article }) {
                   <MetaItem
                     icon={<BookOpen className="h-3.5 w-3.5" />}
                     label="Dergi"
-                    value={detail.journal_name}
+                    value={
+                      detail.journal_name ? (
+                        <Link
+                          href={`/journals?journal_id=${detail.journal_id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-emerald-700 hover:underline cursor-pointer transition-colors"
+                        >
+                          {detail.journal_name}
+                        </Link>
+                      ) : null
+                    }
                   />
                   <MetaItem
                     icon={<FileText className="h-3.5 w-3.5" />}

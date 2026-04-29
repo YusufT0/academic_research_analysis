@@ -19,9 +19,9 @@ const navigation = [
   { name: 'Makaleler', href: '/articles', icon: FileText },
   { name: 'Dergiler', href: '/journals', icon: BookOpen },
   { name: 'Yazarlar', href: '/authors', icon: Users },
-  { name: 'Arama', href: '/search', icon: Search },
+  { name: 'Makale Arama', href: '/search', icon: Search },
   { name: 'Atıf Haritası', href: '/citation-map', icon: Network },
-  { name: 'Scraper', href: '/scrapers', icon: Database },
+  { name: 'Scraper Kontrol', href: '/scrapers', icon: Database },
 ];
 
 export default function Sidebar() {

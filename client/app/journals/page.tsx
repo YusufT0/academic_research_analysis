@@ -38,10 +38,11 @@ function JournalsContent() {
   const journalIdParam = searchParams.get('journal_id');
   const issueIdParam = searchParams.get('issue_id');
   const articleIdParam = searchParams.get('article_id');
+  const searchNameParam = searchParams.get('search');
 
   const [data, setData] = useState<PaginatedResponse<Journal> | null>(null);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState(searchNameParam ?? '');
   const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
   const initializedUrlParam = useRef(false);
   const skipSearchTrigger = useRef(false);
