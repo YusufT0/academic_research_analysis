@@ -1,13 +1,13 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import Link from 'next/link';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend,
   ScatterChart, Scatter, ZAxis,
 } from 'recharts';
-import { Brain, TrendingUp, Tags, Waypoints, FileText, ExternalLink } from 'lucide-react';
+import { Brain, TrendingUp, Tags, Waypoints, FileText, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import type {
@@ -114,6 +114,39 @@ function YearlyBarChart({ data }: { data: NlpBarChartData }) {
   );
 }
 
+const RADIAN = Math.PI / 180;
+
+function PieLabel({
+  cx, cy, midAngle, outerRadius, name, percent,
+}: {
+  cx?: number; cy?: number; midAngle?: number; outerRadius?: number;
+  name?: string; percent?: number;
+  [key: string]: unknown;
+}) {
+  if (cx == null || cy == null || midAngle == null || outerRadius == null || name == null || percent == null) return null;
+  const radius = outerRadius + 22;
+  const x = cx + radius * Math.cos(-midAngle * RADIAN);
+  const y = cy + radius * Math.sin(-midAngle * RADIAN);
+  const anchor = x > cx ? 'start' : 'end';
+  const MAX = 15;
+  const display = name.length > MAX ? name.slice(0, MAX) + '…' : name;
+  return (
+    <g>
+      <title>{`${name}: ${(percent * 100).toFixed(0)}%`}</title>
+      <text
+        x={x}
+        y={y}
+        textAnchor={anchor}
+        dominantBaseline="central"
+        fontSize={16}
+        fill="#374151"
+      >
+        {display} ({(percent * 100).toFixed(0)}%)
+      </text>
+    </g>
+  );
+}
+
 function TopicPieChart({ data }: { data: NlpPieChartData }) {
   const chartData = useMemo(() => {
     return Object.entries(data)
@@ -127,31 +160,31 @@ function TopicPieChart({ data }: { data: NlpPieChartData }) {
   }
 
   return (
-    <ResponsiveContainer width="100%" height={240}>
-      <PieChart>
-        <Pie
-          data={chartData}
-          cx="50%"
-          cy="50%"
-          innerRadius={50}
-          outerRadius={85}
-          paddingAngle={2}
-          dataKey="value"
-          label={({ name, percent }) => { const n = String(name ?? ''); return `${n.length > 12 ? n.slice(0, 12) + '…' : n} (${((percent ?? 0) * 100).toFixed(0)}%)`; }}
-          labelLine={{ strokeWidth: 1 }}
-        >
-          {chartData.map((_, i) => (
-            <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
-          ))}
-        </Pie>
-        <Tooltip formatter={(value) => [`${value} makale`, 'Sayı']} />
-        <Legend
-          layout="horizontal"
-          verticalAlign="bottom"
-          wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
-        />
-      </PieChart>
-    </ResponsiveContainer>
+    <div style={{ overflow: 'visible' }}>
+      <ResponsiveContainer width="100%" height={300}>
+        <PieChart margin={{ top: 30, right: 50, bottom: 30, left: 50 }}>
+          <Pie
+            data={chartData}
+            cx="50%"
+            cy="50%"
+            innerRadius={48}
+            outerRadius={78}
+            paddingAngle={2}
+            dataKey="value"
+            labelLine={{ strokeWidth: 1 }}
+            label={(props) => <PieLabel {...props} />}
+          >
+            {chartData.map((_, i) => (
+              <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+            ))}
+          </Pie>
+          <Tooltip
+            contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0' }}
+            formatter={(value, name) => [`${value} makale`, String(name)]}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -181,7 +214,7 @@ function NlpArticleRow({ article }: { article: NlpSearchResponse['articles'][num
   return (
     <div className="flex items-start justify-between gap-3 p-4 rounded-lg border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/30 transition-colors">
       <div className="flex-1 min-w-0">
-        <Link href={`/articles?article_id=${article.id}`}>
+        <Link href={`/articles/${article.id}`}>
           <h4 className="font-medium text-slate-900 leading-snug hover:text-emerald-700 transition-colors cursor-pointer line-clamp-2">
             {article.title}
           </h4>
@@ -201,7 +234,7 @@ function NlpArticleRow({ article }: { article: NlpSearchResponse['articles'][num
         )}
       </div>
       <Link
-        href={`/articles?article_id=${article.id}`}
+        href={`/articles/${article.id}`}
         className="flex-shrink-0 p-1.5 text-slate-400 hover:text-emerald-600 transition-colors"
       >
         <ExternalLink className="h-4 w-4" />
@@ -219,87 +252,119 @@ export default function AiAnalysisSection({
   pieLoading,
   scatterLoading,
 }: AiAnalysisSectionProps) {
+  const [collapsed, setCollapsed] = useState(false);
+  const [articlesCollapsed, setArticlesCollapsed] = useState(false);
+
   return (
-    <div className="space-y-6 mt-6">
-      {/* Section Heading */}
-      <div className="flex items-center gap-3">
-        <div className="h-8 w-1 bg-gradient-to-b from-violet-500 to-emerald-500 rounded-full" />
-        <div>
-          <h2 className="text-xl font-bold text-slate-900">AI Trend Analizi</h2>
-          <p className="text-sm text-slate-500">
-            &ldquo;{searchResult.query}&rdquo; sorgusu icin NLP analiz sonuclari
-          </p>
+    <div className="space-y-0 mt-6 rounded-xl border border-violet-100 bg-white shadow-sm overflow-hidden">
+      {/* Section Heading — always visible, acts as collapse toggle */}
+      <button
+        onClick={() => setCollapsed((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 px-5 py-4 hover:bg-violet-50/50 transition-colors cursor-pointer"
+      >
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-1 bg-gradient-to-b from-violet-500 to-emerald-500 rounded-full flex-shrink-0" />
+          <div className="text-left">
+            <h2 className="text-xl font-bold text-slate-900">AI Analizi</h2>
+            <p className="text-sm text-slate-500">
+              &ldquo;{searchResult.query}&rdquo; sorgusu için NLP analiz sonuçları
+            </p>
+          </div>
         </div>
-      </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className="text-sm text-violet-600 font-medium">
+            {collapsed ? 'Göster' : 'Gizle'}
+          </span>
+          {collapsed
+            ? <ChevronDown className="h-5 w-5 text-violet-500" />
+            : <ChevronUp className="h-5 w-5 text-violet-500" />
+          }
+        </div>
+      </button>
 
-      {/* 2x2 Grid: Cluster Info + 3 Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ClusterInfoCard data={searchResult} />
+      {/* Collapsible body */}
+      {!collapsed && (
+        <div className="px-5 pb-6 space-y-6 border-t border-violet-100">
+          {/* 2x2 Grid: Cluster Info + 3 Charts */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 pt-6">
+            <ClusterInfoCard data={searchResult} />
 
-        {/* Bar Chart */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <TrendingUp className="h-5 w-5 text-emerald-600" />
-              <CardTitle>Yayın Trendi</CardTitle>
-            </div>
-            <CardDescription>Tarih bazlı makale dağılımı</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {barLoading ? <ChartSkeleton /> : barData ? <YearlyBarChart data={barData} /> : <p className="text-sm text-slate-400 text-center py-8">Veri yüklenemedi</p>}
-          </CardContent>
-        </Card>
+            {/* Bar Chart */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5 text-emerald-600" />
+                  <CardTitle>Yayın Trendi</CardTitle>
+                </div>
+                <CardDescription>Tarih bazlı makale dağılımı</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {barLoading ? <ChartSkeleton /> : barData ? <YearlyBarChart data={barData} /> : <p className="text-sm text-slate-400 text-center py-8">Veri yüklenemedi</p>}
+              </CardContent>
+            </Card>
 
-        {/* Pie Chart */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Tags className="h-5 w-5 text-teal-600" />
-              <CardTitle>Konu Dağılımı</CardTitle>
-            </div>
-            <CardDescription>Anahtar kelime küme dağılımı</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {pieLoading ? <ChartSkeleton /> : pieData ? <TopicPieChart data={pieData} /> : <p className="text-sm text-slate-400 text-center py-8">Veri yüklenemedi</p>}
-          </CardContent>
-        </Card>
+            {/* Pie Chart */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Tags className="h-5 w-5 text-teal-600" />
+                  <CardTitle>Konu Dağılımı</CardTitle>
+                </div>
+                <CardDescription>Anahtar kelime küme dağılımı</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {pieLoading ? <ChartSkeleton /> : pieData ? <TopicPieChart data={pieData} /> : <p className="text-sm text-slate-400 text-center py-8">Veri yüklenemedi</p>}
+              </CardContent>
+            </Card>
 
-        {/* Scatter Plot */}
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Waypoints className="h-5 w-5 text-indigo-600" />
-              <CardTitle>Embedding Haritası</CardTitle>
-            </div>
-            <CardDescription>Anahtar kelimelerin 2D UMAP projeksiyonu</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {scatterLoading ? <ChartSkeleton /> : scatterData ? <EmbeddingScatter data={scatterData} /> : <p className="text-sm text-slate-400 text-center py-8">Veri yüklenemedi</p>}
-          </CardContent>
-        </Card>
-      </div>
+            {/* Scatter Plot */}
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <Waypoints className="h-5 w-5 text-indigo-600" />
+                  <CardTitle>Embedding Haritası</CardTitle>
+                </div>
+                <CardDescription>Anahtar kelimelerin 2D UMAP projeksiyonu</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {scatterLoading ? <ChartSkeleton /> : scatterData ? <EmbeddingScatter data={scatterData} /> : <p className="text-sm text-slate-400 text-center py-8">Veri yüklenemedi</p>}
+              </CardContent>
+            </Card>
+          </div>
 
-      {/* Matched Articles */}
-      {searchResult.articles.length > 0 && (
-        <Card>
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <FileText className="h-5 w-5 text-emerald-600" />
-                <CardTitle>Eşleşen Makaleler</CardTitle>
-              </div>
-              <Badge variant="success">{searchResult.articles.length} sonuç</Badge>
-            </div>
-            <CardDescription>NLP modelinin bulduğu en benzer makaleler</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {searchResult.articles.map((article) => (
-                <NlpArticleRow key={article.id} article={article} />
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+          {/* Matched Articles — nested collapsible */}
+          {searchResult.articles.length > 0 && (
+            <Card>
+              <CardHeader>
+                <div className="cursor-pointer select-none" onClick={() => setArticlesCollapsed((v) => !v)}>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FileText className="h-5 w-5 text-emerald-600" />
+                      <CardTitle>Eşleşen Makaleler</CardTitle>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="success">{searchResult.articles.length} sonuç</Badge>
+                      {articlesCollapsed
+                        ? <ChevronDown className="h-4 w-4 text-slate-400" />
+                        : <ChevronUp className="h-4 w-4 text-slate-400" />
+                      }
+                    </div>
+                  </div>
+                  <CardDescription>NLP modelinin bulduğu en benzer makaleler</CardDescription>
+                </div>
+              </CardHeader>
+              {!articlesCollapsed && (
+                <CardContent>
+                  <div className="space-y-3">
+                    {searchResult.articles.map((article) => (
+                      <NlpArticleRow key={article.id} article={article} />
+                    ))}
+                  </div>
+                </CardContent>
+              )}
+            </Card>
+          )}
+        </div>
       )}
     </div>
   );

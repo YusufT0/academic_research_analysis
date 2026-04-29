@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import {
   ArrowLeft, ExternalLink, Unlock, Star, TrendingUp, Target,
   Users, FileText, Calendar, Tag, Hash, Building2, Link2, BookOpen, Info,
@@ -118,7 +119,12 @@ export default function ArticleDetailPage() {
           <h1 className="text-2xl font-bold text-slate-900 leading-tight mb-3">{article.title}</h1>
 
           <div className="flex flex-wrap items-center gap-2 mb-3">
-            <span className="text-sm text-slate-600 font-medium">{article.journal_name}</span>
+            <Link
+              href={`/journals?journal_id=${article.journal_id}`}
+              className="text-sm text-slate-600 font-medium hover:text-emerald-700 hover:underline cursor-pointer transition-colors"
+            >
+              {article.journal_name}
+            </Link>
             {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
             <Badge variant={sourceBadgeVariant}>{sourceLabel}</Badge>
             {article.article_type && (
@@ -156,13 +162,14 @@ export default function ArticleDetailPage() {
           {article.authors.length > 0 && (
             <div className="flex flex-wrap gap-2 mt-2">
               {article.authors.map((author, i) => (
-                <span
+                <Link
                   key={i}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm rounded-full shadow-sm"
+                  href={`/authors/${encodeURIComponent(author)}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
                 >
-                  <span className="text-[10px] text-slate-400 font-mono">{i + 1}</span>
+                  <span className="text-[10px] text-emerald-500 font-mono">{i + 1}</span>
                   {author}
-                </span>
+                </Link>
               ))}
             </div>
           )}
