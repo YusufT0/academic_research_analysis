@@ -560,7 +560,6 @@ function ArticlesContent() {
   const [data, setData] = useState<PaginatedResponse<Article> | null>(null);
   const [loading, setLoading] = useState(true);
   const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
-  const [yearRangeLoaded, setYearRangeLoaded] = useState(false);
   const [filters, setFilters] = useState<ArticleFilters>({
     page: 1,
     page_size: 10,
@@ -573,11 +572,8 @@ function ArticlesContent() {
   useEffect(() => {
     getArticleYearRange().then((r) => {
       setYearRange({ min: r.min_year, max: r.max_year });
-      setFilters((prev) => ({ ...prev, year_min: r.min_year, year_max: r.max_year, include_no_date: true }));
-      setYearRangeLoaded(true);
-    }).catch(() => {
-      setYearRangeLoaded(true);
-    });
+      setFilters((prev) => ({ ...prev, year_min: r.min_year, year_max: r.max_year }));
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -593,7 +589,6 @@ function ArticlesContent() {
   }, [articleId]);
 
   useEffect(() => {
-    if (!yearRangeLoaded) return;
     async function fetchArticles() {
       setLoading(true);
       try {
@@ -606,7 +601,7 @@ function ArticlesContent() {
       }
     }
     fetchArticles();
-  }, [filters, yearRangeLoaded]);
+  }, [filters]);
 
   const handlePageChange = (newPage: number) => {
     setFilters((prev) => ({ ...prev, page: newPage }));
@@ -699,9 +694,9 @@ function ArticlesContent() {
                 </div>
               </div>
 
-              {/* Sağ yarı — yıl aralığı slider + no-date toggle */}
+              {/* Sağ yarı — yıl aralığı slider */}
               {yearRange && (
-                <div className="flex-1 flex flex-col justify-center gap-3">
+                <div className="flex-1 flex flex-col justify-center">
                   <YearRangeSlider
                     label="Yayın Yılı Aralığı"
                     min={yearRange.min}
@@ -711,15 +706,6 @@ function ArticlesContent() {
                       setFilters((prev) => ({ ...prev, year_min: min, year_max: max, page: 1 }))
                     }
                   />
-                  <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer"
-                      checked={filters.include_no_date ?? true}
-                      onChange={(e) => handleFilterChange('include_no_date', e.target.checked)}
-                    />
-                    <span className="text-sm text-slate-600">Tarihi olmayan makaleleri dahil et</span>
-                  </label>
                 </div>
               )}
             </div>
