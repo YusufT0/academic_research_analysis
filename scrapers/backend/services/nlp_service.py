@@ -564,7 +564,8 @@ class NLPService:
     async def assign_new_articles(
         self,
         model_version: Optional[str] = None,
-        min_abstract_length: int = 50
+        min_abstract_length: int = 50,
+        journal_ids: Optional[List[PydanticObjectId]] = None,
     ) -> Dict[str, Any]:
         """
         Incremental clustering: yeni scrape edilen (henüz embedding'i olmayan)
@@ -606,10 +607,13 @@ class NLPService:
 
         # 2. Fetch new articles: have abstract, ID not in existing embeddings
         logger.info("Querying for new (un-embedded) articles...")
-        new_articles = await Article.find({
+        article_query: Dict[str, Any] = {
             "abstract": {"$exists": True, "$ne": None},
-            "_id": {"$nin": existing_article_ids}
-        }).to_list()
+            "_id": {"$nin": existing_article_ids},
+        }
+        if journal_ids:
+            article_query["journal_id"] = {"$in": journal_ids}
+        new_articles = await Article.find(article_query).to_list()
 
         # Filter by abstract length
         valid_new = [
@@ -623,7 +627,10 @@ class NLPService:
                 "model_version": model_version,
                 "new_articles_found": 0,
                 "assigned": 0,
-                "status": "no_new_articles"
+                "noise": 0,
+                "total_embeddings_saved": 0,
+                "status": "no_new_articles",
+                "affected_clusters": [],
             }
 
         logger.info(f"Found {len(valid_new)} new articles to assign.")

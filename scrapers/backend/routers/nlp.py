@@ -4,7 +4,9 @@ NLP Router
 Clustering, embedding ve benzerlik araması endpoint'leri
 """
 
-from typing import Optional, List
+import asyncio
+import uuid
+from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
 
@@ -108,6 +110,153 @@ async def add_new_articles(
     except Exception as e:
         logger.error(f"Incremental training error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── In-memory task store for parallel journal analysis ──────────────────────
+_analysis_tasks: Dict[str, Dict[str, Any]] = {}
+
+
+def _make_step(status: str = "pending", message: str = "") -> Dict[str, Any]:
+    return {"status": status, "message": message}
+
+
+def _cleanup_tasks() -> None:
+    if len(_analysis_tasks) > 100:
+        done_keys = [k for k, v in _analysis_tasks.items() if v["status"] in ("done", "error")]
+        for k in done_keys[: len(done_keys) // 2]:
+            _analysis_tasks.pop(k, None)
+
+
+async def _run_journal_analysis(
+    task_id: str,
+    jid: Any,
+    model_version: Optional[str],
+    min_abstract_length: int,
+) -> None:
+    task = _analysis_tasks[task_id]
+
+    async def run_cluster_update() -> None:
+        step = task["steps"]["cluster_update"]
+        step["status"] = "running"
+        step["message"] = "Makaleler kümelerine atanıyor..."
+        try:
+            result = await nlp_service.assign_new_articles(
+                model_version=model_version,
+                min_abstract_length=min_abstract_length,
+                journal_ids=[jid],
+            )
+            result.setdefault("affected_clusters", [])
+            task["result"] = result
+            step["status"] = "done"
+            step["message"] = f"{result.get('assigned', 0)} makale atandı"
+        except Exception as exc:
+            step["status"] = "error"
+            step["message"] = str(exc)
+            logger.error(f"cluster_update step error: {exc}")
+
+    async def run_openalex() -> None:
+        step = task["steps"]["openalex"]
+        step["status"] = "running"
+        step["message"] = "OpenAlex atıf verileri güncelleniyor..."
+        try:
+            from database.models import Article
+            from backend.services.openalex.citation_service import citation_service as _cs
+            articles = await Article.find({"journal_id": jid}).to_list()
+            if articles:
+                updated = await _cs.update_articles_citations_bulk(articles)
+                step["status"] = "done"
+                step["message"] = f"{updated} makale güncellendi"
+            else:
+                step["status"] = "done"
+                step["message"] = "İşlenecek makale bulunamadı"
+        except Exception as exc:
+            step["status"] = "error"
+            step["message"] = str(exc)
+            logger.error(f"openalex step error: {exc}")
+
+    async def run_elasticsearch() -> None:
+        step = task["steps"]["elasticsearch"]
+        step["status"] = "running"
+        step["message"] = "Elasticsearch'e indexleniyor..."
+        try:
+            from database.models import Article
+            from backend.services.elasticsearch_service import elasticsearch_service as _es
+            articles = await Article.find({"journal_id": jid}).to_list()
+            if articles:
+                dicts = []
+                for a in articles:
+                    d = a.model_dump()
+                    d["id"] = str(a.id)
+                    if a.journal_id:
+                        d["journal_id"] = str(a.journal_id)
+                    if a.issue_id:
+                        d["issue_id"] = str(a.issue_id)
+                    dicts.append(d)
+                indexed = await _es.bulk_index(dicts)
+                step["status"] = "done"
+                step["message"] = f"{indexed} makale indexlendi"
+            else:
+                step["status"] = "done"
+                step["message"] = "İşlenecek makale bulunamadı"
+        except Exception as exc:
+            step["status"] = "error"
+            step["message"] = str(exc)
+            logger.error(f"elasticsearch step error: {exc}")
+
+    await asyncio.gather(run_cluster_update(), run_openalex(), run_elasticsearch())
+
+    all_statuses = [s["status"] for s in task["steps"].values()]
+    task["status"] = "done" if all(s != "error" for s in all_statuses) else "done_with_errors"
+
+
+class StartAnalysisResponse(BaseModel):
+    task_id: str
+    status: str
+
+
+class AnalysisProgressResponse(BaseModel):
+    task_id: str
+    status: str
+    steps: Dict[str, Dict[str, str]]
+    result: Optional[dict] = None
+    error: Optional[str] = None
+
+
+@router.post("/assign_for_journal", response_model=StartAnalysisResponse, summary="Belirtilen journal için paralel analiz başlat")
+async def assign_for_journal(
+    journal_id: str = Query(..., description="Hedef journal'ın MongoDB ObjectId'si"),
+    model_version: Optional[str] = Query(None),
+    min_abstract_length: int = Query(50),
+):
+    from beanie import PydanticObjectId as ObjId
+    try:
+        jid = ObjId(journal_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Geçersiz journal_id formatı")
+
+    _cleanup_tasks()
+    task_id = str(uuid.uuid4())
+    _analysis_tasks[task_id] = {
+        "task_id": task_id,
+        "status": "running",
+        "steps": {
+            "cluster_update": _make_step("pending", "Bekliyor..."),
+            "openalex": _make_step("pending", "Bekliyor..."),
+            "elasticsearch": _make_step("pending", "Bekliyor..."),
+        },
+        "result": None,
+        "error": None,
+    }
+    asyncio.create_task(_run_journal_analysis(task_id, jid, model_version, min_abstract_length))
+    return StartAnalysisResponse(task_id=task_id, status="started")
+
+
+@router.get("/analysis_progress/{task_id}", response_model=AnalysisProgressResponse, summary="Analiz görevi ilerleme durumu")
+async def get_analysis_progress(task_id: str):
+    task = _analysis_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Görev bulunamadı")
+    return AnalysisProgressResponse(**task)
 
 
 @router.post("/train", response_model=TrainResponse, summary="Yeni clustering modeli eğit")
