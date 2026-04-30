@@ -6,6 +6,7 @@ Clustering, embedding ve benzerlik araması endpoint'leri
 
 import asyncio
 import uuid
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, Field
@@ -222,6 +223,15 @@ class AnalysisProgressResponse(BaseModel):
     error: Optional[str] = None
 
 
+class ActiveJournalAnalysisResponse(BaseModel):
+    found: bool
+    task_id: Optional[str] = None
+    status: Optional[str] = None
+    journal_id: Optional[str] = None
+    model_version: Optional[str] = None
+    started_at: Optional[str] = None
+
+
 @router.post("/assign_for_journal", response_model=StartAnalysisResponse, summary="Belirtilen journal için paralel analiz başlat")
 async def assign_for_journal(
     journal_id: str = Query(..., description="Hedef journal'ın MongoDB ObjectId'si"),
@@ -234,11 +244,26 @@ async def assign_for_journal(
     except Exception:
         raise HTTPException(status_code=400, detail="Geçersiz journal_id formatı")
 
+    journal_id_str = str(jid)
+
+    # Aynı journal için halihazırda çalışan bir görev varsa onu döndür (idempotent davranış)
+    for task in _analysis_tasks.values():
+        if task.get("status") != "running":
+            continue
+        if task.get("journal_id") != journal_id_str:
+            continue
+        if model_version is not None and task.get("model_version") != model_version:
+            continue
+        return StartAnalysisResponse(task_id=task["task_id"], status="already_running")
+
     _cleanup_tasks()
     task_id = str(uuid.uuid4())
     _analysis_tasks[task_id] = {
         "task_id": task_id,
         "status": "running",
+        "journal_id": journal_id_str,
+        "model_version": model_version,
+        "started_at": datetime.now(timezone.utc).isoformat(),
         "steps": {
             "cluster_update": _make_step("pending", "Bekliyor..."),
             "openalex": _make_step("pending", "Bekliyor..."),
@@ -257,6 +282,46 @@ async def get_analysis_progress(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Görev bulunamadı")
     return AnalysisProgressResponse(**task)
+
+
+@router.get(
+    "/analysis_active_for_journal",
+    response_model=ActiveJournalAnalysisResponse,
+    summary="Journal için çalışan analiz görevini getir",
+)
+async def get_active_analysis_for_journal(
+    journal_id: str = Query(..., description="Hedef journal'ın MongoDB ObjectId'si"),
+    model_version: Optional[str] = Query(None),
+):
+    from beanie import PydanticObjectId as ObjId
+    try:
+        jid = str(ObjId(journal_id))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Geçersiz journal_id formatı")
+
+    running_tasks = []
+    for task in _analysis_tasks.values():
+        if task.get("status") != "running":
+            continue
+        if task.get("journal_id") != jid:
+            continue
+        if model_version is not None and task.get("model_version") != model_version:
+            continue
+        running_tasks.append(task)
+
+    if not running_tasks:
+        return ActiveJournalAnalysisResponse(found=False)
+
+    running_tasks.sort(key=lambda t: t.get("started_at") or "", reverse=True)
+    selected = running_tasks[0]
+    return ActiveJournalAnalysisResponse(
+        found=True,
+        task_id=selected.get("task_id"),
+        status=selected.get("status"),
+        journal_id=selected.get("journal_id"),
+        model_version=selected.get("model_version"),
+        started_at=selected.get("started_at"),
+    )
 
 
 @router.post("/train", response_model=TrainResponse, summary="Yeni clustering modeli eğit")

@@ -123,6 +123,9 @@ export interface ScraperStatus {
   progress_percent: number;
   last_error: string | null;
   is_single_journal_mode?: boolean;
+  single_journal_url?: string | null;
+  single_journal_max_articles?: number | null;
+  single_journal_depth?: number | null;
 }
 
 export interface AllScrapersStatus {

@@ -31,6 +31,7 @@ import {
   stopSingleJournalScraper,
   startJournalAnalysis,
   getAnalysisProgress,
+  getActiveJournalAnalysisForJournal,
   getJournalTopicTrends,
   listClusters,
   type JournalExistsResponse,
@@ -572,6 +573,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
   });
   const [isStopping, setIsStopping] = useState(false);
+  const [isQueueExpanded, setIsQueueExpanded] = useState(false);
 
   const pollRef          = useRef<NodeJS.Timeout | null>(null);
   const wsRef            = useRef<WebSocket | null>(null);
@@ -717,7 +719,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowState]);
 
-  async function runAnalysis() {
+  async function runAnalysis(existingTaskId?: string, restoredJournalName?: string) {
     if (!modelVersion) {
       setErrorMsg('NLP modeli bulunamadı. Önce bir model eğitin.');
       setFlowState('error');
@@ -739,16 +741,16 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
         return;
       }
       const journalId   = existsRes.journal.id;
-      const journalName = existsRes.journal.name;
+      const journalName = restoredJournalName ?? existsRes.journal.name;
 
       // 2. Start parallel analysis task
-      const { task_id } = await startJournalAnalysis(journalId, modelVersion);
+      const taskId = existingTaskId ?? (await startJournalAnalysis(journalId, modelVersion)).task_id;
 
       // 3. Poll until done
       const finalTask = await new Promise<AnalysisTaskProgress>((resolve, reject) => {
         analysisPollRef.current = setInterval(async () => {
           try {
-            const progress = await getAnalysisProgress(task_id);
+            const progress = await getAnalysisProgress(taskId);
             setAnalysisSteps(progress.steps as Record<string, AnalysisStep>);
             if (progress.status === 'done' || progress.status === 'done_with_errors') {
               clearInterval(analysisPollRef.current!);
@@ -780,7 +782,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
 
       const [trendsRes, clustersRes] = await Promise.all([
         fetchTrendsWithRetry(journalName),
-        listClusters(modelVersion, 'all', undefined),
+        listClusters(modelVersion, 'journal', journalName),
       ]);
 
       setFlowState('done');
@@ -853,6 +855,98 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     }
   }, [backendValidation, isStopping]);
 
+  // Sayfa yenilenince aktif tekil scrape/analiz akışını backend'den geri yükle.
+  useEffect(() => {
+    let cancelled = false;
+
+    const resume = async () => {
+      try {
+        const scraperTypes = ['ieee', 'sciencedirect', 'acm'] as const;
+        const statuses = await Promise.all(
+          scraperTypes.map(async (scraperType) => ({
+            scraperType,
+            status: await getSingleJournalScraperStatus(scraperType) as ScraperStatus,
+          })),
+        );
+        if (cancelled) return;
+
+        const activeRunning = statuses.find(({ status }) =>
+          status.is_single_journal_mode
+          && ['starting', 'running', 'paused'].includes(status.status)
+          && !!status.single_journal_url,
+        );
+        const activeCompleted = statuses.find(({ status }) =>
+          status.is_single_journal_mode
+          && status.status === 'completed'
+          && !!status.single_journal_url,
+        );
+
+        const active = activeRunning ?? activeCompleted;
+        if (!active) return;
+
+        const resumeUrl = (active.status.single_journal_url ?? '').trim();
+        if (!resumeUrl) return;
+
+        const { scraperType, status } = active;
+        setUrl(resumeUrl);
+        if (typeof status.single_journal_max_articles === 'number' && status.single_journal_max_articles > 0) {
+          setMaxArticles(status.single_journal_max_articles);
+        }
+        if (typeof status.single_journal_depth === 'number' && status.single_journal_depth > 0) {
+          setDepth(status.single_journal_depth);
+        }
+        setBackendValidation({ valid: true, scraper_type: scraperType, message: 'Aktif işlem backend durumundan geri yüklendi.' });
+        lastValidatedUrlRef.current = resumeUrl;
+
+        setScraperStatus(status);
+
+        if (['starting', 'running', 'paused'].includes(status.status)) {
+          setFlowState('scraping');
+          startTracking(scraperType);
+          return;
+        }
+
+        if (status.status === 'completed') {
+          scrapeDoneRef.current = true;
+          const existsRes = await checkJournalExists(resumeUrl);
+          if (cancelled) return;
+
+          if (existsRes.exists && existsRes.journal) {
+            const activeAnalysis = await getActiveJournalAnalysisForJournal(existsRes.journal.id, modelVersion);
+            if (cancelled) return;
+
+            if (activeAnalysis.found && activeAnalysis.task_id) {
+              setFlowState('analyzing');
+              runAnalysis(activeAnalysis.task_id, existsRes.journal.name);
+              return;
+            }
+          }
+
+          setFlowState('scrape_done');
+          return;
+        }
+
+        if (status.status === 'error') {
+          setFlowState('error');
+          setErrorMsg('Scraping sırasında hata oluştu.');
+          return;
+        }
+
+        setFlowState('idle');
+      } catch {
+        if (cancelled) return;
+        setFlowState('idle');
+      }
+    };
+
+    resume();
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelVersion, startTracking]);
+
   // Unified progress: scraping(issue + article) + analysis(openalex/elasticsearch/cluster)
   const scrapeProgressRatio = (() => {
     if (!scraperStatus) return 0;
@@ -863,7 +957,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     // Current issue index is 1-based while running.
     const completedIssues = Math.max(0, scraperStatus.current_issue_index - 1);
     const currentIssueArticleRatio = scraperStatus.total_articles > 0
-      ? Math.max(0, Math.min(1, scraperStatus.current_article_index / scraperStatus.total_articles))
+      ? Math.max(0, Math.min(1, (scraperStatus.current_article_index - 1) / scraperStatus.total_articles))
       : 0;
 
     const issueEquivalentProgress = completedIssues + currentIssueArticleRatio;
@@ -903,7 +997,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
   const liveIssuesScraped = (() => {
     if (!scraperStatus) return 0;
     const completedIssues = scraperStatus.completed_issues?.length ?? 0;
-    return Math.max(scraperStatus.issues_scraped, completedIssues);
+    const fromIndex = scraperStatus.total_issues > 0
+      ? Math.max(0, scraperStatus.current_issue_index - 1)
+      : 0;
+    return Math.max(scraperStatus.issues_scraped, completedIssues, fromIndex);
   })();
 
   const liveArticlesScraped = (() => {
@@ -913,7 +1010,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       0,
     );
     const currentIssueProgress = scraperStatus.total_articles > 0
-      ? Math.max(0, Math.min(scraperStatus.current_article_index, scraperStatus.total_articles))
+      ? Math.max(0, Math.min(scraperStatus.current_article_index - 1, scraperStatus.total_articles))
       : 0;
     return Math.max(scraperStatus.articles_scraped, completedFromIssues + currentIssueProgress);
   })();
@@ -1215,6 +1312,23 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
                 <p className="text-xs text-slate-500">{stat.label}</p>
               </div>
             ))}
+          </div>
+          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+            <button
+              onClick={() => setIsQueueExpanded((v) => !v)}
+              className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 transition-colors"
+            >
+              <span className="text-sm font-medium text-slate-700">Dergi Kuyruğu</span>
+              <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform duration-300 ${isQueueExpanded ? 'rotate-180' : ''}`} />
+            </button>
+            {isQueueExpanded && (
+              <div className="border-t border-slate-200 p-3">
+                <InlineJournalQueue
+                  scraper={scraperStatus}
+                  journalNameOverride={existsInfo?.journal?.name}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}

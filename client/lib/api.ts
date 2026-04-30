@@ -410,6 +410,15 @@ export interface AnalysisTaskProgress {
   } | null;
 }
 
+export interface ActiveJournalAnalysisResponse {
+  found: boolean;
+  task_id?: string;
+  status?: string;
+  journal_id?: string;
+  model_version?: string | null;
+  started_at?: string;
+}
+
 export async function startJournalAnalysis(
   journalId: string,
   modelVersion?: string | null,
@@ -421,6 +430,15 @@ export async function startJournalAnalysis(
 
 export async function getAnalysisProgress(taskId: string): Promise<AnalysisTaskProgress> {
   return fetchApi<AnalysisTaskProgress>(`/nlp/analysis_progress/${taskId}`);
+}
+
+export async function getActiveJournalAnalysisForJournal(
+  journalId: string,
+  modelVersion?: string | null,
+): Promise<ActiveJournalAnalysisResponse> {
+  const params = new URLSearchParams({ journal_id: journalId });
+  if (modelVersion) params.set('model_version', modelVersion);
+  return fetchApi<ActiveJournalAnalysisResponse>(`/nlp/analysis_active_for_journal?${params.toString()}`);
 }
 
 

@@ -128,6 +128,9 @@ class ScraperProgress:
         # işlemek için başlatılmış demektir. Frontend bunu kullanarak
         # ana scraper kartını "meşgul" olarak göstermez.
         self.is_single_journal_mode: bool = False
+        self.single_journal_url: Optional[str] = None
+        self.single_journal_max_articles: Optional[int] = None
+        self.single_journal_depth: Optional[int] = None
         
     @property
     def status(self) -> ScraperStatus:
@@ -235,6 +238,9 @@ class ScraperProgress:
             "progress_percent": self.progress_percent,
             "last_error": self.last_error,
             "is_single_journal_mode": self.is_single_journal_mode,
+            "single_journal_url": self.single_journal_url,
+            "single_journal_max_articles": self.single_journal_max_articles,
+            "single_journal_depth": self.single_journal_depth,
         }
     
     def reset(self):
@@ -263,6 +269,9 @@ class ScraperProgress:
         self.last_activity = None
         self.last_error = None
         self.logs = []
+        self.single_journal_url = None
+        self.single_journal_max_articles = None
+        self.single_journal_depth = None
         # Not: is_single_journal_mode burada sıfırlanmaz —
         # thread fonksiyonu override varlığına göre bunu yönetir.
         
@@ -398,6 +407,11 @@ class ScraperManager:
         # Round Robin State
         self._round_robin_future: Optional[concurrent.futures.Future] = None
         self._round_robin_stop_flag = threading.Event()
+
+        # Tekil journal restore context'i (refresh sonrası frontend'in aktif işi bulabilmesi için)
+        self._ieee_single_journal_context: Optional[Dict[str, Any]] = None
+        self._sd_single_journal_context: Optional[Dict[str, Any]] = None
+        self._acm_single_journal_context: Optional[Dict[str, Any]] = None
     
     async def initialize(self):
         """Manager'ı initialize et"""
@@ -502,6 +516,17 @@ class ScraperManager:
         """
         url = url.strip()
 
+        progress_map = {
+            "ieee": self.ieee_progress,
+            "sciencedirect": self.sciencedirect_progress,
+            "acm": self.acm_progress,
+        }
+        progress = progress_map.get(scraper_type)
+        if progress is not None:
+            progress.single_journal_url = url
+            progress.single_journal_max_articles = max_articles
+            progress.single_journal_depth = depth
+
         # Platforma göre tek-elemanlı journal dicts oluştur
         if scraper_type == "ieee":
             # IEEE'de journal dict: {name, url, punumber}
@@ -517,6 +542,11 @@ class ScraperManager:
                 "resolve_name_from_url": True,
             }]
             self._ieee_single_journal_override = single_journal_list
+            self._ieee_single_journal_context = {
+                "url": url,
+                "max_articles": max_articles,
+                "depth": depth,
+            }
             return await self.start_ieee(
                 headless=headless,
                 max_articles=max_articles,
@@ -535,6 +565,11 @@ class ScraperManager:
                 "resolve_name_from_url": True,
             }]
             self._sd_single_journal_override = single_journal_list
+            self._sd_single_journal_context = {
+                "url": url,
+                "max_articles": max_articles,
+                "depth": depth,
+            }
             return await self.start_sciencedirect(
                 headless=headless,
                 max_articles=max_articles,
@@ -553,6 +588,11 @@ class ScraperManager:
                 "resolve_name_from_url": True,
             }]
             self._acm_single_journal_override = single_journal_list
+            self._acm_single_journal_context = {
+                "url": url,
+                "max_articles": max_articles,
+                "depth": depth,
+            }
             return await self.start_acm(
                 headless=headless,
                 max_articles=max_articles,
@@ -600,6 +640,10 @@ class ScraperManager:
         progress.reset()
         # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
         progress.is_single_journal_mode = bool(getattr(self, '_ieee_single_journal_override', None))
+        if progress.is_single_journal_mode and self._ieee_single_journal_context:
+            progress.single_journal_url = self._ieee_single_journal_context.get("url")
+            progress.single_journal_max_articles = self._ieee_single_journal_context.get("max_articles")
+            progress.single_journal_depth = self._ieee_single_journal_context.get("depth")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "IEEE scraper başlatılıyor (ayrı thread)...")
@@ -1086,6 +1130,10 @@ class ScraperManager:
         progress.reset()
         # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
         progress.is_single_journal_mode = bool(getattr(self, '_sd_single_journal_override', None))
+        if progress.is_single_journal_mode and self._sd_single_journal_context:
+            progress.single_journal_url = self._sd_single_journal_context.get("url")
+            progress.single_journal_max_articles = self._sd_single_journal_context.get("max_articles")
+            progress.single_journal_depth = self._sd_single_journal_context.get("depth")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "ScienceDirect scraper başlatılıyor (ayrı thread)...")
@@ -1571,6 +1619,10 @@ class ScraperManager:
         progress.reset()
         # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
         progress.is_single_journal_mode = bool(getattr(self, '_acm_single_journal_override', None))
+        if progress.is_single_journal_mode and self._acm_single_journal_context:
+            progress.single_journal_url = self._acm_single_journal_context.get("url")
+            progress.single_journal_max_articles = self._acm_single_journal_context.get("max_articles")
+            progress.single_journal_depth = self._acm_single_journal_context.get("depth")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "ACM scraper başlatılıyor (ayrı thread)...")
