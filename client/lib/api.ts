@@ -134,7 +134,6 @@ export interface ArticleFilters {
   publication_year?: number;
   year_min?: number;
   year_max?: number;
-  include_no_date?: boolean;
   open_access?: boolean;
   article_type?: string;
   has_doi?: boolean;
@@ -155,7 +154,6 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.publication_year) params.set('publication_year', filters.publication_year.toString());
   if (filters.year_min !== undefined) params.set('year_min', filters.year_min.toString());
   if (filters.year_max !== undefined) params.set('year_max', filters.year_max.toString());
-  if (filters.include_no_date !== undefined) params.set('include_no_date', filters.include_no_date.toString());
   if (filters.open_access !== undefined) params.set('open_access', filters.open_access.toString());
   if (filters.article_type) params.set('article_type', filters.article_type);
   if (filters.has_doi !== undefined) params.set('has_doi', filters.has_doi.toString());
@@ -381,6 +379,10 @@ export async function getSingleJournalScraperStatus(scraperType: string) {
   return fetchApi(`/scrapers/journal/status?scraper_type=${scraperType}`);
 }
 
+export async function stopSingleJournalScraper(scraperType: string): Promise<{ success: boolean }> {
+  return fetchApi<{ success: boolean }>(`/scrapers/journal/stop?scraper_type=${scraperType}`, { method: 'POST' });
+}
+
 export interface AnalysisStep {
   status: 'pending' | 'running' | 'done' | 'error';
   message: string;
@@ -389,6 +391,7 @@ export interface AnalysisStep {
 export interface AnalysisTaskProgress {
   task_id: string;
   status: 'running' | 'done' | 'done_with_errors' | 'error';
+  error?: string;
   steps: {
     cluster_update: AnalysisStep;
     openalex: AnalysisStep;
@@ -403,7 +406,6 @@ export interface AnalysisTaskProgress {
     status: string;
     affected_clusters: { cluster_id: number; topic_tag: string; article_count: number }[];
   } | null;
-  error: string | null;
 }
 
 export async function startJournalAnalysis(
@@ -417,10 +419,6 @@ export async function startJournalAnalysis(
 
 export async function getAnalysisProgress(taskId: string): Promise<AnalysisTaskProgress> {
   return fetchApi<AnalysisTaskProgress>(`/nlp/analysis_progress/${taskId}`);
-}
-
-export async function stopSingleJournalScraper(scraperType: string): Promise<{ success: boolean }> {
-  return fetchApi<{ success: boolean }>(`/scrapers/journal/stop?scraper_type=${scraperType}`, { method: 'POST' });
 }
 
 

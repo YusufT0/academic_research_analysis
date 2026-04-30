@@ -577,9 +577,13 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
   const wsRef            = useRef<WebSocket | null>(null);
   const pingRef          = useRef<NodeJS.Timeout | null>(null);
   const analysisPollRef  = useRef<NodeJS.Timeout | null>(null);
+  // stopTracking() gibi "bilerek kapatma" durumlarında reconnect'i engellemek için
+  const shouldReconnectRef = useRef(false);
   const scrapeDoneRef    = useRef(false);
   const stopRequestedRef = useRef(false);
   const displayedProgressRef = useRef(0);
+  /** Kontrol Et sonrası URL; kullanıcı metni düzenlemedikçe sarı/yeşil paneller sıfırlanmaz */
+  const lastValidatedUrlRef = useRef<string | null>(null);
 
   useEffect(() => { setFrontendPlatform(detectPlatformFrontend(url)); }, [url]);
 
@@ -593,8 +597,14 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
   }, []);
 
   const stopTracking = useCallback(() => {
+    shouldReconnectRef.current = false;
     if (pingRef.current)  { clearInterval(pingRef.current);  pingRef.current  = null; }
-    if (wsRef.current)    { wsRef.current.close();            wsRef.current    = null; }
+    if (wsRef.current)    {
+      // Intentional close → onclose içindeki reconnect'i tetiklemesin
+      wsRef.current.onclose = null;
+      wsRef.current.close();
+      wsRef.current = null;
+    }
     if (pollRef.current)  { clearInterval(pollRef.current);   pollRef.current  = null; }
   }, []);
 
@@ -615,6 +625,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       openalex:       { status: 'pending', message: 'Bekliyor...' },
       elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
     });
+    lastValidatedUrlRef.current = null;
   }, [stopTracking]);
 
   // WebSocket + polling scraper tracking
@@ -623,9 +634,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     const wsBase  = API_URL.replace('/api/v1', '').replace('http://', 'ws://').replace('https://', 'wss://');
     const wsUrl   = `${wsBase}/ws/scrapers/events?scrapers=${scraperType}`;
     let destroyed = false;
+    shouldReconnectRef.current = true;
 
     const connect = () => {
-      if (destroyed) return;
+      if (destroyed || !shouldReconnectRef.current) return;
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen = () => {
@@ -662,7 +674,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       };
       ws.onclose = () => {
         if (pingRef.current) clearInterval(pingRef.current);
-        if (!destroyed) setTimeout(connect, 5000);
+        if (!destroyed && shouldReconnectRef.current) setTimeout(connect, 5000);
       };
     };
     connect();
@@ -692,6 +704,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
 
     return () => {
       destroyed = true;
+      shouldReconnectRef.current = false;
       stopTracking();
     };
   }, [stopTracking]);
@@ -792,6 +805,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     setErrorMsg(null);
     setBackendValidation(null);
     setExistsInfo(null);
+    lastValidatedUrlRef.current = null;
     try {
       const validation = await validateJournalUrl(trimmedUrl);
       setBackendValidation(validation);
@@ -802,6 +816,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       }
       const existsResult = await checkJournalExists(trimmedUrl);
       setExistsInfo(existsResult);
+      lastValidatedUrlRef.current = trimmedUrl;
       setFlowState(existsResult.exists ? 'exists_prompt' : 'confirmed');
     } catch {
       setErrorMsg('Bağlantı hatası. Backend çalışıyor mu?');
@@ -925,8 +940,20 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
             type="url"
             value={url}
             onChange={(e) => {
-              setUrl(e.target.value);
-              if (!['idle', 'scraping', 'scrape_done', 'analyzing', 'done'].includes(flowState)) resetFlow();
+              const next = e.target.value;
+              setUrl(next);
+              const trimmed = next.trim();
+              // Aktif scrape / analiz sırasında URL düzenlemesini görmezden gel
+              if (['scraping', 'scrape_done', 'analyzing', 'done', 'validating'].includes(flowState)) return;
+              // Kontrol Et sonrası: yalnızca URL gerçekten değiştiğinde sıfırla (aksi halde satır içi yazım panelleri titrer)
+              if (flowState === 'exists_prompt' || flowState === 'confirmed') {
+                if (lastValidatedUrlRef.current !== null && trimmed !== lastValidatedUrlRef.current) {
+                  resetFlow();
+                }
+                return;
+              }
+              if (['idle'].includes(flowState)) return;
+              resetFlow();
             }}
             onKeyDown={(e) => { if (e.key === 'Enter' && canCheck) handleCheck(); }}
             disabled={isBusy}

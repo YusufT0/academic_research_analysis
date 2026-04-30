@@ -11,7 +11,6 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import { Badge } from '@/components/ui/Badge';
 import { getArticleStats, getCitationStats, getArticles, getGeneralStats } from '@/lib/api';
 import type { ArticleStats, CitationStats, Article, GeneralStats } from '@/lib/types';
-import { TopicTrendsSection } from './trends/TopicTrendsSection';
 import { CitationsSection } from './trends/CitationsSection';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -302,9 +301,6 @@ export default function OverviewPage() {
           </Card>
         </div>
       )}
-
-      {/* Konu Trend Analizi — stats'ın hemen altında */}
-      <TopicTrendsSection />
 
       {/* Scraper Durumu + Son Makaleler */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
