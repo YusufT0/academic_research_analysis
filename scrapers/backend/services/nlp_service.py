@@ -7,7 +7,7 @@ import re
 import joblib
 # import pickle
 from datetime import datetime
-from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Union
+from typing import Optional, List, Tuple, Dict, Any, TYPE_CHECKING, Union, Set
 from pymongo import UpdateOne
 from beanie import PydanticObjectId
 from collections import Counter
@@ -564,7 +564,8 @@ class NLPService:
     async def assign_new_articles(
         self,
         model_version: Optional[str] = None,
-        min_abstract_length: int = 50
+        min_abstract_length: int = 50,
+        journal_ids: Optional[List[PydanticObjectId]] = None,
     ) -> Dict[str, Any]:
         """
         Incremental clustering: yeni scrape edilen (henüz embedding'i olmayan)
@@ -606,10 +607,13 @@ class NLPService:
 
         # 2. Fetch new articles: have abstract, ID not in existing embeddings
         logger.info("Querying for new (un-embedded) articles...")
-        new_articles = await Article.find({
+        article_query: Dict[str, Any] = {
             "abstract": {"$exists": True, "$ne": None},
-            "_id": {"$nin": existing_article_ids}
-        }).to_list()
+            "_id": {"$nin": existing_article_ids},
+        }
+        if journal_ids:
+            article_query["journal_id"] = {"$in": journal_ids}
+        new_articles = await Article.find(article_query).to_list()
 
         # Filter by abstract length
         valid_new = [
@@ -623,7 +627,10 @@ class NLPService:
                 "model_version": model_version,
                 "new_articles_found": 0,
                 "assigned": 0,
-                "status": "no_new_articles"
+                "noise": 0,
+                "total_embeddings_saved": 0,
+                "status": "no_new_articles",
+                "affected_clusters": [],
             }
 
         logger.info(f"Found {len(valid_new)} new articles to assign.")
@@ -687,7 +694,10 @@ class NLPService:
                 "model_version": model_version,
                 "new_articles_found": len(valid_new),
                 "assigned": 0,
-                "status": "no_valid_articles_after_cleaning"
+                "noise": 0,
+                "total_embeddings_saved": 0,
+                "status": "no_valid_articles_after_cleaning",
+                "affected_clusters": [],
             }
 
         # 5. Generate full embeddings
@@ -762,6 +772,26 @@ class NLPService:
 
         logger.success(f"Updated {updated_count} cluster documents.")
 
+        # Collect affected cluster metadata for caller to highlight
+        affected_clusters = []
+        for cid in cluster_updates.keys():
+            if cid == -1:
+                continue
+            doc = await Cluster.find_one({
+                "cluster_id": cid,
+                "model_version": model_version,
+                "cluster_type": "all",
+            })
+            if doc:
+                tag = self._resolve_cluster_topic_tag(doc) or (
+                    doc.top_keywords[0] if doc.top_keywords else f"Cluster {doc.cluster_id}"
+                )
+                affected_clusters.append({
+                    "cluster_id": doc.cluster_id,
+                    "topic_tag": tag,
+                    "article_count": doc.article_count,
+                })
+
         # Refresh cache
         await self._load_cache(model_version)
 
@@ -773,7 +803,8 @@ class NLPService:
             "assigned": n_assigned,
             "noise": n_noise,
             "total_embeddings_saved": len(embedding_docs),
-            "status": "completed"
+            "status": "completed",
+            "affected_clusters": affected_clusters,
         }
 
     async def _create_cluster_documents(
@@ -1003,15 +1034,33 @@ class NLPService:
            
         logger.debug(f"Sample embedding: {article_embeddings[0]}")
         return 0
-    async def _generate_trends_from_clusters(self, clusters: list, model_version: str, top_n: int = None):
+    async def _generate_trends_from_clusters(
+        self,
+        clusters: list,
+        model_version: str,
+        top_n: int = None,
+        allowed_article_ids: Optional[Set[PydanticObjectId]] = None,
+    ):
         if not clusters:
             return {"graph_data": [], "clusters": []}
+
+        allowed_ids = set(allowed_article_ids) if allowed_article_ids else None
 
         # 1. Fetch all embeddings once
         all_article_ids = set()
         for cluster in clusters:
-            if cluster.cluster_id != -1:  
+            if cluster.cluster_id == -1:
+                continue
+
+            if allowed_ids is None:
                 all_article_ids.update(cluster.article_ids)
+            else:
+                all_article_ids.update(
+                    art_id for art_id in cluster.article_ids if art_id in allowed_ids
+                )
+
+        if not all_article_ids:
+            return {"graph_data": [], "clusters": []}
 
         embeddings_list = await ArticleEmbedding.find({
             "article_id": {"$in": list(all_article_ids)},
@@ -1037,9 +1086,14 @@ class NLPService:
                 continue
             raw_keywords = []
             cluster_dates = []
+            matched_article_count = 0
 
             for art_id in cluster.article_ids:
+                if allowed_ids is not None and art_id not in allowed_ids:
+                    continue
+
                 if art_id in embedding_map:
+                    matched_article_count += 1
                     raw_keywords.extend(embedding_map[art_id]["keywords"])
                     
                     # Extract the year for the X-axis (assuming dates are strings). 
@@ -1047,6 +1101,9 @@ class NLPService:
                     raw_date = embedding_map[art_id]["date"]
                     year = str(raw_date)[:7] if raw_date else "Unknown"
                     cluster_dates.append(year)
+
+            if matched_article_count == 0:
+                continue
             
             unique_keywords = list(set(raw_keywords))[:20] 
 
@@ -1064,7 +1121,7 @@ class NLPService:
             cluster_summaries.append({
                 "cluster_id": cluster.cluster_id,
                 "topic_tag": topic_tag,
-                "article_count": len(cluster.article_ids)
+                "article_count": matched_article_count
             })
 
         # 5. Format the data for the frontend graph (X/Y axis friendly)
@@ -1118,18 +1175,52 @@ class NLPService:
         if not journal_oid:
             return []
 
-        # group_id is stored as ObjectId in DB (some older docs may be str)
+        # Incremental assignment currently updates only cluster_type="all" documents.
+        # Derive journal trends from those clusters by intersecting journal article IDs.
+        journal_embeddings = await ArticleEmbedding.find({
+            "model_version": model_version,
+            "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
+        }).to_list()
+
+        journal_article_ids = {emb.article_id for emb in journal_embeddings}
+        if not journal_article_ids:
+            logger.warning(
+                f"get_clusters_by_journal: no embeddings found for journal='{journal_name}' and model_version='{model_version}'"
+            )
+            return []
+
         clusters = await Cluster.find({
-            "group_id": {"$in": [journal_oid, str(journal_oid)]},
-            "cluster_type": "journal",
-            "model_version": model_version
+            "cluster_type": "all",
+            "model_version": model_version,
+            "cluster_id": {"$ne": -1},
+            "article_ids": {"$in": list(journal_article_ids)},
         }).to_list()
 
         return clusters
     # For Journals
     async def get_journal_topic_trends(self, journal_name: str, model_version: str, top_n: int = None):
+        journal_oid = await self._resolve_journal_group_id(journal_name)
+        if not journal_oid:
+            return {"graph_data": [], "clusters": []}
+
+        journal_embeddings = await ArticleEmbedding.find({
+            "model_version": model_version,
+            "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
+        }).to_list()
+        journal_article_ids = {emb.article_id for emb in journal_embeddings}
+        if not journal_article_ids:
+            logger.warning(
+                f"get_journal_topic_trends: no embeddings found for journal='{journal_name}' and model_version='{model_version}'"
+            )
+            return {"graph_data": [], "clusters": []}
+
         clusters = await self.get_clusters_by_journal(journal_name, model_version)
-        return await self._generate_trends_from_clusters(clusters, model_version, top_n=top_n)
+        return await self._generate_trends_from_clusters(
+            clusters,
+            model_version,
+            top_n=top_n,
+            allowed_article_ids=journal_article_ids,
+        )
 
     # For Publishers
     async def get_publisher_topic_trends(self, publisher_name: str, model_version: str, top_n: int = None):

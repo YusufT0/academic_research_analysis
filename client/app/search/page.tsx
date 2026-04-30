@@ -1,6 +1,5 @@
 'use client';
 
-import { Suspense } from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
@@ -11,7 +10,6 @@ import { Button } from '@/components/ui/Button';
 import { elasticSearch, getSearchSuggestions, searchArticles, nlpSearch, getNlpBarChartInput, getNlpPieChartInput, getNlpScatterChartInput, getNlpStatus, getArticle } from '@/lib/api';
 import type { ElasticSearchResult, ElasticSearchHit, SearchSuggestion, SearchResult, NlpSearchResponse, NlpBarChartData, NlpPieChartData, NlpScatterPoint, Article } from '@/lib/types';
 import AiAnalysisSection from './AiAnalysisSection';
-import { TopicTrendsSection } from '../trends/TopicTrendsSection';
 
 // ==================== Helpers ====================
 
@@ -65,14 +63,6 @@ const formatSourceName = (key: string) => {
 // ==================== Main Component ====================
 
 export default function SearchPage() {
-  return (
-    <Suspense fallback={null}>
-      <SearchPageInner />
-    </Suspense>
-  );
-}
-
-function SearchPageInner() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
@@ -309,9 +299,6 @@ function SearchPageInner() {
           {useElastic ? 'Elasticsearch' : 'MongoDB'}
         </button>
       </div>
-
-      {/* Topic Trends Section */}
-      <TopicTrendsSection collapsible />
 
       {/* Search Form */}
       <Card>

@@ -10,8 +10,6 @@ import {
   Tooltip,
 } from 'recharts';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
-import { ChevronDown, ChevronUp } from 'lucide-react';
-import { UrlAnalysisTab, type UrlAnalysisResult } from './UrlAnalysisTab';
 import {
   getNlpStatus,
   getAllTopicTrends,
@@ -24,6 +22,7 @@ import {
 } from '@/lib/api';
 import type { TopicTrendsData, TopicCluster, NlpStatus } from '@/lib/types';
 import Link from 'next/link';
+import { UrlAnalysisTab, type UrlAnalysisResult } from './UrlAnalysisTab';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -44,7 +43,7 @@ const PUBLISHERS = [
 
 const CLUSTER_PAGE_SIZE = 20;
 
-type Mode = 'all' | 'journal' | 'publisher';
+type Mode = 'all' | 'journal' | 'publisher' | 'url';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -84,19 +83,14 @@ function CustomTooltip({
 
 // ─── Component ───────────────────────────────────────────────────────────────
 
-export function TopicTrendsSection({ collapsible = false }: { collapsible?: boolean }) {
-  // ── Collapsible ──
-  const [collapsed, setCollapsed] = useState(false);
-
-  // ── Active tab ──
-  const [topTab, setTopTab] = useState<'trend' | 'url'>('trend');
-
+export function TopicTrendsSection() {
   // ── Core state ──
   const [mode, setMode] = useState<Mode>('all');
   const [nameInput, setNameInput] = useState('');
   const [journalSuggestions, setJournalSuggestions] = useState<string[]>([]);
   const [showJournalSuggestions, setShowJournalSuggestions] = useState(false);
   const journalInputRef = useRef<HTMLDivElement>(null);
+  const suppressSuggestRef = useRef(false);
   const [submittedName, setSubmittedName] = useState('');
 
   // ── NLP model ──
@@ -129,6 +123,9 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
   const [zoomStart, setZoomStart] = useState(0);
   const [zoomEnd, setZoomEnd] = useState<number | null>(null);
 
+  // ── Journal name for url-mode (set after URL analysis completes) ──
+  const [urlJournalName, setUrlJournalName] = useState<string>('');
+
   // ── Cluster article panel ──
   type ClusterArticle = { id: string; title: string; doi?: string; url?: string; publication_date?: string };
   const [openArticleClusterId, setOpenArticleClusterId] = useState<number | null>(null);
@@ -158,8 +155,12 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
       let result: TopicTrendsData;
       if (mode === 'all') {
         result = await getAllTopicTrends(mv, n);
-      } else if (mode === 'journal') {
+      } else if (mode === 'journal' || (mode === 'url' && name)) {
         result = await getJournalTopicTrends(name ?? '', mv, n);
+      } else if (mode === 'url') {
+        // url mode but no journal name yet — skip
+        setLoading(false);
+        return;
       } else {
         result = await getPublisherTopicTrends(name ?? '', mv, n);
       }
@@ -173,7 +174,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
       setData(result);
       setVisibleTopics(new Set(result.clusters.map((c) => c.topic_tag)));
     } catch {
-      setError('Veri yuklenirken hata olustu.');
+      setError('Veri yüklenirken hata oluştu.');
       setData(null);
     } finally {
       setLoading(false);
@@ -183,8 +184,8 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
   async function fetchAllClusters(name: string | undefined, mv: string) {
     setAllLoading(true);
     try {
-      const clusterType = mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher';
-      const groupId = mode !== 'all' ? (name ?? '') : undefined;
+      const clusterType = (mode === 'all' || mode === 'url') ? 'all' : mode === 'journal' ? 'journal' : 'publisher';
+      const groupId = (mode !== 'all' && mode !== 'url') ? (name ?? '') : undefined;
       const res = await listClusters(mv, clusterType, groupId);
       setAllClusters(res.clusters);
     } catch {
@@ -258,6 +259,10 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
       setJournalSuggestions([]);
       return;
     }
+    if (suppressSuggestRef.current) {
+      suppressSuggestRef.current = false;
+      return;
+    }
     const t = setTimeout(() => {
       suggestJournals(nameInput.trim()).then((s) => {
         setJournalSuggestions(s);
@@ -296,12 +301,26 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
     setError(null);
     setNameInput('');
     setSubmittedName('');
+    setUrlJournalName('');
     setVisibleTopics(new Set());
     setFullListOpen(false);
     setClusterSearch('');
     setClusterPage(0);
     setJournalSuggestions([]);
     setShowJournalSuggestions(false);
+  }
+
+  function handleUrlAnalysisComplete(result: UrlAnalysisResult) {
+    isZoomingRef.current = false;
+    setData(result.trendsData);
+    setAllClusters(result.allClusters);
+    setUrlJournalName(result.journalName);
+    setSubmittedName(result.journalName);
+    setSeriesCache(new Map());
+    setFetchingTopics(new Set());
+    setZoomStart(0);
+    setZoomEnd(null);
+    setVisibleTopics(new Set((result.trendsData?.clusters ?? []).map((c) => c.topic_tag)));
   }
 
   function handleTopNChange(n: number) {
@@ -323,8 +342,8 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
     const willBeVisible = !visibleTopics.has(tag);
 
     if (willBeVisible && !topNSet.has(tag) && !seriesCache.has(tag) && modelVersion) {
-      const clusterType = (mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher') as 'all' | 'journal' | 'publisher';
-      const groupId = mode !== 'all' ? submittedName : undefined;
+      const clusterType = (mode === 'all' || mode === 'url' ? 'all' : mode === 'journal' ? 'journal' : 'publisher') as 'all' | 'journal' | 'publisher';
+      const groupId = (mode !== 'all' && mode !== 'url') ? submittedName : undefined;
       setFetchingTopics((prev) => new Set(prev).add(tag));
       getClusterTrendSeries(cluster.cluster_id, modelVersion, clusterType, groupId)
         .then((res) => {
@@ -424,27 +443,13 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
   useEffect(() => { mergedGraphDataLenRef.current = mergedGraphData.length; }, [mergedGraphData.length]);
 
   // Chart container ref — passive:false blocks page scroll while over the chart.
-  // IMPORTANT: chart DOM'u (tab/gizle-goster ile) yeniden mount olabildiği için
-  // sadece `data` değil, görünürlük ve tab değişince de listener'ı tekrar bağlarız.
+  // Depends on `data` so the listener is (re-)attached after the chart div renders.
   const chartWrapperRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const el = chartWrapperRef.current;
     if (!el) return;
-    // RAF throttle: trackpad / hızlı wheel eventleri "choppy" hissettirebiliyor.
-    // Frame başına tek zoom güncellemesi → daha pürüzsüz.
-    let rafId: number | null = null;
-    let pendingDelta = 0;
-    let pendingClientX: number | null = null;
-
-    function applyZoomOnce() {
-      rafId = null;
-      const delta = pendingDelta;
-      const clientX = pendingClientX;
-      pendingDelta = 0;
-      pendingClientX = null;
-
-      if (delta === 0 || clientX == null) return;
-
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
       isZoomingRef.current = true;
       const len = mergedGraphDataLenRef.current;
       if (len === 0) return;
@@ -455,11 +460,9 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
 
       // Mouse ratio: 0 = sol kenar, 1 = sağ kenar
       const rect = (el as HTMLDivElement).getBoundingClientRect();
-      const mouseRatio = rect.width > 0
-        ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
-        : 0.5;
+      const mouseRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
 
-      if (delta < 0) {
+      if (e.deltaY < 0) {
         // Zoom in — fareye yakın taraf daha az kırpılır
         const cutLeft = Math.round(step * mouseRatio);
         const cutRight = Math.round(step * (1 - mouseRatio));
@@ -477,26 +480,10 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
         setZoomEnd(newEnd === len ? null : newEnd);
       }
     }
-
-    function onWheel(e: WheelEvent) {
-      // Sadece Trend tabında ve içerik görünürken zoom yap
-      if (topTab !== 'trend') return;
-      if (collapsible && collapsed) return;
-      if (!data || data.graph_data.length === 0) return;
-
-      e.preventDefault();
-      pendingDelta += e.deltaY;
-      pendingClientX = e.clientX;
-      if (rafId == null) rafId = window.requestAnimationFrame(applyZoomOnce);
-    }
-
     el.addEventListener('wheel', onWheel, { passive: false });
-    return () => {
-      if (rafId != null) window.cancelAnimationFrame(rafId);
-      el.removeEventListener('wheel', onWheel);
-    };
+    return () => el.removeEventListener('wheel', onWheel);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, topTab, collapsed, collapsible]);
+  }, [data]);
 
   function resetZoom() {
     isZoomingRef.current = true;
@@ -518,90 +505,26 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
 
   const noModel = nlpStatus !== null && !nlpStatus.has_trained_model;
 
-  // ── URL analysis complete: switch to trend tab and populate chart ──
-  function handleUrlAnalysisComplete(result: UrlAnalysisResult) {
-    setData(result.trendsData);
-    setAllClusters(result.allClusters);
-    setVisibleTopics(new Set());
-    setZoomStart(0);
-    setZoomEnd(null);
-    isZoomingRef.current = false;
-    setTopTab('trend');
-  }
-
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex-1 min-w-0">
-            <CardTitle>Konu Trend Analizi</CardTitle>
-            <CardDescription>
-              NLP kumeleme modeline gore konu trendleri
-              {nlpStatus?.latest_model_version && (
-                <span className="ml-2 text-xs text-slate-400">
-                  (model: {nlpStatus.latest_model_version})
-                </span>
-              )}
-            </CardDescription>
-          </div>
-          {collapsible && (
-            <button
-              onClick={() => setCollapsed((v) => !v)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 transition-colors cursor-pointer flex-shrink-0"
-            >
-              <span>{collapsed ? 'Göster' : 'Gizle'}</span>
-              {collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
-            </button>
+        <CardTitle>Konu Trend Analizi</CardTitle>
+        <CardDescription>
+          NLP kümeleme modeline göre konu trendleri
+          {nlpStatus?.latest_model_version && (
+            <span className="ml-2 text-xs text-slate-400">
+              (model: {nlpStatus.latest_model_version})
+            </span>
           )}
-        </div>
+        </CardDescription>
       </CardHeader>
 
-      <div
-        className={
-          collapsible
-            ? `overflow-hidden transition-[max-height,opacity,margin-top] duration-300 ease-in-out motion-reduce:transition-none ${
-                collapsed
-                  ? 'pointer-events-none max-h-0 opacity-0 mt-0'
-                  : 'max-h-[10000px] opacity-100'
-              }`
-            : 'contents'
-        }
-      >
-      <CardContent className={`space-y-6 ${collapsible ? 'transition-opacity duration-300 ease-out' : ''}`}>
-        {/* Top-level tab: Trend Analizi | URL Analizi */}
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex gap-2">
-            <button
-              onClick={() => setTopTab('trend')}
-              className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${topTab === 'trend' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-            >
-              Trend Analizi
-            </button>
-            <button
-              onClick={() => setTopTab('url')}
-              className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${topTab === 'url' ? 'bg-violet-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
-            >
-              URL Analizi
-            </button>
-          </div>
-        </div>
-
-        {/* URL Analysis Tab */}
-        {topTab === 'url' && (
-          <UrlAnalysisTab
-            modelVersion={modelVersion}
-            topN={topN}
-            onAnalysisComplete={handleUrlAnalysisComplete}
-          />
-        )}
-
-        {topTab === 'trend' && <>
-
+      <CardContent className="space-y-6">
         {/* Mode selector */}
-        <div className="flex gap-2">
-          {(['all', 'journal', 'publisher'] as Mode[]).map((m) => (
+        <div className="flex gap-2 flex-wrap">
+          {(['all', 'journal', 'publisher', 'url'] as Mode[]).map((m) => (
             <button
               key={m}
               onClick={() => handleModeChange(m)}
@@ -611,7 +534,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              {m === 'all' ? 'Tumu' : m === 'journal' ? 'Dergi Bazli' : 'Yayinci Bazli'}
+              {m === 'all' ? 'Tümü' : m === 'journal' ? 'Dergi Bazlı' : m === 'publisher' ? 'Yayıncı Bazlı' : 'URL Analizi'}
             </button>
           ))}
         </div>
@@ -636,7 +559,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                 }}
                 onFocus={() => journalSuggestions.length > 0 && setShowJournalSuggestions(true)}
                 onBlur={() => setTimeout(() => setShowJournalSuggestions(false), 150)}
-                placeholder="Dergi adi girin..."
+                placeholder="Dergi adı girin..."
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
               {showJournalSuggestions && journalSuggestions.length > 0 && (
@@ -646,6 +569,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                       key={name}
                       onMouseDown={(e) => {
                         e.preventDefault();
+                        suppressSuggestRef.current = true;
                         setNameInput(name);
                         setShowJournalSuggestions(false);
                         setSubmittedName(name);
@@ -693,10 +617,27 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
           </div>
         )}
 
+        {/* URL Analysis tab */}
+        {mode === 'url' && (
+          <>
+            <UrlAnalysisTab
+              modelVersion={modelVersion}
+              topN={topN}
+              onAnalysisComplete={handleUrlAnalysisComplete}
+            />
+            {urlJournalName && data && (
+              <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
+                <span className="font-medium">Gösterilen dergi:</span>
+                <span className="font-semibold text-slate-800">{urlJournalName}</span>
+              </div>
+            )}
+          </>
+        )}
+
         {/* No model */}
         {noModel && (
           <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-600 text-sm">
-            Henuz egitilmis bir NLP modeli bulunmuyor. Model egitildikten sonra konu trendleri burada gorunecektir.
+            Henüz eğitilmiş bir NLP modeli bulunmuyor. Model eğitildikten sonra konu trendleri burada görünecektir.
           </div>
         )}
 
@@ -711,12 +652,12 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
         )}
 
         {/* Chart section */}
-        {!loading && !error && data && data.graph_data.length > 0 && (
+        {!loading && !error && data && data.graph_data.length > 0 && (mode !== 'url' || !!urlJournalName) && (
           <>
             {/* Top-N selector row */}
             <div className="flex items-center justify-between flex-wrap gap-2">
               <p className="text-sm text-slate-500">
-                Grafik: en yuksek{' '}
+                Grafik: en yüksek{' '}
                 <span className="font-semibold text-slate-700">{topN}</span> konu
                 {data.clusters.length < topN && data.clusters.length > 0 && (
                   <span className="ml-1 text-slate-400">
@@ -784,7 +725,14 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                         name={cluster.topic_tag}
                         stroke={color}
                         strokeWidth={2}
-                        dot={false}
+                        opacity={1}
+                        dot={(dotProps: { cx?: number; cy?: number; index: number; payload: Record<string, unknown> }) => {
+                          const { cx, cy, index, payload } = dotProps;
+                          if (cx == null || cy == null || payload[cluster.topic_tag] == null) return <g />;
+                          const firstIdx = visibleChartData.findIndex(d => d[cluster.topic_tag] != null);
+                          if (index !== firstIdx) return <g />;
+                          return <circle cx={cx} cy={cy} r={3} fill={color} stroke="#fff" strokeWidth={1.5} />;
+                        }}
                         connectNulls
                         isAnimationActive={!isZoomingRef.current}
                         animationDuration={600}
@@ -833,7 +781,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                     <button
                       key={cluster.cluster_id}
                       onClick={() => toggleVisible(cluster)}
-                      title={`${cluster.article_count} makale — tikla: ${visible ? 'gizle' : 'goster'}`}
+                      title={`${cluster.article_count} makale — tıkla: ${visible ? 'gizle' : 'göster'}`}
                       className={`cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
                         visible
                           ? 'border-transparent text-white shadow-sm'
@@ -859,7 +807,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
             <div className="border border-slate-200 rounded-xl overflow-hidden">
               <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
                 <span className="text-sm font-semibold text-slate-700">
-                  Tum Konular
+                  Tüm Konular
                   {allClusters.length > 0 && (
                     <span className="ml-2 text-xs font-normal text-slate-400">
                       ({allClusters.length} konu)
@@ -892,22 +840,22 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                   <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400 pb-1 border-b border-slate-100">
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                      Top {topN} — gorunuyor
+                      Top {topN} — görünüyor
                     </span>
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-400" />
-                      Eklendi (Top {topN} disi)
+                      Eklendi (Top {topN} dışı)
                     </span>
                     <span className="flex items-center gap-1.5">
                       <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" />
-                      Gizli (tikla: goster)
+                      Gizli (tıkla: göster)
                     </span>
                   </div>
 
                   {/* Loading */}
                   {allLoading && (
                     <div className="text-center py-6 text-sm text-slate-400 animate-pulse">
-                      Konular yukleniyor...
+                      Konular yükleniyor...
                     </div>
                   )}
 
@@ -954,7 +902,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                                 : 'bg-slate-100 text-slate-500'
                             }`}
                           >
-                            {isFetching ? 'Yukleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
+                            {isFetching ? 'Yükleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
                           </span>
                           {/* Article list toggle button */}
                           <button
@@ -988,9 +936,9 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                             </div>
 
                             {clusterArticlesLoading ? (
-                              <p className="text-xs text-slate-400 animate-pulse px-4 py-3">Makaleler yukleniyor...</p>
+                              <p className="text-xs text-slate-400 animate-pulse px-4 py-3">Makaleler yükleniyor...</p>
                             ) : clusterArticles.length === 0 ? (
-                              <p className="text-xs text-slate-400 px-4 py-3">Makale bulunamadi.</p>
+                              <p className="text-xs text-slate-400 px-4 py-3">Makale bulunamadı.</p>
                             ) : (
                               <>
                                 <ul className="divide-y divide-indigo-100">
@@ -1009,7 +957,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                                         onClick={(e) => e.stopPropagation()}
                                         className="flex-shrink-0 px-2.5 py-1 text-xs font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors whitespace-nowrap"
                                       >
-                                        Goruntule →
+                                        Görüntüle →
                                       </Link>
                                     </li>
                                   ))}
@@ -1027,7 +975,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                                       disabled={articlePage === 0 || clusterArticlesLoading}
                                       className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
                                     >
-                                      ← Onceki
+                                      ← Önceki
                                     </button>
                                     <span className="text-xs text-slate-500">
                                       {articlePage + 1} / {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE)}
@@ -1054,7 +1002,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                   })}
 
                   {!allLoading && pagedAll.length === 0 && (
-                    <p className="text-sm text-slate-400 text-center py-4">Sonuc bulunamadi.</p>
+                    <p className="text-sm text-slate-400 text-center py-4">Sonuç bulunamadı.</p>
                   )}
 
                   {/* Pagination */}
@@ -1065,7 +1013,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                         disabled={clusterPage === 0}
                         className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
-                        Onceki
+                        Önceki
                       </button>
                       <span className="text-xs text-slate-500">
                         {clusterPage + 1} / {totalPages}
@@ -1089,15 +1037,14 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
         {/* Empty state */}
         {!loading && !error && data && data.graph_data.length === 0 && (
           <div className="text-center py-10 text-slate-500 text-sm">
-            {mode !== 'all'
-              ? 'Bu yayinci/dergi icin cluster verisi bulunamadi. Modeli yeniden egiterek publisher/journal clustering ekleyebilirsiniz.'
-              : 'Bu sorgu icin grafik verisi bulunamadi.'}
+            {mode === 'url'
+              ? 'Analiz tamamlandı ancak grafik verisi bulunamadı. Scraping sonuçları kümelerle eşleşmemiş olabilir.'
+              : mode !== 'all'
+              ? 'Bu yayıncı/dergi için cluster verisi bulunamadı. Modeli yeniden eğiterek publisher/journal clustering ekleyebilirsiniz.'
+              : 'Bu sorgu için grafik verisi bulunamadı.'}
           </div>
         )}
-
-        </> /* end topTab === 'trend' */}
       </CardContent>
-      </div>
     </Card>
   );
 }

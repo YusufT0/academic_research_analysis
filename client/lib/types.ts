@@ -207,7 +207,6 @@ export interface SearchResult {
     url: string;
     abstract: string | null;
     keywords: string[];
-    source_website?: string;
   }>;
 }
 
