@@ -140,6 +140,7 @@ export interface ArticleFilters {
   has_abstract?: boolean;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
+  include_no_date?: boolean;
 }
 
 export async function getArticles(filters: ArticleFilters = {}): Promise<PaginatedResponse<Article>> {
@@ -160,6 +161,7 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.has_abstract !== undefined) params.set('has_abstract', filters.has_abstract.toString());
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
+  if (filters.include_no_date !== undefined) params.set('include_no_date', filters.include_no_date.toString());
 
   return fetchApi<PaginatedResponse<Article>>(`/articles?${params.toString()}`);
 }
