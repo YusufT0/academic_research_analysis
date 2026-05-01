@@ -283,11 +283,11 @@ class ElasticsearchService:
             logger.error("Search failed", query=query, error=str(e))
             return {"items": [], "total": 0, "query": query, "error": str(e)}
     
-    async def suggest(self, prefix: str, limit: int = 10) -> List[str]:
-        """Autocomplete önerileri"""
+    async def suggest(self, prefix: str, limit: int = 10) -> List[dict]:
+        """Autocomplete önerileri — {id, text} listesi döner"""
         if not self._client or not prefix:
             return []
-        
+
         try:
             result = await self._client.search(
                 index=self.articles_index,
@@ -303,8 +303,8 @@ class ElasticsearchService:
                     "_source": ["title"],
                 },
             )
-            
-            return [hit["_source"]["title"] for hit in result["hits"]["hits"]]
+
+            return [{"id": hit["_id"], "text": hit["_source"]["title"]} for hit in result["hits"]["hits"]]
         except Exception as e:
             logger.error("Suggest failed", prefix=prefix, error=str(e))
             return []

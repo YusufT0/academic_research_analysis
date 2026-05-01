@@ -467,7 +467,10 @@ export async function elasticSearch(filters: ElasticSearchFilters): Promise<Elas
 
 export async function getSearchSuggestions(prefix: string, limit = 5): Promise<SearchSuggestion[]> {
   const params = new URLSearchParams({ q: prefix, limit: limit.toString() });
-  const data = await fetchApi<{ query: string; suggestions: string[] }>(`/search/suggest?${params.toString()}`);
+  const data = await fetchApi<{ query: string; items?: { id: string; text: string }[]; suggestions: string[] }>(`/search/suggest?${params.toString()}`);
+  if (data.items?.length) {
+    return data.items.map(({ id, text }) => ({ id, text }));
+  }
   return (data.suggestions || []).map(text => ({ text }));
 }
 
@@ -642,6 +645,10 @@ export async function startAllScrapersRoundRobin(headless = true) {
 
 export async function getNlpStatus(): Promise<NlpStatus> {
   return fetchApi<NlpStatus>('/nlp/status');
+}
+
+export async function getNlpModelVersions(): Promise<import('./types').NlpModelVersionsResponse> {
+  return fetchApi<import('./types').NlpModelVersionsResponse>('/nlp/model_versions');
 }
 
 export async function nlpSearch(

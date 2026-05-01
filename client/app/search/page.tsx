@@ -262,10 +262,14 @@ function SearchPageInner() {
     handleSearch();
   };
 
-  const selectSuggestion = (text: string) => {
-    setQuery(text);
+  const selectSuggestion = (suggestion: { text: string; id?: string }) => {
     setShowSuggestions(false);
-    handleSearch(text);
+    if (suggestion.id) {
+      router.push(`/articles/${suggestion.id}`);
+      return;
+    }
+    setQuery(suggestion.text);
+    handleSearch(suggestion.text);
   };
 
   const toggleFilter = (key: keyof ActiveFilters, value: string | number) => {
@@ -283,6 +287,7 @@ function SearchPageInner() {
   const clearFilters = () => setFilters({});
 
   const activeFilterCount = Object.keys(filters).length;
+  const showFilterButton = useElastic && searched;
   const totalResults = esResults?.total || fallbackResults?.total || 0;
   const items = esResults?.items || [];
   const facets = esResults?.facets;
@@ -339,7 +344,7 @@ function SearchPageInner() {
                         key={i}
                         type="button"
                         className="w-full px-4 py-2.5 text-left text-sm hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2 cursor-pointer transition-colors"
-                        onClick={() => selectSuggestion(s.text)}
+                        onClick={() => selectSuggestion(s)}
                       >
                         <Search className="h-3.5 w-3.5 text-slate-400" />
                         <span>{s.text}</span>
@@ -348,13 +353,13 @@ function SearchPageInner() {
                   </div>
                 )}
               </div>
-              <div className="flex gap-2">
-                {useElastic && (
+              <div className={`grid gap-2 min-w-[280px] ${showFilterButton ? 'grid-cols-3' : 'grid-cols-2'}`}>
+                {showFilterButton && (
                   <Button
                     type="button"
                     variant={showFilters ? 'primary' : 'secondary'}
                     onClick={() => setShowFilters(!showFilters)}
-                    className="relative"
+                    className="relative w-full justify-center"
                   >
                     <Filter className="h-5 w-5" />
                     {activeFilterCount > 0 && (
@@ -364,7 +369,7 @@ function SearchPageInner() {
                     )}
                   </Button>
                 )}
-                <Button type="submit" size="lg" isLoading={loading}>
+                <Button type="submit" size="lg" isLoading={loading} className="w-full justify-center">
                   <Search className="h-5 w-5 mr-2" />
                   Ara
                 </Button>
@@ -374,7 +379,7 @@ function SearchPageInner() {
                   variant="secondary"
                   isLoading={aiLoading}
                   onClick={handleAiAnalysis}
-                  className="bg-violet-100 text-violet-800 hover:bg-violet-200 border-violet-200"
+                  className="w-full justify-center bg-violet-100 text-violet-800 hover:bg-violet-200 border-violet-200"
                 >
                   <Brain className="h-5 w-5 mr-2" />
                   AI Analiz

@@ -260,6 +260,7 @@ export interface ElasticSearchResult {
 
 export interface SearchSuggestion {
   text: string;
+  id?: string;
   score?: number;
 }
 
@@ -323,6 +324,11 @@ export interface NlpStatus {
   cache_loaded: boolean;
   cached_version: string | null;
   pkl_model_available?: boolean;
+}
+
+export interface NlpModelVersionsResponse {
+  latest_model_version: string | null;
+  model_versions: string[];
 }
 
 // ==================== NLP Search Types ====================

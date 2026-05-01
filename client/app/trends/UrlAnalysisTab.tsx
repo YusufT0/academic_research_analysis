@@ -21,6 +21,7 @@ import {
   Network,
   BarChart2,
 } from 'lucide-react';
+import { TopicTrendChart } from './TopicTrendChart';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import {
@@ -574,6 +575,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
   });
   const [isStopping, setIsStopping] = useState(false);
   const [isQueueExpanded, setIsQueueExpanded] = useState(false);
+  const [resultData, setResultData] = useState<UrlAnalysisResult | null>(null);
 
   const pollRef          = useRef<NodeJS.Timeout | null>(null);
   const wsRef            = useRef<WebSocket | null>(null);
@@ -622,6 +624,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     setErrorMsg(null);
     setScraperStatus(null);
     setIsStopping(false);
+    setResultData(null);
     setAnalysisSteps({
       cluster_update: { status: 'pending', message: 'Bekliyor...' },
       openalex:       { status: 'pending', message: 'Bekliyor...' },
@@ -785,15 +788,16 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
         listClusters(modelVersion, 'journal', journalName),
       ]);
 
-      setFlowState('done');
-
-      onAnalysisComplete({
+      const result: UrlAnalysisResult = {
         journalName,
         trendsData: trendsRes,
         allClusters: clustersRes.clusters,
         assignedCount: finalTask.result?.assigned ?? 0,
         affectedCount: finalTask.result?.affected_clusters?.length ?? 0,
-      });
+      };
+      setResultData(result);
+      setFlowState('done');
+      onAnalysisComplete(result);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'NLP analizi sırasında hata oluştu.');
       setFlowState('error');
@@ -1289,7 +1293,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
             <div className="flex-1">
               <p className="text-sm font-semibold text-emerald-800">Tüm işlemler tamamlandı</p>
               <p className="text-xs text-emerald-600 mt-0.5">
-                Dergi trend grafiği aşağıda gösterilmektedir.
+                Konu trend grafiği aşağıda görüntüleniyor.
               </p>
             </div>
             <Badge variant="success" className="text-xs flex-shrink-0">Tamamlandı</Badge>
@@ -1330,6 +1334,21 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Trend chart — reuses the shared TopicTrendChart component */}
+      {flowState === 'done' && resultData && resultData.trendsData.graph_data.length > 0 && (
+        <div className="animate-in slide-in-from-top-2 duration-300">
+          <TopicTrendChart
+            data={resultData.trendsData}
+            allClusters={resultData.allClusters}
+            topN={topN}
+            modelVersion={modelVersion}
+            clusterType="journal"
+            groupId={resultData.journalName}
+            visible={true}
+          />
         </div>
       )}
     </div>

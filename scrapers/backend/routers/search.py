@@ -121,7 +121,7 @@ async def search_suggest(
 ):
     """Title ve keyword'lere göre autocomplete önerileri"""
     suggestions = await elasticsearch_service.suggest(prefix=q, limit=limit)
-    return {"query": q, "suggestions": suggestions}
+    return {"query": q, "suggestions": [s["text"] for s in suggestions], "items": suggestions}
 
 
 @router.get("/suggest/journals", summary="Dergi adı autocomplete önerileri")

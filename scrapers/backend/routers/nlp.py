@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from backend.services.nlp_service import nlp_service
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
+from database.repositories.analysis_run_repository import AnalysisRunRepository
 from utils.logger import get_logger
 
 logger = get_logger('nlp_router')
@@ -83,6 +84,12 @@ class StatusResponse(BaseModel):
     pkl_model_path: Optional[str] = None
 
 
+class ModelVersionsResponse(BaseModel):
+    """Model versiyon listesi yanıtı"""
+    latest_model_version: Optional[str]
+    model_versions: List[str]
+
+
 # ============== Endpoints ==============
 
 @router.get("/status", response_model=StatusResponse, summary="NLP sistem durumunu getir")
@@ -99,6 +106,54 @@ async def get_nlp_status():
         return StatusResponse(**status)
     except Exception as e:
         logger.error(f"Status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/model_versions", response_model=ModelVersionsResponse, summary="Kullanılabilir NLP model versiyonlarını getir")
+async def get_nlp_model_versions():
+    """
+    Trend analizinde veya artırımlı eğitimde seçilebilecek model versiyonlarını döndürür.
+    DB'deki tamamlanmış analizler ve diskteki joblib dosyaları birlikte dikkate alınır.
+    """
+    try:
+        status = await nlp_service.get_status()
+        latest_model_version = status.get("latest_model_version")
+
+        repo = AnalysisRunRepository()
+        completed_runs = await repo.get_history(limit=200, status="completed")
+        db_versions = [run.model_version for run in completed_runs if run.model_version]
+
+        models_dir = Path(__file__).parent.parent.parent / "nlp_models"
+        fs_versions: List[str] = []
+        if models_dir.exists():
+            umap_versions = {
+                p.stem.replace("umap_", "")
+                for p in models_dir.glob("umap_*.joblib")
+            }
+            hdbscan_versions = {
+                p.stem.replace("hdbscan_all_", "")
+                for p in models_dir.glob("hdbscan_all_*.joblib")
+            }
+            fs_versions = sorted(umap_versions & hdbscan_versions, reverse=True)
+
+        ordered_versions: List[str] = []
+
+        def _add_version(version: Optional[str]):
+            if version and version not in ordered_versions:
+                ordered_versions.append(version)
+
+        _add_version(latest_model_version)
+        for version in db_versions:
+            _add_version(version)
+        for version in fs_versions:
+            _add_version(version)
+
+        return ModelVersionsResponse(
+            latest_model_version=latest_model_version,
+            model_versions=ordered_versions,
+        )
+    except Exception as e:
+        logger.error(f"Model versions error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/train_incremental", summary= "Add to the model existing.")
