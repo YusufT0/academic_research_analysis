@@ -6,8 +6,6 @@ Detects download limit warnings and handles pausing/switching to alternative scr
 import sys
 import time
 from typing import Callable, Optional
-from selenium.webdriver.common.by import By
-from selenium.common.exceptions import NoSuchElementException
 
 sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
 from utils.logger import get_logger
@@ -53,42 +51,41 @@ class IEEERateLimiter:
             bool: Rate limiting varsa True, yoksa False
         """
         try:
-            # 1. WAF / güvenlik reddi: "The requested URL was rejected"
+            # Not: driver'da implicit_wait(10) açık olduğu için find_element/find_elements
+            # kullanımı normal sayfalarda gereksiz ~10 sn gecikme yaratabiliyor.
+            # Bu yüzden rate-limit tespitini hızlı metin taramasıyla yapıyoruz.
+            page_text = ""
             try:
-                body_text = self.driver.find_element(By.TAG_NAME, 'body').text.lower()
-                if self.URL_REJECTED_KEYWORD in body_text:
-                    logger.warning("=" * 60)
-                    logger.warning("IEEE XPLORE URL REDDİ TESPİT EDİLDİ!")
-                    logger.warning("Mesaj: 'The requested URL was rejected'")
-                    logger.warning("=" * 60)
-                    self.rate_limit_detected = True
-                    return True
+                page_text = (self.driver.page_source or "").lower()
             except Exception:
-                pass
+                page_text = ""
 
-            # 2. error-message-container div'ini bul (indirme limiti)
-            error_containers = self.driver.find_elements(
-                By.CLASS_NAME,
-                self.ERROR_CONTAINER_CLASS
-            )
-
-            for container in error_containers:
+            if not page_text:
                 try:
-                    text = container.text.lower()
-
-                    if all(keyword in text for keyword in self.ERROR_TEXT_KEYWORDS):
-                        logger.warning("=" * 60)
-                        logger.warning("IEEE XPLORE RATE LIMIT UYARISI TESPİT EDİLDİ!")
-                        logger.warning("Mesaj: 'You have reached the limit of download'")
-                        logger.warning("=" * 60)
-                        self.rate_limit_detected = True
-                        return True
+                    page_text = (self.driver.execute_script("return document.body ? document.body.innerText : ''") or "").lower()
                 except Exception:
-                    continue
+                    page_text = ""
 
-            return False
+            # 1. WAF / güvenlik reddi
+            if self.URL_REJECTED_KEYWORD in page_text:
+                logger.warning("=" * 60)
+                logger.warning("IEEE XPLORE URL REDDİ TESPİT EDİLDİ!")
+                logger.warning("Mesaj: 'The requested URL was rejected'")
+                logger.warning("=" * 60)
+                self.rate_limit_detected = True
+                return True
 
-        except NoSuchElementException:
+            # 2. error-message-container + indirme limit anahtar kelimeleri
+            has_container = self.ERROR_CONTAINER_CLASS in page_text
+            has_keywords = all(keyword in page_text for keyword in self.ERROR_TEXT_KEYWORDS)
+            if has_container and has_keywords:
+                logger.warning("=" * 60)
+                logger.warning("IEEE XPLORE RATE LIMIT UYARISI TESPİT EDİLDİ!")
+                logger.warning("Mesaj: 'You have reached the limit of download'")
+                logger.warning("=" * 60)
+                self.rate_limit_detected = True
+                return True
+
             return False
         except Exception as e:
             logger.warning(f"Rate limiting kontrolü hatası: {e}")

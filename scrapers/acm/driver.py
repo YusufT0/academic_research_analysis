@@ -317,7 +317,7 @@ class SeleniumDriver:
         if not (self._cdp_active and self._sb):
             return True  # CDP modu değilse kontrol gerekmiyor
 
-        WAIT_BETWEEN = 3.0
+        WAIT_BETWEEN = 1.5
 
         # Tek bir cdp.evaluate çağrısıyla iki metriği birden al (round-trip azalt)
         CHECK_JS = """
@@ -486,7 +486,10 @@ class SeleniumDriver:
                     finally:
                         executor.shutdown(wait=False)
 
-                time.sleep(wait_after)
+                # CDP cdp.get() load event'i garanti etmez; readyState polling
+                # ile mümkün olan en erken anda devam et
+                time.sleep(0.5)  # CDP bağlantı stabilitesi için minimum buffer
+                self.wait_for_page_load(timeout=max(wait_after * 5, 15))
 
                 # CSS/JS render kontrolü — yüklenmemişse yeniden dene
                 self._wait_for_render(url)

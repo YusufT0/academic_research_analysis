@@ -426,7 +426,16 @@ class SeleniumDriver:
                 
                 logger.url(url, "Açılıyor")
                 self.driver.get(url)
-                time.sleep(wait_after)
+                # driver.get() load event'ini bekler; ardından readyState polling
+                # ile hemen devam et — sabit sleep yerine element hazır olunca geç
+                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                try:
+                    _WDW(self.driver, max(wait_after * 5, 15)).until(
+                        lambda d: d.execute_script('return document.readyState') == 'complete'
+                    )
+                except Exception:
+                    pass  # timeout olsa bile devam et
+                time.sleep(0.5)  # DOM render buffer
                 logger.success("Sayfa yüklendi")
                 return True
                 

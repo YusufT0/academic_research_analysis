@@ -828,14 +828,16 @@ class ScraperManager:
                             fut = asyncio.run_coroutine_threadsafe(
                                 _get_ieee_existing_issue_urls(), self._loop
                             )
-                            existing_issue_urls = fut.result(timeout=15)
+                            existing_issue_urls = fut.result(timeout=5)
                             if existing_issue_urls:
                                 logger.info(
                                     f"[IEEE Thread] {journal_name}: "
                                     f"{len(existing_issue_urls)} mevcut issue URL'si bulundu, atlanacak"
                                 )
+                        except concurrent.futures.TimeoutError:
+                            logger.debug(f"[IEEE Thread] Mevcut issue URL'leri sorgusu zaman aşımı (5s), boş set ile devam ediliyor")
                         except Exception as e:
-                            logger.warning(f"[IEEE Thread] Mevcut issue URL'leri alınamadı: {e}")
+                            logger.warning(f"[IEEE Thread] Mevcut issue URL'leri alınamadı: {type(e).__name__}: {e}")
 
                     # Scrape issues + articles
                     issue_results = scraper.scrape_journal_articles(
@@ -1321,14 +1323,16 @@ class ScraperManager:
                             fut = asyncio.run_coroutine_threadsafe(
                                 _get_existing_issue_urls(), self._loop
                             )
-                            existing_issue_urls = fut.result(timeout=15)
+                            existing_issue_urls = fut.result(timeout=5)
                             if existing_issue_urls:
                                 logger.info(
                                     f"[SD Thread] {journal_name}: "
                                     f"{len(existing_issue_urls)} mevcut issue URL'si bulundu, atlanacak"
                                 )
+                        except concurrent.futures.TimeoutError:
+                            logger.debug(f"[SD Thread] Mevcut issue URL'leri sorgusu zaman aşımı (5s), boş set ile devam ediliyor")
                         except Exception as e:
-                            logger.warning(f"[SD Thread] Mevcut issue URL'leri alınamadı: {e}")
+                            logger.warning(f"[SD Thread] Mevcut issue URL'leri alınamadı: {type(e).__name__}: {e}")
 
                     # Scrape issues + articles
                     issue_results = scraper.scrape_journal_articles(
@@ -1807,14 +1811,16 @@ class ScraperManager:
                             fut = asyncio.run_coroutine_threadsafe(
                                 _get_acm_existing_issue_urls(), self._loop
                             )
-                            existing_issue_urls = fut.result(timeout=15)
+                            existing_issue_urls = fut.result(timeout=5)
                             if existing_issue_urls:
                                 logger.info(
                                     f"[ACM Thread] {journal_name}: "
                                     f"{len(existing_issue_urls)} mevcut issue URL'si bulundu, atlanacak"
                                 )
+                        except concurrent.futures.TimeoutError:
+                            logger.debug(f"[ACM Thread] Mevcut issue URL'leri sorgusu zaman aşımı (5s), boş set ile devam ediliyor")
                         except Exception as e:
-                            logger.warning(f"[ACM Thread] Mevcut issue URL'leri alınamadı: {e}")
+                            logger.warning(f"[ACM Thread] Mevcut issue URL'leri alınamadı: {type(e).__name__}: {e}")
 
                     # Scrape issues + articles
                     issue_results = scraper.scrape_journal_articles(

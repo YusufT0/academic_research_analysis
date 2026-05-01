@@ -136,27 +136,55 @@ class ScienceDirectScraper:
                 logger.step(1, 3, f"Sayfa açılıyor: {self.config.base_url}")
                 self.driver.get(self.config.base_url)
                 
-                # Cloudflare kontrolünü bekle
+                # Sayfanın ilk yüklenmesini bekle (sabit sleep yerine)
                 logger.loading("Cloudflare kontrolü bekleniyor")
-                self._interruptible_sleep(5)  # Cloudflare challenge için ek süre
-                
-                # Sayfanın yüklenmesini bekle
                 WebDriverWait(self.driver, self.config.timeout).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
+                    lambda d: d.execute_script("return document.readyState") in ("interactive", "complete")
                 )
+                
+                # Cloudflare challenge görünüyorsa kısa, adaptif bekleme yap
+                try:
+                    challenge_detected = self.driver.execute_script("""
+                        const url = (window.location.href || '').toLowerCase();
+                        const body = (document.body?.innerText || '').toLowerCase();
+                        return url.includes('challenge') || body.includes('captcha') || body.includes('checking your browser');
+                    """)
+                except Exception:
+                    challenge_detected = False
+                
+                if challenge_detected:
+                    logger.warning("Cloudflare challenge algılandı, geçiş bekleniyor...")
+                    try:
+                        WebDriverWait(self.driver, 8, poll_frequency=0.25).until(
+                            lambda d: not d.execute_script("""
+                                const url = (window.location.href || '').toLowerCase();
+                                const body = (document.body?.innerText || '').toLowerCase();
+                                return url.includes('challenge') || body.includes('captcha') || body.includes('checking your browser');
+                            """)
+                        )
+                    except TimeoutException:
+                        pass
                 
                 logger.success("Sayfa başarıyla yüklendi")
                 logger.info(f"  - Sayfa başlığı: {self.driver.title}")
                 logger.info(f"  - URL: {self.driver.current_url}")
-                
-                # Cloudflare challenge kontrolü
-                if "challenge" in self.driver.current_url.lower() or "captcha" in self.driver.page_source.lower():
-                    logger.warning("Cloudflare challenge algılandı, bekleniyor...")
-                    self._interruptible_sleep(10)  # Challenge'ın geçmesi için bekle
 
-                # Kısa bekleme (sayfa tamamen render olsun)
-                self._interruptible_sleep(2)
-                
+                # Liste/arama alanı için hızlı, birleşik hazır olma kontrolü
+                try:
+                    WebDriverWait(self.driver, 4, poll_frequency=0.2).until(
+                        lambda d: d.execute_script("""
+                            return !!(
+                                document.querySelector('#publications-list') ||
+                                document.querySelector('div.publications-list') ||
+                                document.querySelector('ul.publications-list') ||
+                                document.querySelector('span.pagination-pages-label')
+                            );
+                        """)
+                    )
+                except TimeoutException:
+                    # Bloklayıcı bir hata değil; parse aşamasında yeniden kontrol edilecek
+                    pass
+
                 # Cookie popup'ını kapat
                 handle_cookie_consent(self.driver)
                 
@@ -234,18 +262,25 @@ class ScienceDirectScraper:
             
             logger.url(search_url, "Arama URL'si")
             self.driver.get(search_url)
-            
-            # Sayfanın yüklenmesini bekle
+
+            # publications-list yüklenene kadar bekle (hızlı/uyarlanabilir)
             logger.loading("Sayfa yükleniyor")
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 8, poll_frequency=0.2).until(
+                    lambda d: d.execute_script("""
+                        return !!(
+                            document.querySelector('#publications-list') ||
+                            document.querySelector('div.publications-list') ||
+                            document.querySelector('ul.publications-list')
+                        );
+                    """)
+                )
+            except TimeoutException:
+                pass
 
             # Cookie popup'ını kapat
             handle_cookie_consent(self.driver)
 
-            # Arama sonuçlarının yüklenmesini bekle
-            logger.loading("Arama sonuçları bekleniyor")
-            self._interruptible_sleep(2)
-            
             # Sonuçları kontrol et
             logger.info("Sonuçlar kontrol ediliyor...")
             
@@ -318,7 +353,13 @@ class ScienceDirectScraper:
             full_url = f"https://www.sciencedirect.com{journal_url}" if journal_url.startswith('/') else journal_url
             logger.info(f"Journal about bilgileri alınıyor: {full_url}")
             self.driver.get(full_url)
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "main"))
+                )
+            except Exception:
+                pass
+            time.sleep(0.5)
             handle_cookie_consent(self.driver)
 
             page_source = self.driver.page_source
@@ -330,7 +371,13 @@ class ScienceDirectScraper:
                 about_url = full_url.rstrip('/') + '/about/aims-and-scope'
                 logger.info(f"About sekmesi bulundu, aims-and-scope sayfasına gidiliyor: {about_url}")
                 self.driver.get(about_url)
-                self._interruptible_sleep(3)
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "main"))
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
                 handle_cookie_consent(self.driver)
                 aims_and_scope = JournalParser.extract_aims_scope_from_about_page(self.driver.page_source)
             else:
@@ -359,7 +406,13 @@ class ScienceDirectScraper:
                 By.CSS_SELECTOR, "button[aria-label='Last page']:not([disabled])"
             )
             self.driver.execute_script("arguments[0].click();", last_btn)
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                )
+            except Exception:
+                pass
+            time.sleep(0.5)
             handle_cookie_consent(self.driver)
             logger.info("Son sayfaya gidildi (Last page butonu)")
             return
@@ -379,7 +432,13 @@ class ScienceDirectScraper:
             if last_page and last_page > 1:
                 base_url = self.driver.current_url.split('?')[0]
                 self.driver.get(f"{base_url}?page={last_page}")
-                self._interruptible_sleep(3)
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
                 handle_cookie_consent(self.driver)
                 logger.info(f"Son sayfaya gidildi: page={last_page}")
                 return
@@ -431,7 +490,13 @@ class ScienceDirectScraper:
 
             logger.info(f"Issues sayfasına gidiliyor: {issues_url}")
             self.driver.get(issues_url)
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues"))
+                )
+            except Exception:
+                pass
+            time.sleep(0.5)
             handle_cookie_consent(self.driver)
 
             # oldest_first: son sayfadan başla, geriye doğru git
@@ -523,7 +588,13 @@ class ScienceDirectScraper:
                             "button[aria-label='Previous page']:not([disabled])"
                         )
                         page_btn.click()
-                        self._interruptible_sleep(3)
+                        try:
+                            WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                            )
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
                         handle_cookie_consent(self.driver)
                     else:
                         page_btn = self.driver.find_element(
@@ -531,7 +602,13 @@ class ScienceDirectScraper:
                             "button[aria-label='Next page']:not([disabled])"
                         )
                         page_btn.click()
-                        self._interruptible_sleep(3)
+                        try:
+                            WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                            )
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
                         handle_cookie_consent(self.driver)
                 except Exception:
                     logger.info("Issues sayfasında ilk/son sayfaya ulaşıldı")
@@ -577,7 +654,13 @@ class ScienceDirectScraper:
         logger.info(f"  Issue URL: {full_issue_url}")
 
         self.driver.get(full_issue_url)
-        self._interruptible_sleep(3)
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "main"))
+            )
+        except Exception:
+            pass
+        time.sleep(0.5)
         handle_cookie_consent(self.driver)
 
         # Issue bilgilerini al
@@ -673,8 +756,21 @@ class ScienceDirectScraper:
             
             # Makale sayfasına git
             full_url = f"https://www.sciencedirect.com{article_url}" if article_url.startswith('/') else article_url
-            self.driver.get(full_url)
-            self._interruptible_sleep(3)
+            # Sayfa yükleme zaman aşımını kıs: full-load (analytics, fontlar vb.) beklemeyi engelle
+            self.driver.set_page_load_timeout(10)
+            try:
+                self.driver.get(full_url)
+            except TimeoutException:
+                # Timeout aştıktan sonra DOM içeriği erişilebilir, devam et
+                pass
+            finally:
+                self.driver.set_page_load_timeout(30)  # Diğer sayfalar için sıfırla
+            try:
+                WebDriverWait(self.driver, 8).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
+                )
+            except Exception:
+                pass
 
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
@@ -1027,7 +1123,13 @@ class ScienceDirectScraper:
                     last_page_urls.clear()
                     
                     self.driver.get(self.config.base_url)
-                    self._interruptible_sleep(3)
+                    try:
+                        WebDriverWait(self.driver, 15).until(
+                            EC.presence_of_element_located((By.ID, "publications-list"))
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
                     handle_cookie_consent(self.driver)
                     # update navigator info
                     self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)

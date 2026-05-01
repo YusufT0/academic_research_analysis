@@ -132,9 +132,16 @@ class IEEEXploreScraper:
                 logger.error("Sayfa yüklenemedi!")
                 return False
             
-            # Sayfanın tamamen yüklenmesini bekle
+            # Angular SPA: readyState complete olsa bile pagination render edilmemiş olabilir.
+            # pagination-bar'ı bekle — bu hazır olunca get_current_page_info() anında çalışır.
             logger.loading("Sayfa yükleniyor")
-            wait_for_page_load(self.driver)
+            try:
+                WebDriverWait(self.driver, 20).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.pagination-bar ul"))
+                )
+            except TimeoutException:
+                # Pagination bulunamadı ama devam et (tek sayfa olabilir)
+                wait_for_page_load(self.driver)
             logger.success("Sayfa hazır!")
             return True
             
@@ -470,6 +477,23 @@ class IEEEXploreScraper:
         wait_for_page_load(self.driver)
         self.rate_limiter.check_and_handle_rate_limit()
 
+        # TOC sayfalarında içerik çoğu zaman XHR ile sonradan geliyor.
+        # ReadyState=complete hemen dönse de makale listesi henüz DOM'a düşmemiş olabilir.
+        try:
+            WebDriverWait(self.driver, 12).until(
+                lambda d: d.execute_script(
+                    """
+                    return !!document.querySelector(
+                        'xpl-issue-results-items, section.issue-container, a[href*="/document/"]'
+                    );
+                    """
+                )
+            )
+        except TimeoutException:
+            # Bazı issue/volume sayfalarında makale yerine sadece yıl/issue listesi olabilir.
+            # Bu durumda mevcut akış fallback parser ile devam eder.
+            pass
+
         page_source = self.driver.page_source
 
         # Issue bilgilerini çıkar
@@ -546,7 +570,7 @@ class IEEEXploreScraper:
                     except Exception:
                         pass
 
-                self._interruptible_sleep(1)
+                self._interruptible_sleep(0.3)  # anti-bot politeness (azaltıldı)
 
             except RateLimitException:
                 raise

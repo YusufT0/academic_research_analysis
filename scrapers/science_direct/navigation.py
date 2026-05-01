@@ -3,16 +3,17 @@ Page navigation functions for Science Direct scraper
 """
 
 import sys
-import time
 import re
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException
 
 sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('science_direct')
+
+from .utils import handle_cookie_consent
 
 
 class PageNavigator:
@@ -60,19 +61,47 @@ class PageNavigator:
         """Sonraki sayfaya gider"""
         try:
             logger.info("Sonraki sayfaya gidiliyor...")
-            
+            previous_info = self.get_current_page_info()
+            expected_page = previous_info.get('current_page', 1) + 1
+
+            # Tıklamadan önce banner varsa kapat
+            handle_cookie_consent(self.driver, max_rounds=4, round_wait=0.35)
+
             # Next butonunu bul
-            next_button = WebDriverWait(self.driver, 10).until(
+            next_button = WebDriverWait(self.driver, 6).until(
                 EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
+                    By.CSS_SELECTOR,
                     "button[aria-label='Next page']:not([disabled])"
                 ))
             )
-            
-            next_button.click()
-            time.sleep(2)  # Sayfanın yüklenmesini bekle
+
+            try:
+                next_button.click()
+            except ElementClickInterceptedException:
+                # Banner tıklamayı kesti — kapat ve tekrar dene
+                logger.warning("Tıklama engellendi (cookie banner), kapatılıyor...")
+                handle_cookie_consent(self.driver, max_rounds=6, round_wait=0.4)
+                next_button = WebDriverWait(self.driver, 6).until(
+                    EC.element_to_be_clickable((
+                        By.CSS_SELECTOR,
+                        "button[aria-label='Next page']:not([disabled])"
+                    ))
+                )
+                next_button.click()
+
+            # Liste yüklenmesini bekle: aktif sayfa etiketinin hedef sayfaya gelmesini bekle
+            try:
+                WebDriverWait(self.driver, 8, poll_frequency=0.2).until(
+                    lambda d: d.find_element(By.CSS_SELECTOR, "span.pagination-pages-label").text.strip().startswith(f"Page {expected_page} ")
+                )
+            except TimeoutException:
+                # Fallback: en azından pagination label görünür olsun
+                WebDriverWait(self.driver, 2).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "span.pagination-pages-label"))
+                )
             
             logger.success("Sonraki sayfaya geçildi")
+            handle_cookie_consent(self.driver, max_rounds=4, round_wait=0.35)
             return True
             
         except TimeoutException:
@@ -86,19 +115,46 @@ class PageNavigator:
         """Önceki sayfaya gider"""
         try:
             logger.info("Önceki sayfaya gidiliyor...")
-            
+            previous_info = self.get_current_page_info()
+            expected_page = max(1, previous_info.get('current_page', 1) - 1)
+
+            # Tıklamadan önce banner varsa kapat
+            handle_cookie_consent(self.driver, max_rounds=4, round_wait=0.35)
+
             # Previous butonunu bul
-            prev_button = WebDriverWait(self.driver, 10).until(
+            prev_button = WebDriverWait(self.driver, 6).until(
                 EC.element_to_be_clickable((
-                    By.CSS_SELECTOR, 
+                    By.CSS_SELECTOR,
                     "button[aria-label='Previous page']:not([disabled])"
                 ))
             )
-            
-            prev_button.click()
-            time.sleep(2)  # Sayfanın yüklenmesini bekle
+
+            try:
+                prev_button.click()
+            except ElementClickInterceptedException:
+                logger.warning("Tıklama engellendi (cookie banner), kapatılıyor...")
+                handle_cookie_consent(self.driver, max_rounds=6, round_wait=0.4)
+                prev_button = WebDriverWait(self.driver, 6).until(
+                    EC.element_to_be_clickable((
+                        By.CSS_SELECTOR,
+                        "button[aria-label='Previous page']:not([disabled])"
+                    ))
+                )
+                prev_button.click()
+
+            # Liste yüklenmesini bekle: aktif sayfa etiketinin hedef sayfaya gelmesini bekle
+            try:
+                WebDriverWait(self.driver, 8, poll_frequency=0.2).until(
+                    lambda d: d.find_element(By.CSS_SELECTOR, "span.pagination-pages-label").text.strip().startswith(f"Page {expected_page} ")
+                )
+            except TimeoutException:
+                # Fallback: en azından pagination label görünür olsun
+                WebDriverWait(self.driver, 2).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "span.pagination-pages-label"))
+                )
             
             logger.success("Önceki sayfaya geçildi")
+            handle_cookie_consent(self.driver, max_rounds=4, round_wait=0.35)
             return True
             
         except TimeoutException:

@@ -33,7 +33,7 @@ def handle_cookie_consent(selenium_driver, timeout: int = 5) -> bool:
             try:
                 selenium_driver._sb.cdp.click_if_visible(selector)
                 logger.success("Cookie popup kapatıldı (CDP)")
-                time.sleep(1)
+                time.sleep(0.3)
                 return True
             except Exception:
                 logger.info("Cookie popup bulunamadı (zaten kabul edilmiş veya yok)")
@@ -49,7 +49,7 @@ def handle_cookie_consent(selenium_driver, timeout: int = 5) -> bool:
                 )
                 element.click()
                 logger.success("Cookie popup kapatıldı")
-                time.sleep(1)
+                time.sleep(0.3)
                 return True
             except Exception:
                 logger.info("Cookie popup bulunamadı (zaten kabul edilmiş veya yok)")
@@ -79,7 +79,7 @@ def handle_open_access_modal(selenium_driver, timeout: int = 5) -> bool:
             try:
                 selenium_driver._sb.cdp.click_if_visible(selector)
                 logger.success("Open Access modal kapatıldı (CDP)")
-                time.sleep(1)
+                time.sleep(0.3)
                 return True
             except Exception:
                 logger.info("Open Access modal bulunamadı.")
@@ -94,7 +94,7 @@ def handle_open_access_modal(selenium_driver, timeout: int = 5) -> bool:
                 )
                 element.click()
                 logger.success("Open Access modal kapatıldı")
-                time.sleep(1)
+                time.sleep(0.3)
                 return True
             except Exception:
                 logger.info("Open Access modal bulunamadı.")

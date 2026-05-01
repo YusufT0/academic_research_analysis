@@ -6,6 +6,7 @@ FastAPI backend for managing IEEE and ScienceDirect scrapers.
 
 import sys
 import asyncio
+import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -177,6 +178,13 @@ async def lifespan(app: FastAPI):
     global scraper_manager
     
     logger.header("BACKEND BAŞLATILIYOR")
+
+    # Uvicorn access log'undan yüksek frekanslı path'leri bastır
+    class _SuppressNoiseFilter(logging.Filter):
+        _SUPPRESSED = ("/metrics", "/health", "/health/live", "/health/ready", "/favicon.ico")
+        def filter(self, record: logging.LogRecord) -> bool:
+            return not any(p in record.getMessage() for p in self._SUPPRESSED)
+    logging.getLogger("uvicorn.access").addFilter(_SuppressNoiseFilter())
     
     # Run tests if enabled
     if settings.run_tests_on_startup:

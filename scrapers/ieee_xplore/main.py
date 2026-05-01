@@ -78,7 +78,6 @@ async def main():
         # Sayfanın tamamen yüklenmesini bekle
         logger.loading("Sayfa yükleniyor")
         wait_for_page_load(driver.driver)
-        time.sleep(2)
         
         logger.success("Sayfa hazır!")
         
@@ -117,7 +116,6 @@ async def main():
                     
                     driver.get(ieee_config.base_url)
                     wait_for_page_load(driver.driver)
-                    time.sleep(2)
                     
                     navigator = PageNavigator(driver.driver)
                     page_info = navigator.get_current_page_info()
@@ -148,9 +146,8 @@ async def main():
                 logger.error("Sonraki sayfaya geçilemedi, tarama sonlandırılıyor")
                 break
             
-            # Sayfanın yüklenmesini bekle
+            # Sayfanın yüklenmesini bekle (navigation.py'de zaten element-wait yapılıyor)
             wait_for_page_load(driver.driver)
-            time.sleep(2)
             
             current_page += 1
         

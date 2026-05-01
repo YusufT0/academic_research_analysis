@@ -412,8 +412,28 @@ class ArticleParser:
             result_items = soup.find_all('xpl-issue-results-items')
             
             if not result_items:
-                logger.warning("Makale item'ları bulunamadı")
-                return []
+                # Fallback: bazı TOC varyantlarında custom element yerine doğrudan /document/ linkleri bulunur
+                article_links = soup.select('a[href*="/document/"]')
+                if not article_links:
+                    logger.warning("Makale item'ları bulunamadı")
+                    return []
+
+                dedup = set()
+                articles = []
+                for link in article_links:
+                    href = link.get('href', '').strip()
+                    if not href or '/document/' not in href:
+                        continue
+                    if href in dedup:
+                        continue
+                    dedup.add(href)
+                    title_text = link.get_text(strip=True)
+                    if not title_text:
+                        continue
+                    articles.append({'url': href, 'title': title_text})
+
+                logger.found(len(articles), "makale URL'i (fallback)")
+                return articles
             
             logger.found(len(result_items), "item")
             
