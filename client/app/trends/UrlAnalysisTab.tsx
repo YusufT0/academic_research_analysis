@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import Link from 'next/link';
 import {
   Link2,
   Search,
@@ -35,12 +36,14 @@ import {
   getActiveJournalAnalysisForJournal,
   getJournalTopicTrends,
   listClusters,
+  getJournal,
   type JournalExistsResponse,
   type JournalUrlValidateResponse,
   type AnalysisStep,
   type AnalysisTaskProgress,
 } from '@/lib/api';
-import type { ScraperStatus, IssueProgress, TopicTrendsData, TopicCluster } from '@/lib/types';
+import type { ScraperStatus, IssueProgress, TopicTrendsData, TopicCluster, Journal } from '@/lib/types';
+import { JournalCard } from '@/app/journals/JournalCard';
 
 // ─── URL patterns ────────────────────────────────────────────────────────────
 
@@ -67,6 +70,15 @@ function detectPlatformFrontend(url: string): string | null {
     if (cfg.regex.test(url.trim())) return key;
   }
   return null;
+}
+
+function getFullUrl(url: string, sourceWebsite: string): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  return url;
 }
 
 const PLATFORM_BG: Record<string, string> = {
@@ -574,8 +586,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
   });
   const [isStopping, setIsStopping] = useState(false);
-  const [isQueueExpanded, setIsQueueExpanded] = useState(false);
   const [resultData, setResultData] = useState<UrlAnalysisResult | null>(null);
+  const [resolvedJournal, setResolvedJournal] = useState<Journal | null>(null);
+  const [journalDetailLoading, setJournalDetailLoading] = useState(false);
+  const [journalDetailError, setJournalDetailError] = useState<string | null>(null);
 
   const pollRef          = useRef<NodeJS.Timeout | null>(null);
   const wsRef            = useRef<WebSocket | null>(null);
@@ -625,6 +639,9 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     setScraperStatus(null);
     setIsStopping(false);
     setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
     setAnalysisSteps({
       cluster_update: { status: 'pending', message: 'Bekliyor...' },
       openalex:       { status: 'pending', message: 'Bekliyor...' },
@@ -745,6 +762,18 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       }
       const journalId   = existsRes.journal.id;
       const journalName = restoredJournalName ?? existsRes.journal.name;
+
+      setJournalDetailLoading(true);
+      setJournalDetailError(null);
+      try {
+        const fullJournal = await getJournal(journalId);
+        setResolvedJournal(fullJournal);
+      } catch {
+        setResolvedJournal(null);
+        setJournalDetailError('Dergi detayları yüklenemedi. Journals sayfasından görüntüleyebilirsiniz.');
+      } finally {
+        setJournalDetailLoading(false);
+      }
 
       // 2. Start parallel analysis task
       const taskId = existingTaskId ?? (await startJournalAnalysis(journalId, modelVersion)).task_id;
@@ -1317,23 +1346,46 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
               </div>
             ))}
           </div>
-          <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-            <button
-              onClick={() => setIsQueueExpanded((v) => !v)}
-              className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-slate-50 transition-colors"
-            >
-              <span className="text-sm font-medium text-slate-700">Dergi Kuyruğu</span>
-              <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform duration-300 ${isQueueExpanded ? 'rotate-180' : ''}`} />
-            </button>
-            {isQueueExpanded && (
-              <div className="border-t border-slate-200 p-3">
-                <InlineJournalQueue
-                  scraper={scraperStatus}
-                  journalNameOverride={existsInfo?.journal?.name}
-                />
-              </div>
+        </div>
+      )}
+
+      {flowState === 'done' && (
+        <div className="space-y-3 animate-in slide-in-from-top-2 duration-300">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+            <div>
+              <p className="text-sm font-semibold text-indigo-800">Scrape Edilen Dergi Detayı</p>
+              <p className="text-xs text-indigo-600">Grafiğin üstünde journals sayfasındaki detaylar gösterilir.</p>
+            </div>
+            {resolvedJournal && (
+              <Link
+                href={`/journals?journal_id=${resolvedJournal.id}`}
+                className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                Journals Detayına Git
+              </Link>
             )}
           </div>
+
+          {journalDetailLoading && (
+            <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Dergi detayları yükleniyor...
+            </div>
+          )}
+
+          {!journalDetailLoading && journalDetailError && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+              {journalDetailError}
+            </div>
+          )}
+
+          {!journalDetailLoading && resolvedJournal && (
+            <JournalCard
+              journal={resolvedJournal}
+              getFullUrl={getFullUrl}
+              enableJournalsDeepLinks
+            />
+          )}
         </div>
       )}
 

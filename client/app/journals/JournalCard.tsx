@@ -13,9 +13,10 @@ interface JournalCardProps {
   getFullUrl: (url: string, source: string) => string;
   defaultExpandedIssueId?: string | null;
   highlightArticleId?: string | null;
+  enableJournalsDeepLinks?: boolean;
 }
 
-export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highlightArticleId }: JournalCardProps) {
+export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highlightArticleId, enableJournalsDeepLinks = false }: JournalCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [aimsExpanded, setAimsExpanded] = useState(false);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -244,25 +245,37 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
                   
                   return (
                     <div key={issue.id} className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50">
-                      <button 
-                        onClick={() => handleExpandIssue(issue.id)}
-                        className="w-full flex items-center justify-between p-3 bg-white hover:bg-slate-50 transition-colors text-left"
-                      >
-                        <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-4 flex-1">
-                          <span className="font-semibold text-slate-700 text-sm">{issueName}</span>
-                          {(issue.year || issue.month) && (
-                            <span className="text-xs text-slate-500">
-                              {issue.month ? `${issue.month}/` : ''}{issue.year}
-                            </span>
-                          )}
-                          {issue.article_count > 0 && (
-                            <Badge variant="default" className="w-fit text-xs bg-slate-100 text-slate-600 border-none">
-                              {issue.article_count} Makale
-                           </Badge>
-                          )}
-                        </div>
-                        {isIssueExpanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
-                      </button>
+                      <div className="w-full flex items-center gap-2 p-3 bg-white hover:bg-slate-50 transition-colors">
+                        <button
+                          onClick={() => handleExpandIssue(issue.id)}
+                          className="flex items-center justify-between text-left flex-1"
+                        >
+                          <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-4 flex-1">
+                            <span className="font-semibold text-slate-700 text-sm">{issueName}</span>
+                            {(issue.year || issue.month) && (
+                              <span className="text-xs text-slate-500">
+                                {issue.month ? `${issue.month}/` : ''}{issue.year}
+                              </span>
+                            )}
+                            {issue.article_count > 0 && (
+                              <Badge variant="default" className="w-fit text-xs bg-slate-100 text-slate-600 border-none">
+                                {issue.article_count} Makale
+                             </Badge>
+                            )}
+                          </div>
+                          {isIssueExpanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+                        </button>
+
+                        {enableJournalsDeepLinks && (
+                          <Link
+                            href={`/journals?journal_id=${journal.id}&issue_id=${issue.id}`}
+                            className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 whitespace-nowrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            Detay
+                          </Link>
+                        )}
+                      </div>
                       
                       {isIssueExpanded && (
                         <div className="p-3 bg-slate-50 border-t border-slate-200">
@@ -294,6 +307,14 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
                                         <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex items-center gap-1">
                                           <Star className="h-3 w-3" /> {article.citation_count}
                                         </span>
+                                      )}
+                                      {enableJournalsDeepLinks && (
+                                        <Link
+                                          href={`/journals?journal_id=${journal.id}&issue_id=${issue.id}&article_id=${article.id}`}
+                                          className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800"
+                                        >
+                                          Journals Detayı
+                                        </Link>
                                       )}
                                     </div>
                                   </div>
