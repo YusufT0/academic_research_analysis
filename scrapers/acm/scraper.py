@@ -61,7 +61,10 @@ class ACMScraper:
         
         if self.proxy_config.use_proxy:
             if self.proxy_config.is_configured():
-                logger.success("Proxy yapılandırması yüklendi")
+                logger.success("Proxy yapılandırması yüklendi:")
+                logger.info(f"  - Host: {self.proxy_config.host}")
+                logger.info(f"  - Port: {self.proxy_config.port}")
+                logger.info(f"  - User: {self.proxy_config.user}")
             else:
                 logger.warning("Uyarı: USE_PROXY=true ama proxy bilgileri eksik!")
         else:
@@ -546,7 +549,8 @@ class ACMScraper:
 
             article_url = article_stub.get('url', '')
             full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
-            logger.info(f"  [{idx}/{len(article_list)}] {full_url}")
+            stub_title = article_stub.get('title', '')
+            logger.info(f"[{idx}/{len(article_list)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else full_url}")
 
             article_data = None
             success = False
@@ -572,7 +576,7 @@ class ACMScraper:
 
             if success and article_data:
                 articles.append(article_data)
-                logger.success(f"  Makale eklendi: {article_data['title'][:50]}...")
+                logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
                 consecutive_failures = 0
             else:
                 retry_queue.append(full_url)
@@ -597,11 +601,14 @@ class ACMScraper:
 
         # Retry kuyruğu
         if retry_queue:
-            logger.section(f"KUYRUK: {len(retry_queue)} başarısız makale tekrar deneniyor...")
-            for r_url in retry_queue:
+            logger.info(f"{len(retry_queue)} makale yüklenemedi, yeniden deneniyor...")
+            logger.info(f"Retry başlıyor ({len(retry_queue)} makale)...")
+            for retry_idx, r_url in enumerate(retry_queue, 1):
                 self.check_stop_flag()
                 try:
+                    logger.info(f"[Retry {retry_idx}/{len(retry_queue)}] {r_url}")
                     if not self.selenium_driver.get(r_url, wait_after=3):
+                        logger.warning(f"Retry başarısız, makale atlanıyor: {r_url}")
                         continue
                     self._close_modals()
                     wait_for_page_load(self.selenium_driver)
@@ -611,13 +618,15 @@ class ACMScraper:
                     )
                     if article_data and article_data.get('title'):
                         articles.append(article_data)
-                        logger.success(f"  Kurtarıldı: {article_data['title'][:50]}...")
+                        logger.success(f"Retry başarılı: {article_data['title'][:50]}...")
+                    else:
+                        logger.warning(f"Retry: makale detayları alınamadı ({r_url})")
 
                     self._random_wait()
                 except (ScraperStoppedException, CloudflareBlockedException):
                     raise
                 except Exception as e:
-                    logger.warning(f"  Kuyruk hatası: {e}")
+                    logger.warning(f"Retry hatası ({r_url}): {e}")
 
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}

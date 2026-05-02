@@ -5,8 +5,9 @@ from typing import Dict, Any, List
 from backend.services.stream_service import stream_service
 from backend.services.openalex.citation_service import citation_service
 from database.models import Article, Journal
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("openalex_worker")
 
 class CitationWorker:
     """
@@ -40,7 +41,12 @@ class CitationWorker:
             updated_count = await citation_service.update_articles_citations_bulk([article])
 
             if updated_count > 0:
-                logger.info(f"Successfully updated citation data for Article (DOI: {doi})")
+                logger.info(
+                    "Makale citation verisi guncellendi",
+                    article_id=str(article.id),
+                    doi=doi,
+                    updated_count=updated_count,
+                )
                 await stream_service.publish("article:indexed", {"article_id": str(article.id)})
 
                 try:

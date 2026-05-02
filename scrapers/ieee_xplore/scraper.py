@@ -543,7 +543,8 @@ class IEEEXploreScraper:
                     if article_url.startswith('/') else article_url
                 )
 
-                logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor...")
+                stub_title = article_stub.get('title', '')
+                logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
 
                 if not self.selenium_driver.get(full_url, wait_after=2):
                     logger.warning(f"Makale sayfası yüklenemedi, retry kuyruğuna eklendi: {article_url}")

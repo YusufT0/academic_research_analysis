@@ -297,6 +297,25 @@ export async function resumeAcmScraper() {
   return fetchApi('/scrapers/acm/resume', { method: 'POST' });
 }
 
+export async function startWileyScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+  return fetchApi('/scrapers/wiley/start', {
+    method: 'POST',
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+  });
+}
+
+export async function stopWileyScraper() {
+  return fetchApi('/scrapers/wiley/stop', { method: 'POST' });
+}
+
+export async function pauseWileyScraper() {
+  return fetchApi('/scrapers/wiley/pause', { method: 'POST' });
+}
+
+export async function resumeWileyScraper() {
+  return fetchApi('/scrapers/wiley/resume', { method: 'POST' });
+}
+
 export async function startAllScrapers(headless = true) {
   return fetchApi('/scrapers/start-all', {
     method: 'POST',

@@ -578,6 +578,9 @@ class ArticleDetailParser:
                 h1 = soup.find('h1')
                 if h1:
                     article_details['title'] = h1.get_text(strip=True)
+                    logger.success(f"Başlık: {article_details['title'][:60]}...")
+                else:
+                    logger.warning("Başlık bulunamadı")
             
             # ====== 2. MAKALE TİPİ ve ERİŞİM ======
             logger.info("Makale tipi alınıyor...")
@@ -632,6 +635,11 @@ class ArticleDetailParser:
                         article_details['doi'] = doi_text.split('doi.org/')[-1]
                     else:
                         article_details['doi'] = doi_text
+                    logger.success(f"DOI: {article_details['doi']}")
+                else:
+                    logger.warning("DOI bulunamadı")
+            else:
+                logger.warning("DOI bulunamadı")
             
             # ====== 5. YAYIN TARİHİ ======
             logger.info("Yayın tarihi alınıyor...")
@@ -642,6 +650,10 @@ class ArticleDetailParser:
                     raw_date = date_span.get_text(strip=True)
                     article_details['publication_date'] = ArticleDetailParser._parse_acm_date(raw_date)
                     logger.success(f"Yayın tarihi: {article_details['publication_date']}")
+                else:
+                    logger.warning("Yayın tarihi bulunamadı")
+            else:
+                logger.warning("Yayın tarihi bulunamadı")
             
             # ====== 6. VOLUME / ISSUE / PAGES ======
             logger.info("Volume/Issue/Pages alınıyor...")
@@ -732,9 +744,13 @@ class ArticleDetailParser:
                     kw_text = kw_link.get_text(strip=True)
                     if kw_text and len(kw_text) < 100:  # Çok uzun metinleri filtrele
                         article_details['keywords'].append(kw_text)
-                
+
                 if article_details['keywords']:
-                    logger.found(len(article_details['keywords']), "keyword")
+                    logger.found(len(article_details['keywords']), "anahtar kelime")
+                else:
+                    logger.warning("Anahtar kelime bulunamadı")
+            else:
+                logger.warning("Anahtar kelime bulunamadı")
             
             # ====== 11. CITATION COUNT ======
             metrics_div = soup.find('div', class_='pub-metrics')

@@ -547,7 +547,7 @@ class ArticleParser:
                 logger.warning("Yazar bilgisi bulunamadı")
             
             # 4. DOI al
-            logger.info("DOI aranıyor...")
+            logger.info("DOI alınıyor...")
             doi_link = soup.find('a', class_='doi')
             
             if doi_link:
@@ -558,7 +558,7 @@ class ArticleParser:
                 logger.warning("DOI bulunamadı")
             
             # 5. Publication Date, Pages, Publisher al
-            logger.info("Meta bilgiler alınıyor...")
+            logger.info("Makale meta bilgileri alınıyor...")
             
             # Publication Date - Banner içindeki "Available online" tarihinden
             publication_date = ArticleParser._extract_available_online_date(soup)
@@ -594,7 +594,7 @@ class ArticleParser:
                 # Journal adını publisher olarak kullan (Science Direct için genellikle Elsevier)
                 article_details['publisher'] = 'Elsevier'
             
-            logger.success(f"Meta: Date={bool(article_details['publication_date'])}, Pages={bool(article_details['pages'])}")
+            logger.success(f"Meta bilgiler: DOI={bool(article_details['doi'])}, Date={bool(article_details['publication_date'])}, Pages={bool(article_details['pages'])}")
             
             # 6. Abstract al
             logger.info("Abstract alınıyor...")
@@ -617,7 +617,7 @@ class ArticleParser:
             return article_details
             
         except Exception as e:
-            logger.error(f"Makale detay çıkarma hatası: {e}")
+            logger.failed("Makale detay çıkarma hatası", e)
             import traceback
             traceback.print_exc()
             return None

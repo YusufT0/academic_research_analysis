@@ -42,6 +42,10 @@ import {
   stopAcmScraper,
   pauseAcmScraper,
   resumeAcmScraper,
+  startWileyScraper,
+  stopWileyScraper,
+  pauseWileyScraper,
+  resumeWileyScraper,
   getScraperLogs,
   startAllScrapers,
   startAllScrapersSequential,
@@ -652,17 +656,20 @@ const SCRAPER_OPTIONS = [
   { value: 'ieee', label: 'IEEE Xplore', variant: 'info' as const },
   { value: 'sciencedirect', label: 'ScienceDirect', variant: 'success' as const },
   { value: 'acm', label: 'ACM Digital Library', variant: 'warning' as const },
+  { value: 'wiley', label: 'Wiley Online Library', variant: 'default' as const },
 ];
 
 function scraperLabel(type: string) {
   if (type === 'ieee') return 'IEEE';
   if (type === 'acm') return 'ACM';
+  if (type === 'wiley') return 'Wiley';
   return 'SD';
 }
 
-function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' {
+function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' | 'default' {
   if (type === 'ieee') return 'info';
   if (type === 'acm') return 'warning';
+  if (type === 'wiley') return 'default';
   return 'success';
 }
 
@@ -970,7 +977,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
     setViewMode(mode);
     if (mode === 'split') {
       // Split modda global WS tüm scraper'ları alır (status/progress için)
-      subscribe(['ieee', 'sciencedirect', 'acm']);
+      subscribe(['ieee', 'sciencedirect', 'acm', 'wiley']);
     }
   }, [subscribe]);
 
@@ -1061,10 +1068,11 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
       <CardContent>
         {viewMode === 'split' ? (
           // ── SPLIT MOD ──
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
             <SplitPanel scraperType="ieee" label="IEEE Xplore" />
             <SplitPanel scraperType="sciencedirect" label="ScienceDirect" />
             <SplitPanel scraperType="acm" label="ACM Digital Library" />
+            <SplitPanel scraperType="wiley" label="Wiley Online Library" />
           </div>
         ) : loading ? (
           // ── COMBINED MOD yükleniyor ──
@@ -1331,7 +1339,7 @@ export default function ScrapersPage() {
             const newState = { ...prev };
             const sType = event.scraper_type;
 
-            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm' || sType === 'wiley') {
               newState[sType] = {
                 ...newState[sType],
                 ...event.data
@@ -1339,7 +1347,7 @@ export default function ScrapersPage() {
             }
 
             // any_running / all_completed'ı yeniden hesapla
-            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status];
+            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status, newState.wiley?.status];
             newState.any_running = statuses.some(s => s === 'running' || s === 'starting' || s === 'paused');
             newState.all_completed = statuses.every(s => s === 'completed' || s === 'stopped' || s === 'idle' || s === 'error');
 
@@ -1426,7 +1434,7 @@ export default function ScrapersPage() {
             </div>
             <div className="text-left">
               <h2 className="font-semibold text-slate-900">URL ile Journal İşle</h2>
-              <p className="text-sm text-slate-500">ACM, ScienceDirect veya IEEE Xplore URL&#39;si girerek tekil dergi scraping yapın</p>
+              <p className="text-sm text-slate-500">ACM, ScienceDirect, IEEE Xplore veya Wiley URL&#39;si girerek tekil dergi scraping yapın</p>
             </div>
           </div>
           <ChevronUp
@@ -1478,7 +1486,7 @@ export default function ScrapersPage() {
       </Card>
 
       {/* Scraper Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-6">
         {status && (
           <>
             <ScraperControl
@@ -1510,6 +1518,16 @@ export default function ScrapersPage() {
               onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
               onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
               onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
+            />
+            <ScraperControl
+              scraper={status.wiley}
+              title="Wiley Online Library"
+              description="Wiley akademik makalelerini toplar"
+              showDepth
+              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startWileyScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+              onStop={async () => { await stopWileyScraper(); await fetchStatus(); }}
+              onPause={async () => { await pauseWileyScraper(); await fetchStatus(); }}
+              onResume={async () => { await resumeWileyScraper(); await fetchStatus(); }}
             />
           </>
         )}

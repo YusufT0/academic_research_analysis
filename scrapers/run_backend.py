@@ -19,5 +19,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8000,
         log_level="info",
+        access_log=False,
         timeout_graceful_shutdown=20,  # Shutdown max 20s — sonra zorla kapatır
     )

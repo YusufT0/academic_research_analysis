@@ -132,6 +132,7 @@ export interface AllScrapersStatus {
   ieee: ScraperStatus;
   sciencedirect: ScraperStatus;
   acm: ScraperStatus;
+  wiley: ScraperStatus;
   any_running: boolean;
   all_completed: boolean;
 }

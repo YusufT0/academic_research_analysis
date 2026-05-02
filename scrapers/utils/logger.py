@@ -141,7 +141,7 @@ def _configure_structlog():
         
         # Scrapers that should be forwarded to the frontend via WebSocket
         _SCRAPER_LOGGERS = frozenset({
-            'ieee_xplore', 'science_direct', 'acm',
+            'ieee_xplore', 'science_direct', 'acm', 'wiley',
             'scraper_manager', 'rate_limiter',
         })
 
@@ -165,6 +165,8 @@ def _configure_structlog():
                     scraper_name = 'sciencedirect'
                 elif 'acm' in ln or '[acm thread]' in en:
                     scraper_name = 'acm'
+                elif 'wiley' in ln or '[wiley thread]' in en:
+                    scraper_name = 'wiley'
                 else:
                     scraper_name = logger_name
 
@@ -212,7 +214,9 @@ def _configure_structlog():
         # 3. parti kütüphane log seviyelerini sınırla (selenium-wire vb. log kirliliğini önlemek için)
         noisy_loggers = [
             'seleniumwire', 'urllib3', 'hpack', 'selenium', 
-            'WDM', 'undetected_chromedriver'
+            'WDM', 'undetected_chromedriver',
+            'httpx', 'httpcore',
+            'uvicorn.access'
         ]
         for nl in noisy_loggers:
             logging.getLogger(nl).setLevel(logging.WARNING)

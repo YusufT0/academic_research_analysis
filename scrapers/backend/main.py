@@ -185,6 +185,7 @@ async def lifespan(app: FastAPI):
         def filter(self, record: logging.LogRecord) -> bool:
             return not any(p in record.getMessage() for p in self._SUPPRESSED)
     logging.getLogger("uvicorn.access").addFilter(_SuppressNoiseFilter())
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     
     # Run tests if enabled
     if settings.run_tests_on_startup:

@@ -37,14 +37,15 @@ logger = get_logger('scraper_manager')
 IEEEXploreScraper = None
 ScienceDirectScraper = None
 ACMScraper = None
+WileyScraper = None
 ScraperStoppedException = Exception  # Fallback
 
 _scraper_modules_loaded = False
 
 
 def _load_scraper_modules():
-    """Scraper modüllerini yükle (thread başlamadan önce çağrılmalı)"""
-    global IEEEXploreScraper, ScienceDirectScraper, ACMScraper, ScraperStoppedException, _scraper_modules_loaded
+    """Scraper modülleri yükle (thread başlamadan önce çağrılmalı)"""
+    global IEEEXploreScraper, ScienceDirectScraper, ACMScraper, WileyScraper, ScraperStoppedException, _scraper_modules_loaded
     if _scraper_modules_loaded:
         return
     logger.info("Scraper modülleri yükleniyor...")
@@ -56,9 +57,20 @@ def _load_scraper_modules():
         ScienceDirectScraper = _SD
         ACMScraper = _ACM
         ScraperStoppedException = (IEEEScraperStoppedException, SDScraperStoppedException, ACMScraperStoppedException)
-        logger.success("Scraper modülleri yüklendi")
+        logger.success("IEEE/SD/ACM scraper modülleri yüklendi")
     except Exception as e:
-        logger.error(f"Scraper modülleri yüklenemedi: {e}")
+        logger.error(f"IEEE/SD/ACM scraper modülleri yüklenemedi: {e}")
+    try:
+        from wiley.scraper import WileyScraper as _Wiley, ScraperStoppedException as WileyScraperStoppedException
+        WileyScraper = _Wiley
+        # ScraperStoppedException tuple'a ekle
+        if isinstance(ScraperStoppedException, tuple):
+            ScraperStoppedException = ScraperStoppedException + (WileyScraperStoppedException,)
+        else:
+            ScraperStoppedException = (ScraperStoppedException, WileyScraperStoppedException)
+        logger.success("Wiley scraper modülü yüklendi")
+    except Exception as e:
+        logger.error(f"Wiley scraper modülü yüklenemedi: {e}")
     _scraper_modules_loaded = True
 
 
@@ -337,29 +349,34 @@ class ScraperManager:
         self.ieee_progress = ScraperProgress("ieee")
         self.sciencedirect_progress = ScraperProgress("sciencedirect")
         self.acm_progress = ScraperProgress("acm")
+        self.wiley_progress = ScraperProgress("wiley")
         
         # Thread executor - scraper'lar için ayrı thread pool
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="scraper")
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="scraper")
         
         # Futures
         self._ieee_future: Optional[concurrent.futures.Future] = None
         self._sciencedirect_future: Optional[concurrent.futures.Future] = None
         self._acm_future: Optional[concurrent.futures.Future] = None
+        self._wiley_future: Optional[concurrent.futures.Future] = None
         
         # Stop flags (thread-safe)
         self._ieee_stop_flag = threading.Event()
         self._sciencedirect_stop_flag = threading.Event()
         self._acm_stop_flag = threading.Event()
+        self._wiley_stop_flag = threading.Event()
 
         # Pause flags (thread-safe)
         self._ieee_pause_flag = threading.Event()
         self._sciencedirect_pause_flag = threading.Event()
         self._acm_pause_flag = threading.Event()
+        self._wiley_pause_flag = threading.Event()
 
         # Live scraper references — set by threads, used for force-close on stop
         self._ieee_scraper = None
         self._sciencedirect_scraper = None
         self._acm_scraper = None
+        self._wiley_scraper = None
         
         # Database service
         self._db_service: Optional[DatabaseService] = None
@@ -379,6 +396,9 @@ class ScraperManager:
             self.acm_headless = _settings.scraper_headless
             self.acm_max_articles = _settings.acm_max_articles
             self.acm_depth = 1
+            self.wiley_headless = _settings.scraper_headless
+            self.wiley_max_articles = getattr(_settings, 'wiley_max_articles', 100)
+            self.wiley_depth = 1
         except Exception:
             self.ieee_headless = True
             self.ieee_max_articles = 100
@@ -389,17 +409,22 @@ class ScraperManager:
             self.acm_headless = True
             self.acm_max_articles = 100
             self.acm_depth = 1
+            self.wiley_headless = True
+            self.wiley_max_articles = 100
+            self.wiley_depth = 1
 
         # Issue işleme sırası: "newest_first" (yeniden eskiye) veya "oldest_first" (eskiden yeniye)
         # Varsayılan: yeniden eskiye (newest_first)
         self.ieee_issues_order: str = "newest_first"
         self.sciencedirect_issues_order: str = "newest_first"
         self.acm_issues_order: str = "newest_first"
+        self.wiley_issues_order: str = "newest_first"
 
         # Sürekli mod: tamamlandıktan sonra otomatik yeniden başlat
         self.ieee_continuous: bool = False
         self.sciencedirect_continuous: bool = False
         self.acm_continuous: bool = False
+        self.wiley_continuous: bool = False
         
         # Round Robin Settings
         self.round_robin_journals_per_switch = 3
@@ -412,6 +437,8 @@ class ScraperManager:
         self._ieee_single_journal_context: Optional[Dict[str, Any]] = None
         self._sd_single_journal_context: Optional[Dict[str, Any]] = None
         self._acm_single_journal_context: Optional[Dict[str, Any]] = None
+        self._wiley_single_journal_context: Optional[Dict[str, Any]] = None
+        self._wiley_single_journal_override = None
     
     async def initialize(self):
         """Manager'ı initialize et"""
@@ -445,28 +472,36 @@ class ScraperManager:
         """ACM scraper durumu"""
         return self.acm_progress.to_dict()
     
+    def get_wiley_status(self) -> Dict[str, Any]:
+        """Wiley scraper durumu"""
+        return self.wiley_progress.to_dict()
+
     def get_all_status(self) -> Dict[str, Any]:
         """Tüm scraper'ların durumu"""
         ieee = self.get_ieee_status()
         sd = self.get_sciencedirect_status()
         acm = self.get_acm_status()
+        wiley = self.get_wiley_status()
         
         any_running = (
             self.ieee_progress.status == ScraperStatus.RUNNING or
             self.sciencedirect_progress.status == ScraperStatus.RUNNING or
-            self.acm_progress.status == ScraperStatus.RUNNING
+            self.acm_progress.status == ScraperStatus.RUNNING or
+            self.wiley_progress.status == ScraperStatus.RUNNING
         )
         
         all_completed = (
             self.ieee_progress.status == ScraperStatus.COMPLETED and
             self.sciencedirect_progress.status == ScraperStatus.COMPLETED and
-            self.acm_progress.status == ScraperStatus.COMPLETED
+            self.acm_progress.status == ScraperStatus.COMPLETED and
+            self.wiley_progress.status == ScraperStatus.COMPLETED
         )
         
         return {
             "ieee": ieee,
             "sciencedirect": sd,
             "acm": acm,
+            "wiley": wiley,
             "any_running": any_running,
             "all_completed": all_completed,
         }
@@ -488,6 +523,11 @@ class ScraperManager:
         if scraper_type in ["all", "acm"]:
             for log in self.acm_progress.logs:
                 log["scraper_type"] = "acm"
+                logs.append(log)
+
+        if scraper_type in ["all", "wiley"]:
+            for log in self.wiley_progress.logs:
+                log["scraper_type"] = "wiley"
                 logs.append(log)
         
         # Timestamp'e göre sırala
@@ -520,6 +560,7 @@ class ScraperManager:
             "ieee": self.ieee_progress,
             "sciencedirect": self.sciencedirect_progress,
             "acm": self.acm_progress,
+            "wiley": self.wiley_progress,
         }
         progress = progress_map.get(scraper_type)
         if progress is not None:
@@ -599,6 +640,29 @@ class ScraperManager:
                 depth=depth,
             )
 
+        elif scraper_type == "wiley":
+            import re as _re
+            m = _re.search(r"/(journal|loi|toc|index)/([a-zA-Z0-9\-\.]+)", url, _re.IGNORECASE)
+            wiley_id = m.group(2) if m else "unknown"
+            single_journal_list = [{
+                "name": f"Journal ({wiley_id})",
+                "url": url,
+                "journal_id": wiley_id,
+                "open_access": False,
+                "resolve_name_from_url": True,
+            }]
+            self._wiley_single_journal_override = single_journal_list
+            self._wiley_single_journal_context = {
+                "url": url,
+                "max_articles": max_articles,
+                "depth": depth,
+            }
+            return await self.start_wiley(
+                headless=headless,
+                max_articles=max_articles,
+                depth=depth,
+            )
+
         return False
 
 
@@ -649,7 +713,6 @@ class ScraperManager:
         progress.add_log("info", "IEEE scraper başlatılıyor (ayrı thread)...")
         logger.info("[IEEE Thread] Scraper başlatılıyor...")
         logger.info(f"[IEEE Thread] Headless: {self.ieee_headless}")
-        print(f"[IEEE Thread] Başlatılıyor, headless={self.ieee_headless}", flush=True)
         
         scraper = None
         nlp_futures: List[concurrent.futures.Future] = []
@@ -661,12 +724,9 @@ class ScraperManager:
 
             # Create and initialize
             logger.info("[IEEE Thread] Browser başlatılıyor...")
-            print("[IEEE Thread] Browser başlatılıyor...", flush=True)
             scraper = IEEEXploreScraper(headless=self.ieee_headless, stop_flag=self._ieee_stop_flag, pause_flag=self._ieee_pause_flag)
             self._ieee_scraper = scraper
-            print("[IEEE Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
-            print("[IEEE Thread] Browser başlatıldı!", flush=True)
             
             progress.status = ScraperStatus.RUNNING
             progress.add_log("info", "Browser başlatıldı")
@@ -1000,7 +1060,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Fatal error: {str(e)}")
             logger.error(f"[IEEE Thread] Fatal error: {e}")
-            print(f"[IEEE Thread] HATA: {e}", flush=True)
             import traceback
             traceback.print_exc()
         
@@ -1141,7 +1200,6 @@ class ScraperManager:
         progress.add_log("info", "ScienceDirect scraper başlatılıyor (ayrı thread)...")
         logger.info("[SD Thread] Scraper başlatılıyor...")
         logger.info(f"[SD Thread] Headless: {self.sciencedirect_headless}")
-        print(f"[SD Thread] Başlatılıyor, headless={self.sciencedirect_headless}", flush=True)
         
         scraper = None
         nlp_futures: List[concurrent.futures.Future] = []
@@ -1153,12 +1211,9 @@ class ScraperManager:
 
             # Create and initialize
             logger.info("[SD Thread] Browser başlatılıyor...")
-            print("[SD Thread] Browser başlatılıyor...", flush=True)
             scraper = ScienceDirectScraper(headless=self.sciencedirect_headless, stop_flag=self._sciencedirect_stop_flag, pause_flag=self._sciencedirect_pause_flag)
             self._sciencedirect_scraper = scraper
-            print("[SD Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
-            print("[SD Thread] Browser başlatıldı!", flush=True)
             
             progress.status = ScraperStatus.RUNNING
             progress.add_log("info", "Browser başlatıldı")
@@ -1493,7 +1548,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Fatal error: {str(e)}")
             logger.error(f"[SD Thread] Fatal error: {e}")
-            print(f"[SD Thread] HATA: {e}", flush=True)
             import traceback
             traceback.print_exc()
         
@@ -1632,7 +1686,6 @@ class ScraperManager:
         progress.add_log("info", "ACM scraper başlatılıyor (ayrı thread)...")
         logger.info("[ACM Thread] Scraper başlatılıyor...")
         logger.info(f"[ACM Thread] Headless: {self.acm_headless}")
-        print(f"[ACM Thread] Başlatılıyor, headless={self.acm_headless}", flush=True)
         
         scraper = None
         nlp_futures: List[concurrent.futures.Future] = []
@@ -1644,12 +1697,9 @@ class ScraperManager:
 
             # Create and initialize
             logger.info("[ACM Thread] Browser başlatılıyor...")
-            print("[ACM Thread] Browser başlatılıyor...", flush=True)
             scraper = ACMScraper(headless=self.acm_headless, stop_flag=self._acm_stop_flag, pause_flag=self._acm_pause_flag)
             self._acm_scraper = scraper
-            print("[ACM Thread] Scraper oluşturuldu, initialize ediliyor...", flush=True)
             scraper.initialize()
-            print("[ACM Thread] Browser başlatıldı!", flush=True)
             
             progress.status = ScraperStatus.RUNNING
             progress.add_log("info", "Browser başlatıldı")
@@ -1981,7 +2031,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Fatal error: {str(e)}")
             logger.error(f"[ACM Thread] Fatal error: {e}")
-            print(f"[ACM Thread] HATA: {e}", flush=True)
             import traceback
             traceback.print_exc()
         
@@ -2072,9 +2121,523 @@ class ScraperManager:
         self._acm_pause_flag.clear()
         return True
 
+    # ==================== Wiley Scraper ====================
+    
+    async def start_wiley(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
+        """Wiley scraper'ı başlat (ayrı thread'de)"""
+        if self.wiley_progress.status == ScraperStatus.RUNNING:
+            logger.warning("Wiley scraper already running")
+            return False
+
+        # Distributed lock
+        if not await DistributedScraperLock.acquire("wiley"):
+            logger.warning("Wiley scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+            return False
+
+        self.wiley_headless = headless
+        self.wiley_max_articles = max_articles
+        self.wiley_depth = depth
+        self.wiley_issues_order = issues_order
+        self.wiley_continuous = continuous
+
+        # Reset flags
+        self._wiley_stop_flag.clear()
+        self._wiley_pause_flag.clear()
+
+        # Thread'de başlat - event loop'u bloklamaz
+        self._wiley_future = self._executor.submit(self._run_wiley_scraper_sync)
+        logger.info(f"Wiley scraper thread'de başlatıldı (issues_order={issues_order})")
+
+        return True
+    
+    def _run_wiley_scraper_sync(self):
+        """
+        Wiley scraper'ı senkron olarak çalıştır (ayrı thread'de).
+        Bu metod thread pool'da çalışır ve main event loop'u bloklamaz.
+        """
+        progress = self.wiley_progress
+        progress.reset()
+        # Tekil journal modu kontrolü
+        progress.is_single_journal_mode = bool(getattr(self, '_wiley_single_journal_override', None))
+        if progress.is_single_journal_mode and self._wiley_single_journal_context:
+            progress.single_journal_url = self._wiley_single_journal_context.get("url")
+            progress.single_journal_max_articles = self._wiley_single_journal_context.get("max_articles")
+            progress.single_journal_depth = self._wiley_single_journal_context.get("depth")
+        progress.status = ScraperStatus.STARTING
+        progress.started_at = datetime.utcnow()
+        progress.add_log("info", "Wiley scraper başlatılıyor (ayrı thread)...")
+        logger.info("[Wiley Thread] Scraper başlatılıyor...")
+        logger.info(f"[Wiley Thread] Headless: {self.wiley_headless}")
+        scraper = None
+        nlp_futures: List[concurrent.futures.Future] = []
+        
+        try:
+            _load_scraper_modules()
+            if WileyScraper is None:
+                raise Exception("Wiley scraper modülü yüklenemedi")
+
+            # Create and initialize
+            logger.info("[Wiley Thread] Browser başlatılıyor...")
+            scraper = WileyScraper(headless=self.wiley_headless, stop_flag=self._wiley_stop_flag, pause_flag=self._wiley_pause_flag)
+            self._wiley_scraper = scraper
+            scraper.initialize()
+            
+            progress.status = ScraperStatus.RUNNING
+            progress.add_log("info", "Browser başlatıldı")
+            logger.success("[Wiley Thread] Browser başlatıldı")
+            
+            # ── Tekil journal override kontrolü ──────────────────────────
+            _single_override = getattr(self, '_wiley_single_journal_override', None)
+            if _single_override:
+                self._wiley_single_journal_override = None  # tüket
+                all_journals = _single_override
+                progress.total_journals = len(all_journals)
+                progress.add_log("info", f"Tekil journal modu — URL: {all_journals[0].get('url', '')}")
+            else:
+                # Navigate to journals page
+                success = scraper.navigate_to_journals()
+                if not success:
+                    raise Exception("Journals sayfasına gidilemedi")
+
+                progress.add_log("success", "Journals sayfasına gidildi")
+                
+                # Scrape journal list
+                progress.add_log("info", "Journal listesi alınıyor...")
+                all_journals = scraper.scrape_all_journals()
+                progress.total_journals = len(all_journals)
+                progress.add_log("success", f"{len(all_journals)} journal bulundu")
+
+                # ============================================================
+                # ÖNCELİK SİSTEMİ - JOURNAL SIRALAMA
+                # ============================================================
+                logger.info("[Wiley Thread] Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+                progress.add_log("info", "Öncelik sistemi: Veri tabanı kontrolü yapılıyor...")
+
+                journal_names = [j.get('name', '') for j in all_journals]
+                journal_repo = JournalRepository()
+                future = asyncio.run_coroutine_threadsafe(
+                    journal_repo.get_bulk_priority_info(journal_names, 'wiley'),
+                    self._loop
+                )
+                priority_info = future.result(timeout=30)
+
+                new_count = sum(1 for info in priority_info.values() if not info['exists'])
+                existing_count = len(priority_info) - new_count
+
+                logger.info(f"[Wiley Thread] Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+                progress.add_log("info", f"Öncelik: {new_count} yeni, {existing_count} mevcut dergi")
+
+                all_journals = JournalRepository.prioritize_journals(all_journals, priority_info)
+
+                logger.success("[Wiley Thread] Journal'lar öncelik sırasına göre sıralandı!")
+                progress.add_log("success", "Journal'lar öncelik sırasına göre sıralandı (Yeni dergiler önce, sonra en eski scrape edilenler)")
+
+                for i, j in enumerate(all_journals[:5], 1):
+                    info = priority_info.get(j.get('name', ''), {})
+                    status = "🆕 YENİ" if not info.get('exists') else f"📅 Son: {info.get('last_scraped_at', 'Bilinmiyor')}"
+                    logger.info(f"[Wiley Thread]   {i}. {j.get('name', 'Unknown')} - {status}")
+            
+            for i, journal in enumerate(all_journals, 1):
+                # Pause kontrolü
+                if self._wiley_pause_flag.is_set():
+                    progress.status = ScraperStatus.PAUSED
+                    progress.add_log("info", "Scraper duraklatıldı")
+                    logger.info("[Wiley Thread] Scraper duraklatıldı")
+                    while self._wiley_pause_flag.is_set():
+                        if self._wiley_stop_flag.is_set():
+                            break
+                        import time as _ct; _ct.sleep(0.5)
+                    
+                    if not self._wiley_stop_flag.is_set():
+                        progress.status = ScraperStatus.RUNNING
+                        progress.add_log("info", "Scraper devam ediyor")
+                        logger.info("[Wiley Thread] Scraper devam ediyor")
+                
+                # Stop kontrolü
+                if self._wiley_stop_flag.is_set():
+                    progress.status = ScraperStatus.STOPPED
+                    progress.add_log("warning", "Scraper durduruldu")
+                    break
+                
+                journal_name = journal.get('name', 'Unknown')
+                progress.current_journal = journal_name
+                progress.current_journal_index = i
+                progress.pending_journals = [j.get('name', '') for j in all_journals[i:]]
+                progress.current_issue = None
+                progress.current_issue_index = 0
+                progress.total_issues = 0
+                progress.completed_issues = []
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
+
+                # Sadece UI güncellemeleri için callback'ler
+                def on_article_progress(idx: int, total: int, title: str = None):
+                    progress.current_article_index = idx
+                    progress.total_articles = total
+                    if title:
+                        progress.current_article = title
+
+                def on_article_list(titles: list):
+                    progress.article_list = titles
+
+                def on_journal_name_resolved(resolved_name: str):
+                    progress.current_journal = resolved_name
+
+                def on_issue_start(idx: int, total: int, title: str, pending_titles: list):
+                    progress.total_issues = total
+                    progress.current_issue = title or f"Issue {idx}"
+                    progress.current_issue_index = idx
+                    progress.pending_issues = pending_titles or []
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                def on_issue_complete(idx: int, articles_count: int, article_titles: list):
+                    title = progress.current_issue or f"Issue {idx}"
+                    progress.completed_issues = progress.completed_issues + [{
+                        'title': title,
+                        'articles_count': articles_count,
+                        'article_list': article_titles[:30],
+                    }]
+                    progress.current_issue = None
+                    progress.pending_issues = []
+                    progress.article_list = []
+                    progress.current_article = None
+                    progress.current_article_index = 0
+                    progress.total_articles = 0
+
+                progress.add_log("info", f"[{i}/{len(all_journals)}] İşleniyor: {journal_name}")
+                
+                try:
+                    existing_issue_urls = set()
+                    existing_article_dois = set()
+                    if self._db_service and self._loop:
+                        try:
+                            # async DB servisine threadsafe çağrı yap
+                            journal_future = asyncio.run_coroutine_threadsafe(
+                                self._db_service.get_journal(journal.get('name', ''), "wiley"),
+                                self._loop
+                            )
+                            existing_journal = journal_future.result(timeout=10)
+                            if existing_journal:
+                                issues_future = asyncio.run_coroutine_threadsafe(
+                                    self._db_service.get_issues_by_journal(existing_journal.id),
+                                    self._loop
+                                )
+                                existing_issues = issues_future.result(timeout=10)
+                                existing_issue_urls = {str(i.url) for i in existing_issues if getattr(i, 'url', None)}
+
+                                articles_future = asyncio.run_coroutine_threadsafe(
+                                    self._db_service.get_articles_by_journal(existing_journal.id),
+                                    self._loop
+                                )
+                                existing_articles = articles_future.result(timeout=10)
+                                existing_article_dois = {str(a.doi) for a in existing_articles if getattr(a, 'doi', None)}
+                        except Exception as db_e:
+                            logger.error(f"[Wiley Thread] DB sorgu hatası: {db_e}")
+
+                    # Scrape articles for this journal
+                    issue_results = scraper.scrape_journal_articles(
+                        journal=journal,
+                        depth=self.wiley_depth,
+                        max_articles=self.wiley_max_articles,
+                        article_progress_callback=on_article_progress,
+                        article_list_callback=on_article_list,
+                        journal_name_callback=on_journal_name_resolved,
+                        existing_issue_urls=existing_issue_urls,
+                        existing_article_dois=existing_article_dois,
+                        issue_start_callback=on_issue_start,
+                        issue_complete_callback=on_issue_complete,
+                        issues_order=self.wiley_issues_order
+                    )
+                    
+                    if not issue_results:
+                        progress.add_log("warning", f"{journal.get('name')}: Yeni makale bulunamadı")
+                        continue
+
+                    total_articles_for_journal = sum(len(r['articles']) for r in issue_results)
+                    progress.add_log("success", f"{journal.get('name')}: {total_articles_for_journal} makale toplandı")
+                    
+                    # Veritabanına kaydet (ayrı thread -> event loop iletişimi)
+                    if self._db_service and self._loop:
+                        journal_info = {
+                            'name': journal.get('name', journal_name),
+                            'url': journal.get('url', ''),
+                            'open_access': journal.get('open_access', False),
+                            'aims_and_scope': journal.get('aims_and_scope'),
+                            'issn': journal.get('issn'),
+                            'eissn': journal.get('eissn'),
+                        }
+
+                        async def _save_to_db():
+                            try:
+                                db_journal, _ = await self._db_service.add_journal(
+                                    source_website='wiley',
+                                    publisher='Wiley',
+                                    **journal_info
+                                )
+
+                                total_created = 0
+                                total_updated = 0
+                                for r in issue_results:
+                                    issue_info = r['issue_info']
+                                    articles = r['articles']
+
+                                    if not articles:
+                                        continue
+
+                                    # issue_number: title varsa onu kullan, yoksa volume/year'dan türet
+                                    issue_number = (
+                                        issue_info.get('title')
+                                        or issue_info.get('issue_number')
+                                        or f"Volume {issue_info.get('volume', '')}, {issue_info.get('year', 'Current')}".strip(', ')
+                                        or 'Current'
+                                    )
+                                    issue_date = str(issue_info.get('year', '')) or None
+
+                                    db_issue, _ = await self._db_service.add_issue(
+                                        journal=db_journal,
+                                        issue_number=issue_number,
+                                        date=issue_date,
+                                        url=issue_info.get('url'),
+                                    )
+
+                                    # authors listesini List[str], references listesini List[str] olarak normalize et
+                                    prepared = []
+                                    for art in articles:
+                                        authors = art.get('authors', [])
+                                        if isinstance(authors, list):
+                                            authors_list = [
+                                                a['name'] if isinstance(a, dict) else str(a)
+                                                for a in authors
+                                            ]
+                                        elif isinstance(authors, str):
+                                            authors_list = [a.strip() for a in authors.split(',') if a.strip()]
+                                        else:
+                                            authors_list = []
+
+                                        refs = art.get('references', [])
+                                        refs_list = []
+                                        for ref in refs:
+                                            if isinstance(ref, dict):
+                                                raw = ref.get('raw') or ref.get('raw_text', '')
+                                                refs_list.append(raw)
+                                            else:
+                                                refs_list.append(str(ref))
+
+                                        prepared.append({
+                                            'title': art.get('title', ''),
+                                            'url': art.get('url', ''),
+                                            'doi': art.get('doi'),
+                                            'authors': authors_list,
+                                            'abstract': art.get('abstract', ''),
+                                            'keywords': art.get('keywords', []),
+                                            'publication_date': art.get('pub_date'),
+                                            'article_type': art.get('article_type', 'Research Article'),
+                                            'full_text': art.get('full_text'),
+                                            'sections': art.get('sections', []),
+                                            'references': refs_list,
+                                            'is_open_access': db_journal.open_access,
+                                        })
+
+                                    created, updated = await self._db_service.add_articles_bulk(db_issue, prepared)
+                                    total_created += created
+                                    total_updated += updated
+
+                                await self._db_service.recalculate_journal_counts(db_journal.id)
+                                return total_created, db_journal
+                            except Exception as e:
+                                logger.error(f"[Wiley Thread] DB kayıt hatası: {e}")
+                                raise e
+
+                        # run_coroutine_threadsafe ile main thread'deki event loop'a işi gönder
+                        future = asyncio.run_coroutine_threadsafe(_save_to_db(), self._loop)
+                        articles_created, db_journal_obj = future.result(timeout=600)  # max 10 dakika bekle
+                        progress.add_log("success", f"{articles_created} makale veritabanına kaydedildi")
+
+                        progress.completed_journals.append({
+                            'name': journal_name,
+                            'articles_count': articles_created,
+                            'issues': progress.completed_issues.copy(),
+                        })
+                        progress.journals_scraped += 1
+                        progress.articles_scraped += articles_created
+
+                        if issue_results:
+                            progress.add_log("success", f"{journal.get('name')}: {articles_created} makale eklendi")
+                            logger.success(f"[Wiley Thread] {journal_name}: {articles_created} makale eklendi")
+                        else:
+                            progress.add_log("info", f"{journal.get('name')}: Makale yok, journal kaydedildi")
+                            logger.info(f"[Wiley Thread] {journal_name}: Makale yok, journal kaydedildi")
+
+                        # Background'da NLP/Citation Graph oluşturma tetikle
+                        if articles_created > 0 and not progress.is_single_journal_mode:
+                            progress.add_log("info", "Makaleler arka planda NLP işlemine alındı...")
+                            async def _wiley_journal_cluster_update():
+                                try:
+                                    from backend.services.nlp_service import NLPService
+                                    result = await NLPService().assign_new_articles(min_abstract_length=50)
+                                    logger.success(f"[Wiley Thread] Incremental clustering tamamlandı: {result}")
+                                except FileNotFoundError:
+                                    logger.info("[Wiley Thread] NLP modeli bulunamadı, incremental clustering atlandı")
+                                except Exception as _e:
+                                    logger.warning(f"[Wiley Thread] Incremental clustering hatası: {_e}")
+                            nlp_future = asyncio.run_coroutine_threadsafe(
+                                _wiley_journal_cluster_update(), self._loop
+                            )
+                            nlp_futures.append(nlp_future)
+                        elif articles_created > 0 and progress.is_single_journal_mode:
+                            progress.add_log("info", "Tekil URL modu: incremental NLP scraping aşamasında atlandı, analyzing aşamasında çalışacak")
+
+                except ScraperStoppedException:
+                    progress.status = ScraperStatus.STOPPED
+                    progress.add_log("warning", "Scraper kullanıcı tarafından durduruldu")
+                    logger.warning(f"[Wiley Thread] Scraper durduruldu (makale işlemi sırasında)")
+                    break
+                except Exception as e:
+                    progress.errors_count += 1
+                    progress.last_error = str(e)
+                    progress.add_log("error", f"{journal.get('name')}: {str(e)}")
+                    logger.error(f"[Wiley Thread] {journal_name} hatası: {str(e)}")
+                
+                # Rate limiting
+                import time
+                time.sleep(2)
+            
+            if progress.status == ScraperStatus.RUNNING and nlp_futures:
+                progress.current_journal = None
+                progress.pending_journals = []
+                progress.current_issue = None
+                progress.pending_issues = []
+                progress.article_list = []
+                progress.current_article = None
+                progress.current_article_index = 0
+                progress.total_articles = 0
+                progress.add_log("info", f"Arka plan NLP işleri bekleniyor ({len(nlp_futures)})")
+                for nlp_future in nlp_futures:
+                    if self._wiley_stop_flag.is_set():
+                        progress.status = ScraperStatus.STOPPED
+                        progress.add_log("warning", "Scraper durduruldu")
+                        break
+                    try:
+                        nlp_future.result(timeout=600)
+                    except Exception as _e:
+                        pass
+                progress.add_log("success", "Arka plan NLP işlemleri bitti.")
+
+            if progress.status not in [ScraperStatus.STOPPED, ScraperStatus.ERROR]:
+                progress.status = ScraperStatus.COMPLETED
+                progress.completed_at = datetime.utcnow()
+                progress.add_log("success", "Tüm işlemler tamamlandı!")
+                logger.success("[Wiley Thread] Scraper başarıyla tamamlandı")
+                
+        except ScraperStoppedException:
+            progress.status = ScraperStatus.STOPPED
+            progress.add_log("warning", "Scraper durduruldu")
+            logger.warning("[Wiley Thread] Scraper durduruldu")
+        except Exception as e:
+            progress.status = ScraperStatus.ERROR
+            progress.last_error = str(e)
+            progress.add_log("error", f"Kritik hata: {str(e)}")
+            logger.error(f"[Wiley Thread] Kritik hata: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._wiley_scraper = None
+            if scraper:
+                try:
+                    logger.info("[Wiley Thread] Scraper kapatılıyor...")
+                    scraper.close()
+                except Exception as e:
+                    logger.error(f"[Wiley Thread] Scraper kapatılırken hata: {e}")
+
+            progress.last_activity = datetime.utcnow()
+            import time as _t; _t.sleep(0.5)
+            try:
+                from backend.routers.websocket import emit_scraper_event
+                emit_scraper_event("status_update", progress.scraper_type, progress.to_dict())
+            except Exception:
+                pass
+
+            if self._loop:
+                fut = asyncio.run_coroutine_threadsafe(
+                    DistributedScraperLock.release("wiley"), self._loop
+                )
+                try:
+                    fut.result(timeout=5)
+                except Exception:
+                    pass
+
+            # --- SÜREKLİ MOD (CONTINUOUS) KONTROLÜ ---
+            if (self.wiley_continuous 
+                    and progress.status == ScraperStatus.COMPLETED
+                    and not self._wiley_stop_flag.is_set()
+                    and self._loop):
+                import time as _ct; _ct.sleep(5)
+                asyncio.run_coroutine_threadsafe(
+                    self.start_wiley(
+                        headless=self.wiley_headless,
+                        max_articles=self.wiley_max_articles,
+                        depth=self.wiley_depth,
+                        issues_order=self.wiley_issues_order,
+                        continuous=True,
+                    ),
+                    self._loop,
+                )
+
+    async def stop_wiley(self) -> bool:
+        """Wiley scraper'ı durdur"""
+        if self.wiley_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+            return False
+
+        logger.info("Wiley scraper durduruluyor...")
+        self._wiley_stop_flag.set()
+        self.wiley_progress.status = ScraperStatus.STOPPING
+        self.wiley_progress.add_log("warning", "Durdurma sinyali gönderildi")
+
+        # Tarayıcıyı hemen kapat
+        s = self._wiley_scraper
+        if s:
+            try:
+                s.selenium_driver.close()
+            except Exception:
+                pass
+
+        if self._wiley_future:
+            try:
+                self._wiley_future.result(timeout=10)
+                logger.success("Wiley scraper düzgün şekilde durduruldu")
+            except concurrent.futures.TimeoutError:
+                logger.warning("Wiley scraper stop timeout")
+                self.wiley_progress.status = ScraperStatus.STOPPED
+            except Exception as e:
+                logger.warning(f"Wiley scraper stop hatası: {e}")
+                self.wiley_progress.status = ScraperStatus.STOPPED
+
+        return True
+    
+    async def pause_wiley(self) -> bool:
+        """Wiley scraper'ı duraklat"""
+        if self.wiley_progress.status != ScraperStatus.RUNNING:
+            return False
+        
+        self._wiley_pause_flag.set()
+        return True
+    
+    async def resume_wiley(self) -> bool:
+        """Wiley scraper'ı devam ettir"""
+        if self.wiley_progress.status != ScraperStatus.PAUSED:
+            return False
+        
+        self._wiley_pause_flag.clear()
+        return True
+
     # ==================== All Scrapers ====================
     
-    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları PARALEL modda başlat.
         Scraper'lar 5 saniye arayla başlar ve aynı anda çalışır.
@@ -2089,7 +2652,7 @@ class ScraperManager:
         results = {}
         
         logger.info("PARALEL mod: Etkin scraper'lar aynı anda çalışacak")
-        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}, Wiley enabled: {wiley_enabled}")
         
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
@@ -2121,9 +2684,19 @@ class ScraperManager:
             results['acm'] = False
             logger.info("ACM scraper devre dışı, atlanıyor...")
 
+        # Wiley'yi başlat (etkinse)
+        if wiley_enabled:
+            # 5 saniye bekle
+            if ieee_enabled or sd_enabled or acm_enabled:
+                await asyncio.sleep(5)
+            results['wiley'] = await self.start_wiley(headless=headless, max_articles=self.wiley_max_articles)
+        else:
+            results['wiley'] = False
+            logger.info("Wiley scraper devre dışı, atlanıyor...")
+
         return results
     
-    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları SIRALI modda başlat.
         Önce IEEE tamamlanır, sonra ScienceDirect başlar.
@@ -2132,13 +2705,14 @@ class ScraperManager:
             headless: Browser headless mod
             ieee_enabled: IEEE scraper etkin mi
             sd_enabled: ScienceDirect scraper etkin mi
+            wiley_enabled: Wiley scraper etkin mi
         """
         import asyncio
         
         results = {}
         
         logger.info("SIRALI mod: Etkin scraper'lar sırayla çalışacak")
-        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}, Wiley enabled: {wiley_enabled}")
         
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
@@ -2181,9 +2755,24 @@ class ScraperManager:
             results['acm'] = False
             logger.info("ACM scraper devre dışı, atlanıyor...")
 
+        # Wiley'yi başlat (etkinse)
+        if wiley_enabled:
+            # Öncekilerin bitmesini bekle
+            if ieee_enabled or sd_enabled or acm_enabled:
+                logger.info("Önceki scraper'ların bitmesi bekleniyor...")
+                while self.ieee_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED] or self.sciencedirect_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED] or self.acm_progress.status in [ScraperStatus.STARTING, ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+                    await asyncio.sleep(2)
+                await asyncio.sleep(3)
+                
+            logger.info("Wiley scraper başlatılıyor...")
+            results['wiley'] = await self.start_wiley(headless=headless, max_articles=self.wiley_max_articles)
+        else:
+            results['wiley'] = False
+            logger.info("Wiley scraper devre dışı, atlanıyor...")
+
         return results
     
-    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True) -> Dict[str, bool]:
         """
         Tüm scraper'ları ROUND ROBIN modda başlat.
         Her X journal'da bir driver kapatılıp diğer siteye geçilir.
@@ -2196,10 +2785,10 @@ class ScraperManager:
             sd_enabled: ScienceDirect scraper etkin mi
         """
         # Sadece bir scraper etkinse, sequential modda çalıştır
-        active_count = sum([ieee_enabled, sd_enabled, acm_enabled])
+        active_count = sum([ieee_enabled, sd_enabled, acm_enabled, wiley_enabled])
         if active_count == 1:
             logger.info("Sadece 1 scraper etkin, sequential modda çalışacak")
-            return await self.start_all_sequential(headless=headless, ieee_enabled=ieee_enabled, sd_enabled=sd_enabled, acm_enabled=acm_enabled)
+            return await self.start_all_sequential(headless=headless, ieee_enabled=ieee_enabled, sd_enabled=sd_enabled, acm_enabled=acm_enabled, wiley_enabled=wiley_enabled)
             
         if active_count == 0:
             logger.warning("Hiçbir scraper etkin değil!")
@@ -2209,19 +2798,21 @@ class ScraperManager:
         self._round_robin_stop_flag.clear()
         
         logger.info(f"ROUND ROBIN mod: Her {journals_per_switch} journal'da bir site değiştirilecek")
-        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}")
+        logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}, Wiley enabled: {wiley_enabled}")
         
         # Thread'de başlat
         self._round_robin_future = self._executor.submit(
             self._run_round_robin_sync, 
             headless,
             ieee_enabled,
-            sd_enabled
+            sd_enabled,
+            acm_enabled,
+            wiley_enabled
         )
         
         return {'ieee': ieee_enabled, 'sciencedirect': sd_enabled}
     
-    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True):
+    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True):
         """
         Round Robin modda scraper'ları çalıştır (ayrı thread'de).
         Her X journal'da bir site değiştirir.
@@ -2229,7 +2820,6 @@ class ScraperManager:
         import time
         
         logger.info("[RoundRobin Thread] Başlatılıyor...")
-        print("[RoundRobin Thread] Başlatılıyor...", flush=True)
         
         # Scraper sırası ve state'leri (sadece etkin olanlar)
         sites = []
@@ -2239,6 +2829,8 @@ class ScraperManager:
             sites.append('sciencedirect')
         if acm_enabled:
             sites.append('acm')
+        if wiley_enabled:
+            sites.append('wiley')
         
         if not sites:
             logger.error("[RoundRobin] Hiçbir scraper etkin değil!")
@@ -2251,31 +2843,36 @@ class ScraperManager:
         site_journals = {
             'ieee': None,
             'sciencedirect': None,
-            'acm': None
+            'acm': None,
+            'wiley': None
         }
         site_indices = {
             'ieee': 0,
             'sciencedirect': 0,
-            'acm': 0
+            'acm': 0,
+            'wiley': 0
         }
         site_priority_info = {
             'ieee': None,
             'sciencedirect': None,
-            'acm': None
+            'acm': None,
+            'wiley': None
         }
         
         # Aktif scraper instance'ları
         scrapers = {
             'ieee': None,
             'sciencedirect': None,
-            'acm': None
+            'acm': None,
+            'wiley': None
         }
         
         # Source website mapping
         source_websites = {
             'ieee': 'ieeexplore',
             'sciencedirect': 'sciencedirect',
-            'acm': 'acm'
+            'acm': 'acm',
+            'wiley': 'wiley'
         }
         
         # Tüm siteler bitene kadar döngü
@@ -2284,8 +2881,7 @@ class ScraperManager:
         try:
             while not all_completed and not self._round_robin_stop_flag.is_set():
                 current_site = sites[current_site_idx]
-                progress = self.ieee_progress if current_site == 'ieee' else self.sciencedirect_progress if current_site == 'sciencedirect' else self.acm_progress
-                other_progress = self.sciencedirect_progress if current_site == 'ieee' else self.ieee_progress # A bit complex for 3 sites, but we'll leave it as is for other_progress or fix it
+                progress = getattr(self, f"{current_site}_progress")
                 
                 # İlk kez bu siteye geçiyorsak başlat
                 if scrapers[current_site] is None:
@@ -2360,8 +2956,10 @@ class ScraperManager:
                             logger.error(f"[RoundRobin] Proxy/Tunnel bağlantı hatası tespit edildi!")
                             logger.error(f"[RoundRobin] Tüm scraperlar durduruluyor (proxy sorunlu)...")
                             progress.add_log("error", "Proxy bağlantı hatası - tüm scraperlar durduruluyor")
-                            other_progress.status = ScraperStatus.ERROR
-                            other_progress.last_error = "Proxy bağlantı hatası"
+                            for site in sites:
+                                site_progress = getattr(self, f"{site}_progress")
+                                site_progress.status = ScraperStatus.ERROR
+                                site_progress.last_error = "Proxy bağlantı hatası"
                             break
                         
                         # Sonraki siteye geç
@@ -2481,7 +3079,9 @@ class ScraperManager:
                     if self._round_robin_stop_flag.is_set():
                         logger.warning("[RoundRobin] Durduruldu")
                         progress.status = ScraperStatus.STOPPED
-                        other_progress.status = ScraperStatus.STOPPED
+                        for site in sites:
+                            site_progress = getattr(self, f"{site}_progress")
+                            site_progress.status = ScraperStatus.STOPPED
                         break
                     
                     global_idx = start_idx + i
@@ -2620,6 +3220,7 @@ class ScraperManager:
         results['ieee'] = await self.stop_ieee()
         results['sciencedirect'] = await self.stop_sciencedirect()
         results['acm'] = await self.stop_acm()
+        results['wiley'] = await self.stop_wiley()
         results['round_robin'] = await self.stop_round_robin()
         return results
     

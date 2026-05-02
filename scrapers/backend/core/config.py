@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     ieee_depth: int = Field(default=1, alias="IEEE_DEPTH", description="IEEE scraper kaç yeni issue işlenecek (1=sadece en yeni, 0/None=tümü)")
     sciencedirect_max_articles: int = Field(default=100, alias="SCIENCEDIRECT_MAX_ARTICLES", description="ScienceDirect scraper maksimum makale sayısı")
     acm_max_articles: int = Field(default=100, alias="ACM_MAX_ARTICLES", description="ACM scraper maksimum makale sayısı")
-    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm")
+    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm, wiley")
     scraper_run_mode: str = Field(default="parallel", alias="SCRAPER_RUN_MODE", description="Scraper çalışma modu: 'parallel', 'sequential' veya 'round_robin'")
     round_robin_journals_per_switch: int = Field(default=3, alias="ROUND_ROBIN_JOURNALS_PER_SWITCH", description="Round robin modunda kaç journalda bir site değiştirileceği")
     
@@ -63,6 +63,11 @@ class Settings(BaseSettings):
     def acm_enabled(self) -> bool:
         """ACM scraper etkin mi?"""
         return 'acm' in self.enabled_scrapers.lower()
+
+    @property
+    def wiley_enabled(self) -> bool:
+        """Wiley scraper etkin mi?"""
+        return 'wiley' in self.enabled_scrapers.lower()
     
     # Scraper Base URLs
     ieeexplore_base_url: str = Field(default="https://ieeexplore.ieee.org", alias="IEEEXPLORE_BASE_URL", description="IEEE Xplore base URL")
@@ -81,6 +86,17 @@ class Settings(BaseSettings):
     acm_min_wait: int = Field(default=4, alias="ACM_MIN_WAIT", description="ACM scraper minimum bekleme süresi (sn)")
     acm_max_wait: int = Field(default=10, alias="ACM_MAX_WAIT", description="ACM scraper maksimum bekleme süresi (sn)")
     acm_page_load_timeout: int = Field(default=90, alias="ACM_PAGE_LOAD_TIMEOUT", description="ACM sayfa yükleme timeout (sn)")
+
+    # Wiley Timeouts & Delays
+    wiley_base_url: str = Field(
+        default="https://onlinelibrary.wiley.com/action/showPublications?ConceptID=68&PubType=journal&startPage=0&pageSize=20",
+        alias="WILEY_BASE_URL",
+        description="Wiley Online Library base URL"
+    )
+    wiley_min_wait: int = Field(default=4, alias="WILEY_MIN_WAIT", description="Wiley scraper minimum bekleme süresi (sn)")
+    wiley_max_wait: int = Field(default=10, alias="WILEY_MAX_WAIT", description="Wiley scraper maksimum bekleme süresi (sn)")
+    wiley_page_load_timeout: int = Field(default=90, alias="WILEY_PAGE_LOAD_TIMEOUT", description="Wiley sayfa yükleme timeout (sn)")
+    wiley_max_articles: int = Field(default=100, alias="WILEY_MAX_ARTICLES", description="Wiley scraper maksimum makale sayısı")
     
     # PDF Settings
     pdf_download_timeout: int = Field(default=60, alias="PDF_DOWNLOAD_TIMEOUT", description="PDF indirme timeout süresi (sn)")

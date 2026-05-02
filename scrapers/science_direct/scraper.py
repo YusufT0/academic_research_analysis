@@ -697,7 +697,8 @@ class ScienceDirectScraper:
                 except Exception:
                     pass
 
-            logger.section(f"  Makale {idx}/{len(article_stubs)}")
+            stub_title = article_stub.get('title', '')
+            logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
             article_details = self.extract_article_details(article_url)
 
             if article_details:
@@ -736,6 +737,7 @@ class ScienceDirectScraper:
                 r['issue_date'] = issue_info.get('date')
             articles.extend(retry_results)
 
+        logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
 
     def extract_article_details(self, article_url: str, retry_attempt: int = 0) -> dict:
