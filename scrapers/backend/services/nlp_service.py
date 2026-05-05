@@ -159,7 +159,7 @@ class NLPService:
                 self._embedder = SentenceTransformer(
                     settings.nlp_embedder_model, device="cuda"
                 )
-            except:
+            except Exception:
                 logger.warning("Cannot link to GPU. Switching to CPU")
                 self._embedder = SentenceTransformer(settings.nlp_embedder_model)
 
@@ -1003,9 +1003,7 @@ class NLPService:
         # return result
         """
         if query is not None:
-            search_result = await self._search_similar_clusters(
-                query, model_version
-            )
+            search_result = await self._search_similar_clusters(query, model_version)
             best_cluster = search_result["best_cluster"]
             model_version = search_result["model_version"]
             articles = await ArticleEmbedding.find(
@@ -1052,9 +1050,7 @@ class NLPService:
         # return scatter_data
         """
         if query is not None:
-            search_result = await self._search_similar_clusters(
-                query, model_version
-            )
+            search_result = await self._search_similar_clusters(query, model_version)
             best_cluster = search_result["best_cluster"]
             model_version = search_result["model_version"]
             articles = await ArticleEmbedding.find(
@@ -1063,9 +1059,7 @@ class NLPService:
                     "model_version": model_version,
                 }
             ).to_list()
-            relevant_keywords = await self._extract_cluster_keywords(
-                articles, query
-            )
+            relevant_keywords = await self._extract_cluster_keywords(articles, query)
         elif self.relevant_keywords is not None:
             # DEPRECATED fallback
             relevant_keywords = self.relevant_keywords
@@ -1077,9 +1071,7 @@ class NLPService:
         visualization_reducer = umap.UMAP(
             n_neighbors=5, n_components=2, metric="cosine", random_state=42
         )
-        embedded_words = [
-            self.embedder.encode(word[0]) for word in relevant_keywords
-        ]
+        embedded_words = [self.embedder.encode(word[0]) for word in relevant_keywords]
         coords = visualization_reducer.fit_transform(embedded_words)
 
         scatter_data = []
@@ -1126,9 +1118,7 @@ class NLPService:
 
         article_ids = best_cluster.article_ids
 
-        all_embeddings = await self.embedding_repo.find_many_by_article_ids(
-            article_ids
-        )
+        all_embeddings = await self.embedding_repo.find_many_by_article_ids(article_ids)
         emb_dict = {str(e.article_id): e.embedding_full for e in all_embeddings}
         matrix_embeddings = np.vstack(
             [np.array(emb_dict[str(art.id)]) for art in articles]
@@ -1291,7 +1281,18 @@ class NLPService:
                     new_entry[topic] = entry[topic]
             filtered_graph_data.append(new_entry)
 
-        return {"graph_data": filtered_graph_data, "clusters": cluster_summaries}
+        keyword_distribution: Dict[str, int] = {}
+        for entry in filtered_graph_data:
+            for topic, count in entry.items():
+                if topic == "date":
+                    continue
+                keyword_distribution[topic] = keyword_distribution.get(topic, 0) + count
+
+        return {
+            "graph_data": filtered_graph_data,
+            "clusters": cluster_summaries,
+            "keyword_distribution": keyword_distribution,
+        }
 
     async def _resolve_journal_group_id(
         self, journal_name: str
@@ -1365,9 +1366,7 @@ class NLPService:
         Örnek: keyword="car" → alt konular: "traffic", "road", "autonomous"
         → zaman serisi olarak döner.
         """
-        search_result = await self._search_similar_clusters(
-            keyword, model_version
-        )
+        search_result = await self._search_similar_clusters(keyword, model_version)
         best_cluster = search_result["best_cluster"]
         model_version = search_result["model_version"]
 
@@ -1381,16 +1380,12 @@ class NLPService:
         if not articles:
             return {"graph_data": []}
 
-        final_max_keywords = await self._extract_cluster_keywords(
-            articles, keyword
-        )
+        final_max_keywords = await self._extract_cluster_keywords(articles, keyword)
 
         if not final_max_keywords:
             return {"graph_data": []}
 
-        keyword_clusters = await self._take_keywords_and_transform(
-            final_max_keywords
-        )
+        keyword_clusters = await self._take_keywords_and_transform(final_max_keywords)
 
         word_to_topic: Dict[str, str] = {}
         topic_counts: Dict[str, int] = defaultdict(int)
