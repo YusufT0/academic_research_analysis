@@ -88,7 +88,7 @@ class NLPService:
     """
 
     _instance: Optional["NLPService"] = None
-    PREFIX_DATES = PREFIX_DATES = {
+    PREFIX_DATES = {
         "january": "1",
         "february": "2",
         "march": "3",
@@ -372,6 +372,7 @@ class NLPService:
             article_dates = []
             article_publishers = []
             article_journals = []
+            article_objects = []
 
             for i, article in enumerate(valid_articles):
                 cleaned = self._clean_text(article.abstract)
@@ -386,11 +387,18 @@ class NLPService:
                     article_dates.append(str(date))
                     article_publishers.append(article.publisher)
                     article_journals.append(article.journal_id)
+                    article_objects.append(article)
+
+            # Merge keywords with cleaned text for richer embeddings
+            texts_for_embedding = [
+                f"{cleaned} {' '.join(kws)}"
+                for cleaned, kws in zip(cleaned_texts, article_keywords)
+            ]
 
             # Embedding
             def _encode():
                 return self.embedder.encode(
-                    cleaned_texts, batch_size=32, show_progress_bar=True
+                    texts_for_embedding, batch_size=32, show_progress_bar=True
                 )
 
             embeddings_full = await asyncio.to_thread(_encode)
@@ -402,7 +410,6 @@ class NLPService:
             logger.info("Reducing dimensions with UMAP...")
 
             def _reduce():
-                import umap
                 import torch
 
                 reducer = umap.UMAP(
@@ -457,7 +464,6 @@ class NLPService:
                 min_samples: int,
                 save_path: str = None,
             ):
-                import hdbscan
                 import torch
 
                 subset_reduced = embeddings_reduced[indices]
@@ -499,7 +505,7 @@ class NLPService:
                 embeddings_full=embeddings_full[all_indices],
                 embeddings_reduced=embeddings_reduced[all_indices],
                 article_ids=[article_ids[i] for i in all_indices],
-                valid_articles=[valid_articles[i] for i in all_indices],
+                valid_articles=article_objects,
                 model_version=model_version,
                 cluster_type="all",
                 group_id=None,
@@ -526,8 +532,8 @@ class NLPService:
                             article_ids=[article_ids[idx]],
                             label=None,
                             top_keywords=[],
-                            sample_titles=[valid_articles[idx].title]
-                            if valid_articles[idx].title
+                            sample_titles=[article_objects[idx].title]
+                            if article_objects[idx].title
                             else [],
                             article_count=1,
                             cluster_type="publisher",
@@ -552,7 +558,7 @@ class NLPService:
                     embeddings_full=embeddings_full[indices],
                     embeddings_reduced=embeddings_reduced[indices],
                     article_ids=[article_ids[i] for i in indices],
-                    valid_articles=[valid_articles[i] for i in indices],
+                    valid_articles=[article_objects[i] for i in indices],
                     model_version=model_version,
                     cluster_type="publisher",
                     group_id=publisher,
@@ -583,8 +589,8 @@ class NLPService:
                             article_ids=[article_ids[idx]],
                             label=None,
                             top_keywords=[],
-                            sample_titles=[valid_articles[idx].title]
-                            if valid_articles[idx].title
+                            sample_titles=[article_objects[idx].title]
+                            if article_objects[idx].title
                             else [],
                             article_count=1,
                             cluster_type="journal",
@@ -609,7 +615,7 @@ class NLPService:
                     embeddings_full=embeddings_full[indices],
                     embeddings_reduced=embeddings_reduced[indices],
                     article_ids=[article_ids[i] for i in indices],
-                    valid_articles=[valid_articles[i] for i in indices],
+                    valid_articles=[article_objects[i] for i in indices],
                     model_version=model_version,
                     cluster_type="journal",
                     group_id=journal_id,
@@ -786,14 +792,20 @@ class NLPService:
                 "status": "no_valid_articles_after_cleaning",
             }
 
-        # 5. Generate full embeddings
-        logger.info(f"Generating embeddings for {len(cleaned_texts)} new articles...")
+        # 5. Generate full embeddings (keywords + cleaned text)
+        texts_for_embedding = [
+            f"{cleaned} {' '.join(kws)}"
+            for cleaned, kws in zip(cleaned_texts, article_keywords)
+        ]
+        logger.info(
+            f"Generating embeddings for {len(texts_for_embedding)} new articles..."
+        )
 
         def _encode():
             import torch
 
             result = self.embedder.encode(
-                cleaned_texts, batch_size=32, show_progress_bar=True
+                texts_for_embedding, batch_size=32, show_progress_bar=True
             )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -1452,6 +1464,7 @@ class NLPService:
                 timeline[date_str][topic] += 1
 
         graph_data = []
+        keyword_distribution = []
         for date_str, topics in timeline.items():
             entry = {"date": date_str}
             entry.update(topics)
@@ -1473,7 +1486,16 @@ class NLPService:
                 filtered_graph_data.append(new_entry)
             graph_data = filtered_graph_data
 
-        return {"graph_data": graph_data}
+        keyword_counter: Counter = Counter()
+        for entry in graph_data:
+            for key, value in entry.items():
+                if key != "date":
+                    keyword_counter[key] += value
+
+        return {
+            "graph_data": graph_data,
+            "keyword_distribution": dict(keyword_counter.most_common()),
+        }
 
     async def list_clusters(
         self,

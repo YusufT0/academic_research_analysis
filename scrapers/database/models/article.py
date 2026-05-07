@@ -86,8 +86,8 @@ class Article(Document, TimestampMixin):
     )
 
     class Settings:
-        # name = "articles"
-        name = "articles_sample"
+        name = "articles"
+        # name = "articles_sample"
         # for development purposes.
         indexes = [
             [("doi", 1)],  # Sparse unique - DOI varsa benzersiz olmalı
