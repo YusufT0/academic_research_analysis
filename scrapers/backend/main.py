@@ -4,6 +4,11 @@ Academic Research Scraper API
 FastAPI backend for managing IEEE and ScienceDirect scrapers.
 """
 
+import os
+
+# Fix CUDA memory fragmentation before any PyTorch import
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import sys
 import asyncio
 from pathlib import Path

@@ -34,7 +34,7 @@ logger = get_logger("nlp_service")
 # Ağır kütüphaneler lazy import edilir — modül yüklenirken değil,
 # NLPService ilk kullanıldığında yüklenir.
 np = None
-spacy = None
+# spacy = None  # unused — commented out
 SentenceTransformer = None
 CrossEncoder = None
 umap = None
@@ -48,7 +48,6 @@ def _ensure_nlp_imports():
     """Ağır NLP/ML kütüphanelerini ilk ihtiyaç anında yükle."""
     global \
         np, \
-        spacy, \
         SentenceTransformer, \
         CrossEncoder, \
         umap, \
@@ -59,7 +58,8 @@ def _ensure_nlp_imports():
     if np is not None:
         return  # Zaten yüklendi
     import numpy as _np
-    import spacy as _spacy
+
+    # import spacy as _spacy  # unused — commented out
     from sentence_transformers import SentenceTransformer as _ST, CrossEncoder as _CE
     import umap as _umap
     import hdbscan as _hdbscan
@@ -68,7 +68,7 @@ def _ensure_nlp_imports():
     from keybert import KeyBERT as _KB
 
     np = _np
-    spacy = _spacy
+    # spacy = _spacy  # unused — commented out
     SentenceTransformer = _ST
     CrossEncoder = _CE
     umap = _umap
@@ -122,7 +122,7 @@ class NLPService:
         # Models (lazy loading)
         self._embedder = None
         self._cross_encoder = None
-        self._cleaner_guy = None
+        # self._cleaner_guy = None  # unused — spacy model commented out
         self._kw_model = None
         # Cached data for fast search
         self._cached_version = None
@@ -134,70 +134,91 @@ class NLPService:
         self.relevant_keywords = None
         self._initialized = True
 
+        # Download/check models on disk at startup (always runs)
+        self._ensure_models_downloaded()
+
         if not settings.nlp_lazy_init:
             logger.info("NLP Service tam ön yükleme yapıyor (NLP_LAZY_INIT=False)")
             _ensure_nlp_imports()
             try:
                 _ = self.embedder
                 _ = self.cross_encoder
-                _ = self.cleaner_guy
+                # _ = self.cleaner_guy  # unused — spacy model commented out
                 _ = self.kw_model
             except Exception as e:
                 logger.warning(f"NLP Service ön yükleme hatası: {e}")
         else:
             logger.info(
-                "NLP Service initialized (lazy mode — kütüphaneler ilk kullanımda yüklenecek)"
+                "NLP Service initialized (lazy mode — modeller ilk kullanımda RAM'e yüklenecek)"
             )
+
+    def _ensure_models_downloaded(self):
+        """Download NLP models to local disk if not already cached."""
+        from utils.model_downloader import download_nlp_models
+
+        results = download_nlp_models(
+            model_dir=settings.nlp_model_dir,
+            embedder_name=settings.nlp_embedder_model,
+            cross_encoder_name=settings.nlp_cross_encoder_model,
+        )
+        for status, name in results:
+            if status == "downloaded":
+                logger.info(f"NLP model downloaded: {name}")
+            elif status == "cached":
+                logger.debug(f"NLP model already cached: {name}")
+            elif status == "error":
+                logger.warning(f"NLP model download failed: {name}")
 
     @property
     def embedder(self) -> "SentenceTransformer":
-        """Lazy load embedder model"""
+        """Lazy load embedder model from local disk into RAM"""
         if self._embedder is None:
             _ensure_nlp_imports()
-            logger.info(f"Loading embedder: {settings.nlp_embedder_model}")
+            local_path = settings.nlp_embedder_path
+            logger.info(f"Loading embedder from local: {local_path}")
             try:
-                self._embedder = SentenceTransformer(
-                    settings.nlp_embedder_model, device="cuda"
-                )
+                self._embedder = SentenceTransformer(str(local_path), device="cuda")
             except Exception:
                 logger.warning("Cannot link to GPU. Switching to CPU")
-                self._embedder = SentenceTransformer(settings.nlp_embedder_model)
+                self._embedder = SentenceTransformer(str(local_path))
 
         return self._embedder
 
     @property
     def cross_encoder(self) -> "CrossEncoder":
-        """Lazy load cross encoder model"""
+        """Lazy load cross encoder model from local disk into RAM"""
         if self._cross_encoder is None:
             _ensure_nlp_imports()
-            logger.info("Loading cross encoder: cross-encoder/ms-marco-MiniLM-L-6-v2")
-            self._cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+            local_path = settings.nlp_cross_encoder_path
+            logger.info(f"Loading cross encoder from local: {local_path}")
+            self._cross_encoder = CrossEncoder(str(local_path))
         return self._cross_encoder
 
     @cross_encoder.setter
     def cross_encoder(self, value):
         self._cross_encoder = value
 
-    @property
-    def cleaner_guy(self):
-        """Lazy load spacy model"""
-        if self._cleaner_guy is None:
-            _ensure_nlp_imports()
-            logger.info("Loading spacy model: en_core_web_sm")
-            self._cleaner_guy = spacy.load("en_core_web_sm")
-        return self._cleaner_guy
+    # @property
+    # def cleaner_guy(self):
+    #     """Lazy load spacy model"""
+    #     if self._cleaner_guy is None:
+    #         _ensure_nlp_imports()
+    #         logger.info("Loading spacy model: en_core_web_sm")
+    #         self._cleaner_guy = spacy.load("en_core_web_sm")
+    #     return self._cleaner_guy
 
-    @cleaner_guy.setter
-    def cleaner_guy(self, value):
-        self._cleaner_guy = value
+    # @cleaner_guy.setter
+    # def cleaner_guy(self, value):
+    #     self._cleaner_guy = value
 
     @property
     def kw_model(self):
-        """Lazy load KeyBERT model"""
+        """Lazy load KeyBERT model using local embedder"""
         if self._kw_model is None:
             _ensure_nlp_imports()
-            logger.info(f"Loading KeyBERT model: {settings.nlp_embedder_model}")
-            self._kw_model = KeyBERT(model=settings.nlp_embedder_model)
+            local_path = settings.nlp_embedder_path
+            logger.info(f"Loading KeyBERT with local model: {local_path}")
+            self._kw_model = KeyBERT(model=str(local_path))
         return self._kw_model
 
     @kw_model.setter
@@ -312,10 +333,11 @@ class NLPService:
             _ = self.embedder
 
             def _extract_batch():
+                import torch
                 from tqdm import tqdm
 
                 results = []
-                batch_size = 128
+                batch_size = 32
                 # Process in chunks to provide a progress bar
                 for i in tqdm(
                     range(0, len(abstracts), batch_size), desc="Extracting keywords"
@@ -325,10 +347,12 @@ class NLPService:
                         chunk,
                         keyphrase_ngram_range=(1, 2),
                         stop_words="english",
-                        use_mmr=True,
+                        use_mmr=False,
                         diversity=0.2,
-                        top_n=5,
+                        top_n=3,
                     )
+                    if i % 200 == 0 and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     # KeyBERT returns List[Tuple] for single doc, List[List[Tuple]] for multiple
                     if len(chunk) == 1:
                         results.append(chunk_res)
@@ -366,7 +390,7 @@ class NLPService:
             # Embedding
             def _encode():
                 return self.embedder.encode(
-                    cleaned_texts, batch_size=128, show_progress_bar=True
+                    cleaned_texts, batch_size=32, show_progress_bar=True
                 )
 
             embeddings_full = await asyncio.to_thread(_encode)
@@ -379,6 +403,7 @@ class NLPService:
 
             def _reduce():
                 import umap
+                import torch
 
                 reducer = umap.UMAP(
                     n_neighbors=settings.nlp_umap_n_neighbors,
@@ -387,6 +412,8 @@ class NLPService:
                     n_jobs=-1,
                 )
                 reduced = reducer.fit_transform(embeddings_full)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 return reducer, reduced
 
             umap_reducer, embeddings_reduced = await asyncio.to_thread(_reduce)
@@ -431,6 +458,7 @@ class NLPService:
                 save_path: str = None,
             ):
                 import hdbscan
+                import torch
 
                 subset_reduced = embeddings_reduced[indices]
                 clusterer = hdbscan.HDBSCAN(
@@ -442,6 +470,8 @@ class NLPService:
                 labels = clusterer.fit_predict(subset_reduced)
                 if save_path:
                     joblib.dump(clusterer, save_path)
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 return labels
 
             # --- Clustering for All ---
@@ -695,10 +725,11 @@ class NLPService:
         _ = self.embedder
 
         def _extract_batch():
+            import torch
             from tqdm import tqdm
 
             results = []
-            batch_size = 128
+            batch_size = 32
             for i in tqdm(
                 range(0, len(abstracts), batch_size), desc="Extracting keywords (new)"
             ):
@@ -711,6 +742,8 @@ class NLPService:
                     diversity=0.2,
                     top_n=5,
                 )
+                if i % 200 == 0 and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
                 if len(chunk) == 1:
                     results.append(chunk_res)
                 else:
@@ -757,9 +790,14 @@ class NLPService:
         logger.info(f"Generating embeddings for {len(cleaned_texts)} new articles...")
 
         def _encode():
-            return self.embedder.encode(
-                cleaned_texts, batch_size=128, show_progress_bar=True
+            import torch
+
+            result = self.embedder.encode(
+                cleaned_texts, batch_size=32, show_progress_bar=True
             )
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            return result
 
         embeddings_full = await asyncio.to_thread(_encode)
         logger.success(
@@ -1135,24 +1173,24 @@ class NLPService:
         ranked_results.sort(key=lambda x: x["score"], reverse=True)
         return ranked_results
 
-    def _preprocess_scientific_text(self, text):
-
-        doc = self.cleaner_guy(text)
-
-        tokens = []
-        for token in doc:
-            is_person = token.ent_type_ == "PERSON"
-
-            if (
-                token.pos_ in ["NOUN", "ADJ"]
-                and token.pos_ != "PROPN"
-                and not is_person
-                and not token.is_stop
-                and len(token.text) > 2
-            ):
-                tokens.append(token.lemma_.lower())
-
-        return " ".join(tokens)
+    # def _preprocess_scientific_text(self, text):
+    #     # unused — spacy/cleaner_guy commented out
+    #     doc = self.cleaner_guy(text)
+    #
+    #     tokens = []
+    #     for token in doc:
+    #         is_person = token.ent_type_ == "PERSON"
+    #
+    #         if (
+    #             token.pos_ in ["NOUN", "ADJ"]
+    #             and token.pos_ != "PROPN"
+    #             and not is_person
+    #             and not token.is_stop
+    #             and len(token.text) > 2
+    #         ):
+    #             tokens.append(token.lemma_.lower())
+    #
+    #     return " ".join(tokens)
 
     # async def _extract_cluster_keywords(self):
     #     cleaned_abstracts = [self._preprocess_scientific_text(art.abstract) for art in self.articles]
