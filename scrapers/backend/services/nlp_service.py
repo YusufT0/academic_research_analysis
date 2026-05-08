@@ -470,7 +470,7 @@ class NLPService:
                 clusterer = hdbscan.HDBSCAN(
                     min_cluster_size=min_cluster_size,
                     min_samples=min_samples,
-                    core_dist_n_jobs=-1,
+                    core_dist_n_jobs=2,
                     prediction_data=True,
                 )
                 labels = clusterer.fit_predict(subset_reduced)
@@ -484,6 +484,8 @@ class NLPService:
             logger.info("Clustering for All.")
             all_indices = list(range(len(article_ids)))
             hdbscan_all_path = str(models_dir / f"hdbscan_all_{model_version}.joblib")
+            from database.connection import get_database
+            await get_database().client.admin.command('ping')
             all_labels = await asyncio.to_thread(
                 run_hdbscan,
                 all_indices,
@@ -521,7 +523,7 @@ class NLPService:
                 publisher_groups.setdefault(source, []).append(i)
 
             cluster_docs_publishers = []
-            for publisher, indices in publisher_groups.items():
+            for pub_idx, (publisher, indices) in enumerate(publisher_groups.items()):
                 if len(indices) == 1:
                     idx = indices[0]
                     cluster_docs_publishers.append(
@@ -547,6 +549,10 @@ class NLPService:
                         f"Skipping publisher '{publisher}': only {len(indices)} articles."
                     )
                     continue
+                await asyncio.sleep(0)
+                if pub_idx % 3 == 0:
+                    from database.connection import get_database
+                    await get_database().client.admin.command('ping')
                 labels = await asyncio.to_thread(
                     run_hdbscan,
                     indices,
@@ -578,7 +584,7 @@ class NLPService:
                 journal_groups.setdefault(str(journal_id), []).append(i)
 
             cluster_docs_journals = []
-            for journal_id, indices in journal_groups.items():
+            for jrn_idx, (journal_id, indices) in enumerate(journal_groups.items()):
                 if len(indices) == 1:
                     idx = indices[0]
                     cluster_docs_journals.append(
@@ -604,6 +610,10 @@ class NLPService:
                         f"Skipping journal '{journal_id}': only {len(indices)} articles."
                     )
                     continue
+                await asyncio.sleep(0)
+                if jrn_idx % 3 == 0:
+                    from database.connection import get_database
+                    await get_database().client.admin.command('ping')
                 labels = await asyncio.to_thread(
                     run_hdbscan,
                     indices,

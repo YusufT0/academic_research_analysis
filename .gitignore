@@ -12,3 +12,4 @@ coverage
 my-env/
 *.joblib
 pyrightconfig.json
+scrapers/nlp_models
