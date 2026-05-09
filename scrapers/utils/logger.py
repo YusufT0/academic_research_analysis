@@ -142,6 +142,7 @@ def _configure_structlog():
         # Scrapers that should be forwarded to the frontend via WebSocket
         _SCRAPER_LOGGERS = frozenset({
             'ieee_xplore', 'science_direct', 'acm', 'wiley',
+            'springer',
             'scraper_manager', 'rate_limiter',
         })
 
@@ -167,6 +168,8 @@ def _configure_structlog():
                     scraper_name = 'acm'
                 elif 'wiley' in ln or '[wiley thread]' in en:
                     scraper_name = 'wiley'
+                elif 'springer' in ln or '[springer thread]' in en:
+                    scraper_name = 'springer'
                 else:
                     scraper_name = logger_name
 

@@ -121,8 +121,28 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
           <div className="flex-1 min-w-0">
             <h3 className="font-semibold text-slate-900 line-clamp-2">{journal.name}</h3>
             <div className="flex items-center gap-2 mt-2">
-              <Badge variant={journal.source_website === 'ieeexplore' ? 'info' : journal.source_website === 'acm' ? 'warning' : 'success'}>
-                {journal.source_website === 'ieeexplore' ? 'IEEE' : journal.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
+              <Badge
+                variant={
+                  journal.source_website === 'ieeexplore'
+                    ? 'info'
+                    : journal.source_website === 'acm'
+                    ? 'warning'
+                    : journal.source_website === 'wiley'
+                    ? 'default'
+                    : journal.source_website === 'springer'
+                    ? 'info'
+                    : 'success'
+                }
+              >
+                {journal.source_website === 'ieeexplore'
+                  ? 'IEEE'
+                  : journal.source_website === 'acm'
+                  ? 'ACM'
+                  : journal.source_website === 'wiley'
+                  ? 'Wiley'
+                  : journal.source_website === 'springer'
+                  ? 'Springer'
+                  : 'ScienceDirect'}
               </Badge>
               {journal.open_access && (
                 <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200" title="Açık Erişim Dergi">

@@ -117,7 +117,7 @@ export default function ScraperStatusComponent() {
             if (!prev) return prev;
             const newState = { ...prev };
             const sType = event.scraper_type;
-            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm' || sType === 'wiley' || sType === 'springer') {
               newState[sType] = { ...newState[sType], ...event.data };
             }
             return newState;
@@ -155,7 +155,7 @@ export default function ScraperStatusComponent() {
         </CardHeader>
         <CardContent>
           <div className="animate-pulse space-y-3">
-            {[...Array(3)].map((_, i) => <div key={i} className="h-24 bg-slate-100 rounded" />)}
+            {[...Array(5)].map((_, i) => <div key={i} className="h-24 bg-slate-100 rounded" />)}
           </div>
         </CardContent>
       </Card>
@@ -172,10 +172,12 @@ export default function ScraperStatusComponent() {
       </CardHeader>
       <CardContent>
         {status && (
-          <div className="space-y-3">
+          <div className="max-h-[30rem] overflow-y-auto pr-1 space-y-3">
             <ScraperCard scraper={status.ieee} title="IEEE Xplore" />
             <ScraperCard scraper={status.sciencedirect} title="ScienceDirect" />
             <ScraperCard scraper={status.acm} title="ACM Digital Library" />
+            <ScraperCard scraper={status.wiley} title="Wiley Online Library" />
+            <ScraperCard scraper={status.springer} title="Springer Link" />
           </div>
         )}
       </CardContent>

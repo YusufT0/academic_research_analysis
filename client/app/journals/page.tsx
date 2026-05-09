@@ -28,6 +28,10 @@ function getFullUrl(url: string, sourceWebsite: string): string {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (sourceWebsite === 'acm') {
     return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'wiley') {
+    return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'springer') {
+    return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   }
 
   return url;
@@ -138,6 +142,8 @@ function JournalsContent() {
                 <option value="ieeexplore">IEEE Xplore</option>
                 <option value="sciencedirect">ScienceDirect</option>
                 <option value="acm">ACM Digital Library</option>
+                <option value="wiley">Wiley Online Library</option>
+                <option value="springer">Springer Link</option>
               </select>
 
               <select

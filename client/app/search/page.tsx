@@ -15,13 +15,23 @@ import { TopicTrendsSection } from '../trends/TopicTrendsSection';
 
 // ==================== Helpers ====================
 
-function getFullUrl(url: string): string {
+function getFullUrl(url: string, sourceWebsite?: string): string {
   if (!url) return '';
   if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
+
   if (url.includes('/xpl/') || url.includes('/document/') || url.includes('punumber=')) {
     return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (url.includes('/science/') || url.includes('/pii/')) {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (url.includes('/journal/') || url.includes('/article/')) {
+    return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (url.includes('/doi/full/') || url.includes('/toc/')) {
+    return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (url.includes('/doi/') || url.includes('/toc/') || url.includes('/abs/')) {
     return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   }
@@ -59,6 +69,8 @@ const formatSourceName = (key: string) => {
   if (key === 'ieeexplore') return 'IEEE Xplore';
   if (key === 'sciencedirect') return 'Science Direct';
   if (key === 'acm') return 'ACM Digital Library';
+  if (key === 'wiley') return 'Wiley Online Library';
+  if (key === 'springer') return 'Springer Link';
   return key;
 };
 
@@ -393,7 +405,7 @@ function SearchPageInner() {
                 <span className="text-xs text-slate-500">Aktif filtreler:</span>
                 {filters.source_website && (
                   <button onClick={() => toggleFilter('source_website', filters.source_website!)} className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800 hover:bg-blue-200 transition-colors">
-                    Kaynak: {filters.source_website} <X className="h-3 w-3 ml-1" />
+                    Kaynak: {formatSourceName(filters.source_website)} <X className="h-3 w-3 ml-1" />
                   </button>
                 )}
                 {filters.year && (
@@ -699,8 +711,16 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
     }
   }
 
-  const sourceLabel = article.source_website === 'ieeexplore' ? 'IEEE' : article.source_website === 'acm' ? 'ACM' : 'ScienceDirect';
-  const sourceBadgeVariant = article.source_website === 'ieeexplore' ? 'info' : article.source_website === 'acm' ? 'warning' : 'success';
+  const sourceLabel =
+    article.source_website === 'ieeexplore' ? 'IEEE' :
+    article.source_website === 'acm' ? 'ACM' :
+    article.source_website === 'wiley' ? 'Wiley' :
+    article.source_website === 'springer' ? 'Springer' : 'ScienceDirect';
+  const sourceBadgeVariant: 'default' | 'info' | 'success' | 'warning' =
+    article.source_website === 'ieeexplore' ? 'info' :
+    article.source_website === 'acm' ? 'warning' :
+    article.source_website === 'wiley' ? 'default' :
+    article.source_website === 'springer' ? 'info' : 'success';
   const detail = fullArticle;
 
   return (
@@ -768,7 +788,7 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
 
             {/* Right controls */}
             <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
-              <a href={getFullUrl(article.url)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-2 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all" title="Makaleyi aç">
+              <a href={getFullUrl(article.url, article.source_website)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-2 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all" title="Makaleyi aç">
                 <ExternalLink className="h-4 w-4" />
               </a>
               <div className={`p-2 rounded-lg transition-all duration-300 ${expanded ? 'bg-emerald-100 text-emerald-600' : 'text-slate-400 group-hover:text-emerald-500 group-hover:bg-emerald-50'}`}>

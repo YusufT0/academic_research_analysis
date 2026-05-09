@@ -46,6 +46,10 @@ import {
   stopWileyScraper,
   pauseWileyScraper,
   resumeWileyScraper,
+  startSpringerScraper,
+  stopSpringerScraper,
+  pauseSpringerScraper,
+  resumeSpringerScraper,
   getScraperLogs,
   startAllScrapers,
   startAllScrapersSequential,
@@ -657,12 +661,14 @@ const SCRAPER_OPTIONS = [
   { value: 'sciencedirect', label: 'ScienceDirect', variant: 'success' as const },
   { value: 'acm', label: 'ACM Digital Library', variant: 'warning' as const },
   { value: 'wiley', label: 'Wiley Online Library', variant: 'default' as const },
+  { value: 'springer', label: 'Springer Link', variant: 'info' as const },
 ];
 
 function scraperLabel(type: string) {
   if (type === 'ieee') return 'IEEE';
   if (type === 'acm') return 'ACM';
   if (type === 'wiley') return 'Wiley';
+  if (type === 'springer') return 'Springer';
   return 'SD';
 }
 
@@ -670,6 +676,7 @@ function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' | 'de
   if (type === 'ieee') return 'info';
   if (type === 'acm') return 'warning';
   if (type === 'wiley') return 'default';
+  if (type === 'springer') return 'info';
   return 'success';
 }
 
@@ -946,9 +953,17 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 
   const fetchLogs = useCallback(async () => {
     try {
-      const scraperParam = subscribedScrapers.length === 3 ? 'all' : subscribedScrapers[0] ?? 'all';
+      const scraperParam = subscribedScrapers.length === SCRAPER_OPTIONS.length ? 'all' : subscribedScrapers[0] ?? 'all';
       const data = await getScraperLogs(scraperParam, 500);
-      setPolledLogs(data.logs || []);
+      setPolledLogs(prev => {
+        // Yeni logları mevcut loglarla birleştir, duplike olanları kaldır
+        const allLogs = [...prev, ...(data.logs || [])];
+        const unique = allLogs.filter(
+          (l, i, arr) => arr.findIndex((x) => x.timestamp === l.timestamp && x.message === l.message) === i
+        );
+        // Son 500'ü tut
+        return unique.slice(-500);
+      });
     } catch (err) {
       console.error(err);
     } finally {
@@ -977,7 +992,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
     setViewMode(mode);
     if (mode === 'split') {
       // Split modda global WS tüm scraper'ları alır (status/progress için)
-      subscribe(['ieee', 'sciencedirect', 'acm', 'wiley']);
+      subscribe(['ieee', 'sciencedirect', 'acm', 'wiley', 'springer']);
     }
   }, [subscribe]);
 
@@ -1073,6 +1088,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
             <SplitPanel scraperType="sciencedirect" label="ScienceDirect" />
             <SplitPanel scraperType="acm" label="ACM Digital Library" />
             <SplitPanel scraperType="wiley" label="Wiley Online Library" />
+            <SplitPanel scraperType="springer" label="Springer Link" />
           </div>
         ) : loading ? (
           // ── COMBINED MOD yükleniyor ──
@@ -1339,7 +1355,7 @@ export default function ScrapersPage() {
             const newState = { ...prev };
             const sType = event.scraper_type;
 
-            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm' || sType === 'wiley') {
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm' || sType === 'wiley' || sType === 'springer') {
               newState[sType] = {
                 ...newState[sType],
                 ...event.data
@@ -1347,7 +1363,7 @@ export default function ScrapersPage() {
             }
 
             // any_running / all_completed'ı yeniden hesapla
-            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status, newState.wiley?.status];
+            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status, newState.wiley?.status, newState.springer?.status];
             newState.any_running = statuses.some(s => s === 'running' || s === 'starting' || s === 'paused');
             newState.all_completed = statuses.every(s => s === 'completed' || s === 'stopped' || s === 'idle' || s === 'error');
 
@@ -1434,7 +1450,7 @@ export default function ScrapersPage() {
             </div>
             <div className="text-left">
               <h2 className="font-semibold text-slate-900">URL ile Journal İşle</h2>
-              <p className="text-sm text-slate-500">ACM, ScienceDirect, IEEE Xplore veya Wiley URL&#39;si girerek tekil dergi scraping yapın</p>
+              <p className="text-sm text-slate-500">ACM, ScienceDirect, IEEE Xplore, Wiley veya Springer URL&#39;si girerek tekil dergi scraping yapın</p>
             </div>
           </div>
           <ChevronUp
@@ -1478,7 +1494,7 @@ export default function ScrapersPage() {
       <Card>
         <CardHeader>
           <CardTitle>Tüm Scraperları Başlat</CardTitle>
-          <CardDescription>IEEE Xplore, ScienceDirect ve ACM scraperlarını aynı anda başlatın</CardDescription>
+          <CardDescription>IEEE Xplore, ScienceDirect, ACM, Wiley ve Springer scraperlarını aynı anda başlatın</CardDescription>
         </CardHeader>
         <CardContent>
           <StartAllPanel anyRunning={status?.any_running ?? false} onRefresh={fetchStatus} />
@@ -1486,49 +1502,69 @@ export default function ScrapersPage() {
       </Card>
 
       {/* Scraper Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-6">
+      <div className="flex flex-wrap gap-6">
         {status && (
           <>
-            <ScraperControl
-              scraper={status.ieee}
-              title="IEEE Xplore Scraper"
-              description="IEEE akademik makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
-            />
-            <ScraperControl
-              scraper={status.sciencedirect}
-              title="ScienceDirect Scraper"
-              description="Elsevier ScienceDirect makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
-            />
-            <ScraperControl
-              scraper={status.acm}
-              title="ACM Digital Library Scraper"
-              description="ACM akademik makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
-            />
-            <ScraperControl
-              scraper={status.wiley}
-              title="Wiley Online Library"
-              description="Wiley akademik makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startWileyScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopWileyScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseWileyScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeWileyScraper(); await fetchStatus(); }}
-            />
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.ieee}
+                title="IEEE Xplore Scraper"
+                description="IEEE akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.sciencedirect}
+                title="ScienceDirect Scraper"
+                description="Elsevier ScienceDirect makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.acm}
+                title="ACM Digital Library Scraper"
+                description="ACM akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.wiley}
+                title="Wiley Online Library"
+                description="Wiley akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startWileyScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStop={async () => { await stopWileyScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseWileyScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeWileyScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.springer}
+                title="Springer Link"
+                description="Springer akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startSpringerScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStop={async () => { await stopSpringerScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseSpringerScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeSpringerScraper(); await fetchStatus(); }}
+              />
+            </div>
           </>
         )}
       </div>

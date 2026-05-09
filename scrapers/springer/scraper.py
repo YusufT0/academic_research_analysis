@@ -1,0 +1,383 @@
+"""Main scraper class for Springer."""
+
+import random
+import sys
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from utils.logger import get_logger
+
+from .config import ProxyConfig, SpringerConfig
+from .driver import SeleniumDriver
+from .navigation import PageNavigator
+from .parsers import ArticleDetailParser, ArticleListParser, JournalDetailParser, JournalListParser, VolumesAndIssuesParser
+from .rate_limiter import SpringerRateLimiter
+from .utils import extract_journal_id_from_url, handle_cookie_consent, wait_for_page_load
+
+logger = get_logger("springer")
+
+
+class ScraperStoppedException(Exception):
+    pass
+
+
+class SpringerScraper:
+    BASE_URL = "https://link.springer.com"
+
+    def __init__(self, use_proxy: bool = None, headless: bool = False, stop_flag=None, pause_flag=None):
+        self.stop_flag = stop_flag
+        self.pause_flag = pause_flag
+
+        self.config = SpringerConfig()
+        self.proxy_config = ProxyConfig()
+        if use_proxy is not None:
+            self.proxy_config.use_proxy = use_proxy
+            logger.info(f"Proxy kullanımı parametre ile belirlendi: {use_proxy}")
+        else:
+            logger.info(f".env'den USE_PROXY okundu: {self.proxy_config.use_proxy}")
+
+        if self.proxy_config.use_proxy:
+            if self.proxy_config.is_configured():
+                logger.success("Proxy yapılandırması yüklendi:")
+                logger.info(f"  - Host: {self.proxy_config.host}")
+                logger.info(f"  - Port: {self.proxy_config.port}")
+                logger.info(f"  - User: {self.proxy_config.user}")
+            else:
+                logger.warning("Uyarı: USE_PROXY=true ama proxy bilgileri eksik!")
+        else:
+            logger.info("Proxy kullanımı devre dışı")
+
+        self.selenium_driver = SeleniumDriver(
+            self.proxy_config,
+            headless=headless,
+            page_load_timeout=self.config.page_load_timeout,
+        )
+        self.navigator = None
+        self.rate_limiter = SpringerRateLimiter(
+            self.selenium_driver,
+            min_wait=self.config.min_wait,
+            max_wait=self.config.max_wait,
+        )
+        self.headless = headless
+        self._cookie_handled = False
+        self._cookie_attempts = 0
+        self._max_cookie_attempts = 3
+
+    def initialize(self):
+        logger.header("Springer Scraper Baslatiliyor")
+        logger.info(f"Headless: {self.headless}")
+        logger.info(f"Proxy aktif: {self.proxy_config.use_proxy}")
+        if not self.selenium_driver.start():
+            raise Exception("WebDriver baslatilamadi")
+        self.navigator = PageNavigator(self.selenium_driver, self.BASE_URL)
+        logger.success("Springer scraper initialize tamamlandi")
+
+    def close(self):
+        self.selenium_driver.close()
+        logger.info("Springer Scraper kapatildi")
+
+    def check_stop_flag(self):
+        if self.stop_flag and self.stop_flag.is_set():
+            logger.warning("Stop sinyali alındı, scraper durduruluyor...")
+            raise ScraperStoppedException("Scraper durduruldu")
+
+    def _interruptible_sleep(self, seconds: float):
+        end = time.time() + seconds
+        while time.time() < end:
+            self.check_stop_flag()
+            if self.pause_flag and self.pause_flag.is_set():
+                while self.pause_flag.is_set():
+                    self.check_stop_flag()
+                    time.sleep(0.2)
+            time.sleep(0.2)
+
+    def _random_wait(self):
+        wait = random.uniform(self.config.min_wait, self.config.max_wait)
+        logger.info(f"Rate limiting bekleme: {wait:.1f}s")
+        self._interruptible_sleep(wait)
+
+    def _close_modals(self):
+        if self._cookie_handled:
+            return
+        if self._cookie_attempts >= self._max_cookie_attempts:
+            return
+
+        self._cookie_attempts += 1
+        handled = handle_cookie_consent(self.selenium_driver, timeout=4)
+        if handled:
+            self._cookie_handled = True
+            logger.success("Cookie banner kapatildi ve bir daha denenmeyecek")
+        else:
+            logger.info(
+                f"Cookie banner gorunmedi (deneme {self._cookie_attempts}/{self._max_cookie_attempts})"
+            )
+
+    def navigate_to_journals(self) -> bool:
+        logger.info("Journal listesi aciliyor (ilk sayfa)")
+        ok = self.navigator.go_to_journal_list_page(self.config.base_url, page=1)
+        if ok:
+            logger.success("Journal listesi sayfasi acildi")
+        else:
+            logger.error("Journal listesi sayfasi acilamadi")
+        return ok
+
+    def scrape_all_journals(self) -> List[Dict[str, Any]]:
+        logger.header("SPRINGER JOURNAL LISTESI TOPLAMA BASLADI")
+        journals: List[Dict[str, Any]] = []
+        seen = set()
+        page = 1
+        max_pages = 200
+        logger.section(f"TOPLAM EN COK {max_pages} SAYFA TARANACAK")
+
+        while page <= max_pages:
+            self.check_stop_flag()
+            logger.subsection(f"Sayfa {page} taraniyor")
+            if not self.navigator.go_to_journal_list_page(self.config.base_url, page=page):
+                logger.warning(f"Journal sayfasi yuklenemedi, duruluyor: page={page}")
+                break
+            self._close_modals()
+
+            page_html = self.selenium_driver.page_source
+            parsed = JournalListParser.parse_journals(page_html)
+            for journal in parsed:
+                jid = journal.get("journal_id")
+                if jid and jid not in seen:
+                    seen.add(jid)
+                    journals.append(journal)
+
+            pagination = JournalListParser.parse_pagination(page_html)
+            logger.found(len(parsed), f"journal (Sayfa {page})")
+            logger.info(f"Toplam: {len(journals)} journal")
+            if not pagination.get("has_next"):
+                logger.success("Journal pagination tamamlandi")
+                break
+            page += 1
+
+        logger.success(f"Journal toplama tamamlandi: toplam={len(journals)}")
+        return journals
+
+    def _scrape_journal_detail(self, journal_url: str) -> Dict[str, Any]:
+        logger.info(f"Journal detay aliniyor: {journal_url}")
+        if not self.navigator.go_to_journal_page(journal_url):
+            logger.warning("Journal detay sayfasi acilamadi")
+            return {}
+        self._close_modals()
+        data = JournalDetailParser.parse_issn(self.selenium_driver.page_source)
+        logger.info(
+            f"Journal ISSN bilgisi alindi: issn={bool(data.get('issn'))}, eissn={bool(data.get('eissn'))}"
+        )
+        return data
+
+    def _scrape_aims_and_scope(self, journal_url: str) -> str:
+        logger.info(f"Aims and scope aliniyor: {journal_url}")
+        if not self.navigator.go_to_aims_and_scope(journal_url):
+            logger.warning("Aims and scope sayfasi acilamadi")
+            return ""
+        self._close_modals()
+        from .parsers import AimsAndScopeParser
+
+        text = AimsAndScopeParser.parse_text(self.selenium_driver.page_source)
+        logger.info(f"Aims and scope uzunlugu: {len(text)}")
+        return text
+
+    def _scrape_volumes_and_issues(self, journal_url: str) -> List[Dict[str, Any]]:
+        logger.info(f"Volumes & issues aliniyor: {journal_url}")
+        if not self.navigator.go_to_issue_list(journal_url):
+            logger.warning("Volumes & issues sayfasi acilamadi")
+            return []
+        self._close_modals()
+        issues = VolumesAndIssuesParser.parse_issues(self.selenium_driver.page_source)
+        logger.info(f"Issue sayisi: {len(issues)}")
+        return issues
+
+    def _scrape_issue_articles(self, issue_url: str, max_articles: Optional[int] = None) -> List[Dict[str, Any]]:
+        logger.info(f"Issue article taramasi basladi: {issue_url}")
+        all_articles: List[Dict[str, Any]] = []
+        next_url = issue_url
+        page_count = 0
+
+        while next_url:
+            self.check_stop_flag()
+            page_count += 1
+            logger.info(f"Issue pagination sayfasi: {page_count} -> {next_url}")
+            if not self.navigator.go_to_issue_toc(next_url):
+                logger.warning("Issue ToC sayfasi acilamadi")
+                break
+            self._close_modals()
+            wait_for_page_load(self.selenium_driver)
+
+            page_html = self.selenium_driver.page_source
+            page_articles = ArticleListParser.parse_articles(page_html)
+            all_articles.extend(page_articles)
+            logger.info(f"Issue page {page_count}: makale={len(page_articles)}, biriken={len(all_articles)}")
+
+            if max_articles and len(all_articles) >= max_articles:
+                logger.info(f"Max article limitine ulasildi: {max_articles}")
+                return all_articles[:max_articles]
+
+            pagination = ArticleListParser.parse_pagination(page_html)
+            next_url = pagination.get("next_page_url") if pagination.get("has_next") else None
+            if next_url:
+                self._random_wait()
+
+        logger.success(f"Issue article taramasi tamamlandi: toplam={len(all_articles)}")
+        return all_articles
+
+    def _scrape_article_detail(self, article_url: str) -> Dict[str, Any]:
+        logger.info(f"Makale detay aliniyor: {article_url}")
+        if not self.navigator.go_to_article(article_url):
+            logger.warning("Makale detay sayfasi acilamadi")
+            return {}
+        self._close_modals()
+        wait_for_page_load(self.selenium_driver)
+        detail = ArticleDetailParser.parse_article_detail(self.selenium_driver.page_source, article_url)
+        if detail.get("title"):
+            logger.success(f"Makale detay alindi: {detail['title'][:60]}...")
+            logger.info(f"  doi={detail.get('doi', '-')}, authors={len(detail.get('authors', []))}")
+        else:
+            logger.warning(f"Makale detay parse edilemedi: {article_url}")
+        return detail
+
+    def scrape_journal_articles(
+        self,
+        journal: Dict[str, Any],
+        depth: int = 1,
+        max_articles: int = None,
+        article_progress_callback: Callable = None,
+        article_list_callback: Callable = None,
+        journal_name_callback: Callable = None,
+        existing_issue_urls: set = None,
+        existing_article_dois: set = None,
+        issue_start_callback: Callable = None,
+        issue_complete_callback: Callable = None,
+        issues_order: str = "newest_first",
+    ) -> List[Dict[str, Any]]:
+        logger.header("SPRINGER JOURNAL ARTICLE AKISI BASLADI")
+        existing_issue_urls = existing_issue_urls or set()
+        existing_article_dois = existing_article_dois or set()
+        max_articles = max_articles or self.config.max_articles
+
+        journal_url = journal.get("url", "")
+        if not journal_url:
+            jid = journal.get("journal_id") or extract_journal_id_from_url(journal.get("url", ""))
+            if not jid:
+                logger.warning("Journal URL veya ID bulunamadi, atlandi")
+                return []
+            journal_url = f"{self.BASE_URL}/journal/{jid}"
+
+        logger.info(
+            f"Journal isleniyor: name={journal.get('name', 'unknown')}, depth={depth}, "
+            f"max_articles={max_articles}, order={issues_order}"
+        )
+
+        if journal_name_callback and journal.get("name"):
+            try:
+                journal_name_callback(journal.get("name"))
+            except Exception:
+                pass
+
+        detail = self._scrape_journal_detail(journal_url)
+        if detail:
+            journal.update(detail)
+
+        journal["aims_and_scope"] = self._scrape_aims_and_scope(journal_url)
+
+        all_issues = self._scrape_volumes_and_issues(journal_url)
+        if issues_order == "oldest_first":
+            all_issues = list(reversed(all_issues))
+
+        new_issues = [i for i in all_issues if i.get("url") and i.get("url") not in existing_issue_urls]
+        skipped = len(all_issues) - len(new_issues)
+        if skipped:
+            logger.info(f"{skipped} issue daha önce işlenmiş, atlanıyor. Yeni: {len(new_issues)}")
+
+        if issues_order == "oldest_first":
+            logger.info("[Springer] Issue sırası: eskiden yeniye (oldest_first)")
+        else:
+            logger.info("[Springer] Issue sırası: yeniden eskiye (newest_first)")
+
+        issues_to_process = new_issues[:depth] if depth else new_issues
+        logger.info(
+            f"Toplam {len(all_issues)} issue, {len(issues_to_process)} tanesi işlenecek (depth={depth})"
+        )
+
+        issue_results: List[Dict[str, Any]] = []
+
+        try:
+            for idx, issue in enumerate(issues_to_process, start=1):
+                self.check_stop_flag()
+                logger.info(f"Issue basladi ({idx}/{len(issues_to_process)}): {issue.get('title', '')}")
+
+                if issue_start_callback:
+                    pending = [x.get("title", "") for x in issues_to_process[idx:]]
+                    try:
+                        issue_start_callback(idx, len(issues_to_process), issue.get("title", f"Issue {idx}"), pending)
+                    except Exception:
+                        pass
+
+                stubs = self._scrape_issue_articles(issue.get("url", ""), max_articles=max_articles)
+                logger.info(f"Issue stub makale sayisi: {len(stubs)}")
+                if article_list_callback:
+                    try:
+                        article_list_callback([a.get("title", "") for a in stubs])
+                    except Exception:
+                        pass
+
+                issue_articles: List[Dict[str, Any]] = []
+                for art_idx, stub in enumerate(stubs, start=1):
+                    self.check_stop_flag()
+                    logger.info(f"Makale isleniyor ({art_idx}/{len(stubs)}): {stub.get('title', '')}")
+
+                    if article_progress_callback:
+                        try:
+                            article_progress_callback(art_idx, len(stubs), stub.get("title"))
+                        except Exception:
+                            pass
+
+                    doi = stub.get("doi", "")
+                    if doi and doi in existing_article_dois:
+                        logger.info(f"Mevcut DOI atlandi: {doi}")
+                        continue
+
+                    detail_data = self._scrape_article_detail(stub.get("url", "")) if stub.get("url") else {}
+                    merged = {**stub, **detail_data}
+                    merged["journal_name"] = journal.get("name", "")
+                    issue_articles.append(merged)
+                    logger.success(f"Makale eklendi: {merged.get('title', '')[:50]}...")
+
+                    if max_articles and len(issue_articles) >= max_articles:
+                        logger.info(f"Issue max article limitine ulasildi: {max_articles}")
+                        break
+
+                    self._random_wait()
+
+                issue_results.append({"issue_info": issue, "articles": issue_articles})
+                logger.success(
+                    f"Issue tamamlandi ({idx}/{len(issues_to_process)}): "
+                    f"article_count={len(issue_articles)}"
+                )
+
+                if issue_complete_callback:
+                    try:
+                        issue_complete_callback(idx, len(issue_articles), [a.get("title", "") for a in issue_articles])
+                    except Exception:
+                        pass
+
+        except ScraperStoppedException:
+            logger.warning(f"{journal.get('name', 'Unknown')}: Stop sinyali alındı")
+            raise
+        except Exception as e:
+            logger.error(f"{journal.get('name', 'Unknown')}: Hata: {e}")
+            import traceback
+            traceback.print_exc()
+            return issue_results
+
+        total_articles = sum(len(x.get("articles", [])) for x in issue_results)
+        logger.found(total_articles, f"makale ({journal.get('name', 'Unknown')})")
+        logger.success(
+            f"Journal article akisi tamamlandi: issue_count={len(issue_results)}, total_articles={total_articles}"
+        )
+        return issue_results

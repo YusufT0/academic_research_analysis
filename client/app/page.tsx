@@ -21,6 +21,8 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   return url;
 }
 
@@ -155,11 +157,15 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
     ieeexplore: 'bg-blue-500',
     sciencedirect: 'bg-orange-500',
     acm: 'bg-amber-500',
+    wiley: 'bg-slate-500',
+    springer: 'bg-indigo-500',
   };
   const labels: Record<string, string> = {
     ieeexplore: 'IEEE Xplore',
     sciencedirect: 'ScienceDirect',
     acm: 'ACM Digital Library',
+    wiley: 'Wiley Online Library',
+    springer: 'Springer Link',
   };
 
   return (
@@ -341,7 +347,7 @@ export default function OverviewPage() {
               <CardHeader>
                 <div className="flex items-center gap-2">
                   <BarChart3 className="h-5 w-5 text-emerald-600" />
-                  <CardTitle>Popüler Anahtar Kelimeler (ACM)</CardTitle>
+                  <CardTitle>Popüler Anahtar Kelimeler</CardTitle>
                 </div>
                 <CardDescription>En sık kullanılan anahtar kelimeler</CardDescription>
               </CardHeader>

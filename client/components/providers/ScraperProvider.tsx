@@ -36,7 +36,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
     const [lastEvent, setLastEvent] = useState<ScraperEvent | null>(null);
     const [events, setEvents] = useState<ScraperEvent[]>([]);
     const [reconnectCount, setReconnectCount] = useState(0);
-    const [subscribedScrapers, setSubscribedScrapers] = useState<string[]>(['ieee', 'sciencedirect', 'acm', 'wiley']);
+    const [subscribedScrapers, setSubscribedScrapers] = useState<string[]>(['ieee', 'sciencedirect', 'acm', 'wiley', 'springer']);
 
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -175,7 +175,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
     }, []);
 
     const subscribe = useCallback((scrapers: string[]) => {
-        const normalized = scrapers.length === 0 ? ['ieee', 'sciencedirect', 'acm', 'wiley'] : scrapers;
+        const normalized = scrapers.length === 0 ? ['ieee', 'sciencedirect', 'acm', 'wiley', 'springer'] : scrapers;
         setSubscribedScrapers(normalized);
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {

@@ -19,6 +19,8 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   return url;
 }
 
@@ -85,10 +87,14 @@ export default function ArticleDetailPage() {
 
   const sourceLabel =
     article.source_website === 'ieeexplore' ? 'IEEE' :
-    article.source_website === 'acm' ? 'ACM' : 'ScienceDirect';
-  const sourceBadgeVariant: 'info' | 'warning' | 'success' =
+    article.source_website === 'acm' ? 'ACM' :
+    article.source_website === 'wiley' ? 'Wiley' :
+    article.source_website === 'springer' ? 'Springer' : 'ScienceDirect';
+  const sourceBadgeVariant: 'info' | 'warning' | 'success' | 'default' =
     article.source_website === 'ieeexplore' ? 'info' :
-    article.source_website === 'acm' ? 'warning' : 'success';
+    article.source_website === 'acm' ? 'warning' :
+    article.source_website === 'wiley' ? 'default' :
+    article.source_website === 'springer' ? 'info' : 'success';
 
   const fullUrl = getFullUrl(article.url, article.source_website);
 

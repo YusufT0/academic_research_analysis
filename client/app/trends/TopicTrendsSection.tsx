@@ -22,6 +22,8 @@ const PUBLISHERS = [
   { label: 'IEEE Xplore',        value: 'IEEE'     },
   { label: 'ACM Digital Library', value: 'ACM'     },
   { label: 'Science Direct',     value: 'Elsevier' },
+  { label: 'Wiley Online Library', value: 'Wiley'   },
+  { label: 'Springer Link',      value: 'Springer' },
 ];
 
 type Mode = 'all' | 'journal' | 'publisher';

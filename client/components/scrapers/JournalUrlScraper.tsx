@@ -46,7 +46,7 @@ import { JournalCard } from '@/app/journals/JournalCard';
 
 // ==================== URL Valdiation (Frontend) ====================
 
-const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'info' | 'success' | 'warning' }> = {
+const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'default' | 'info' | 'success' | 'warning' }> = {
   ieee: {
     label: 'IEEE Xplore',
     variant: 'info',
@@ -67,6 +67,11 @@ const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'inf
     variant: 'default',
     regex: /https?:\/\/onlinelibrary\.wiley\.com\/(journal|toc)\/[a-zA-Z0-9\-]+/i,
   },
+  springer: {
+    label: 'Springer Link',
+    variant: 'info',
+    regex: /https?:\/\/link\.springer\.com\/(journal\/\d+|brands\/springer\/journals(\/computer-science)?)/i,
+  },
 };
 
 function detectPlatformFrontend(url: string): string | null {
@@ -83,6 +88,7 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   return url;
 }
 
@@ -102,12 +108,14 @@ function ExistingJournalBanner({
     sciencedirect: 'ScienceDirect',
     acm: 'ACM Digital Library',
     wiley: 'Wiley Online Library',
+    springer: 'Springer Link',
   };
   const sourceVariants: Record<string, 'info' | 'success' | 'warning' | 'default'> = {
     ieeexplore: 'info',
     sciencedirect: 'success',
     acm: 'warning',
     wiley: 'default',
+    springer: 'info',
   };
 
   const lastUpdated = info.updated_at
@@ -445,6 +453,7 @@ const PLATFORM_COLORS: Record<string, string> = {
   sciencedirect: 'from-emerald-600 to-teal-500',
   acm: 'from-amber-600 to-orange-500',
   wiley: 'from-slate-600 to-slate-500',
+  springer: 'from-indigo-600 to-blue-600',
 };
 
 const PLATFORM_BG: Record<string, string> = {
@@ -452,6 +461,7 @@ const PLATFORM_BG: Record<string, string> = {
   sciencedirect: 'bg-emerald-50 border-emerald-200',
   acm: 'bg-amber-50 border-amber-200',
   wiley: 'bg-slate-50 border-slate-200',
+  springer: 'bg-indigo-50 border-indigo-200',
 };
 
 export function JournalUrlScraper() {
@@ -682,7 +692,9 @@ export function JournalUrlScraper() {
               platform ? (
                 platform === 'ieee' ? 'text-blue-500' :
                 platform === 'sciencedirect' ? 'text-emerald-500' :
-                'text-amber-500'
+                platform === 'acm' ? 'text-amber-500' :
+                platform === 'wiley' ? 'text-slate-500' :
+                'text-indigo-500'
               ) : 'text-slate-400'
             }`} />
           </div>
@@ -704,6 +716,8 @@ export function JournalUrlScraper() {
                   ? 'border-emerald-300 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100'
                   : platform === 'acm'
                   ? 'border-amber-300 focus:border-amber-500 focus:ring-4 focus:ring-amber-100'
+                  : platform === 'springer'
+                  ? 'border-indigo-300 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100'
                   : 'border-slate-300 focus:border-slate-500 focus:ring-4 focus:ring-slate-100'
                 : 'border-slate-200 focus:border-slate-400 focus:ring-4 focus:ring-slate-100'
             }`}
@@ -729,7 +743,7 @@ export function JournalUrlScraper() {
 
         {/* URL Format Hints */}
         {!platform && url.length === 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
             {Object.entries(URL_PATTERNS).map(([key, cfg]) => (
               <button
                 key={key}
@@ -737,14 +751,16 @@ export function JournalUrlScraper() {
                   key === 'ieee' ? 'https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=' :
                   key === 'sciencedirect' ? 'https://www.sciencedirect.com/journal/' :
                   key === 'acm' ? 'https://dl.acm.org/journal/' :
-                  'https://onlinelibrary.wiley.com/journal/'
+                  key === 'wiley' ? 'https://onlinelibrary.wiley.com/journal/' :
+                  'https://link.springer.com/journal/'
                 )}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs text-left transition-all
                   hover:shadow-sm active:scale-[0.98]
                   ${key === 'ieee' ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100' :
                     key === 'sciencedirect' ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' :
                     key === 'acm' ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' :
-                    'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'}`}
+                    key === 'wiley' ? 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100' :
+                    'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}
               >
                 <Zap className="h-3 w-3 flex-shrink-0" />
                 <span>{cfg.label}</span>

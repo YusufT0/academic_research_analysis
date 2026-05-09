@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     ieee_depth: int = Field(default=1, alias="IEEE_DEPTH", description="IEEE scraper kaç yeni issue işlenecek (1=sadece en yeni, 0/None=tümü)")
     sciencedirect_max_articles: int = Field(default=100, alias="SCIENCEDIRECT_MAX_ARTICLES", description="ScienceDirect scraper maksimum makale sayısı")
     acm_max_articles: int = Field(default=100, alias="ACM_MAX_ARTICLES", description="ACM scraper maksimum makale sayısı")
-    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm, wiley")
+    enabled_scrapers: str = Field(default="ieee,sciencedirect", alias="ENABLED_SCRAPERS", description="Çalışacak scraper'lar (virgülle ayrılmış): ieee, sciencedirect, acm, wiley, springer")
     scraper_run_mode: str = Field(default="parallel", alias="SCRAPER_RUN_MODE", description="Scraper çalışma modu: 'parallel', 'sequential' veya 'round_robin'")
     round_robin_journals_per_switch: int = Field(default=3, alias="ROUND_ROBIN_JOURNALS_PER_SWITCH", description="Round robin modunda kaç journalda bir site değiştirileceği")
     
@@ -68,6 +68,11 @@ class Settings(BaseSettings):
     def wiley_enabled(self) -> bool:
         """Wiley scraper etkin mi?"""
         return 'wiley' in self.enabled_scrapers.lower()
+
+    @property
+    def springer_enabled(self) -> bool:
+        """Springer scraper etkin mi?"""
+        return 'springer' in self.enabled_scrapers.lower()
     
     # Scraper Base URLs
     ieeexplore_base_url: str = Field(default="https://ieeexplore.ieee.org", alias="IEEEXPLORE_BASE_URL", description="IEEE Xplore base URL")
@@ -97,6 +102,17 @@ class Settings(BaseSettings):
     wiley_max_wait: int = Field(default=10, alias="WILEY_MAX_WAIT", description="Wiley scraper maksimum bekleme süresi (sn)")
     wiley_page_load_timeout: int = Field(default=90, alias="WILEY_PAGE_LOAD_TIMEOUT", description="Wiley sayfa yükleme timeout (sn)")
     wiley_max_articles: int = Field(default=100, alias="WILEY_MAX_ARTICLES", description="Wiley scraper maksimum makale sayısı")
+
+    # Springer Timeouts & Delays
+    springer_base_url: str = Field(
+        default="https://link.springer.com/brands/springer/journals/computer-science",
+        alias="SPRINGER_BASE_URL",
+        description="Springer base URL"
+    )
+    springer_min_wait: int = Field(default=3, alias="SPRINGER_MIN_WAIT", description="Springer scraper minimum bekleme süresi (sn)")
+    springer_max_wait: int = Field(default=8, alias="SPRINGER_MAX_WAIT", description="Springer scraper maksimum bekleme süresi (sn)")
+    springer_page_load_timeout: int = Field(default=60, alias="SPRINGER_PAGE_LOAD_TIMEOUT", description="Springer sayfa yükleme timeout (sn)")
+    springer_max_articles: int = Field(default=100, alias="SPRINGER_MAX_ARTICLES", description="Springer scraper maksimum makale sayısı")
     
     # PDF Settings
     pdf_download_timeout: int = Field(default=60, alias="PDF_DOWNLOAD_TIMEOUT", description="PDF indirme timeout süresi (sn)")

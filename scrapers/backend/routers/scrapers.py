@@ -63,6 +63,13 @@ async def get_wiley_status():
     manager = get_scraper_manager()
     return manager.get_wiley_status()
 
+
+@router.get("/status/springer", summary="Springer scraper durumu")
+async def get_springer_status():
+    """Springer scraper'ın mevcut durumunu getir"""
+    manager = get_scraper_manager()
+    return manager.get_springer_status()
+
 # ==================== IEEE Control ====================
 
 @router.post("/ieee/start", summary="IEEE scraper'ı başlat")
@@ -378,6 +385,85 @@ async def resume_wiley():
         "status": manager.get_wiley_status()
     }
 
+
+# ==================== Springer Control ====================
+
+@router.post("/springer/start", summary="Springer scraper'ı başlat")
+async def start_springer(request: ScraperControlRequest = None):
+    """Springer scraper'ı başlat"""
+    manager = get_scraper_manager()
+
+    headless = request.headless if request else True
+    max_articles = request.max_articles if request and request.max_articles else 100
+    depth = request.depth if request and request.depth else 1
+    issues_order = request.issues_order if request else "newest_first"
+    continuous = request.continuous if request else False
+
+    success = await manager.start_springer(
+        headless=headless,
+        max_articles=max_articles,
+        depth=depth,
+        issues_order=issues_order,
+        continuous=continuous,
+    )
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Springer scraper already running")
+
+    return {
+        "success": True,
+        "message": "Springer scraper started",
+        "status": manager.get_springer_status(),
+    }
+
+
+@router.post("/springer/stop", summary="Springer scraper'ı durdur")
+async def stop_springer():
+    """Springer scraper'ı durdur"""
+    manager = get_scraper_manager()
+    success = await manager.stop_springer()
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Springer scraper is not running")
+
+    return {
+        "success": True,
+        "message": "Springer scraper stopping",
+        "status": manager.get_springer_status(),
+    }
+
+
+@router.post("/springer/pause", summary="Springer scraper'ı duraklat")
+async def pause_springer():
+    """Springer scraper'ı duraklat"""
+    manager = get_scraper_manager()
+    success = await manager.pause_springer()
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Springer scraper is not running")
+
+    return {
+        "success": True,
+        "message": "Springer scraper paused",
+        "status": manager.get_springer_status(),
+    }
+
+
+@router.post("/springer/resume", summary="Springer scraper'ı devam ettir")
+async def resume_springer():
+    """Duraklatılmış Springer scraper'ı devam ettir"""
+    manager = get_scraper_manager()
+    success = await manager.resume_springer()
+
+    if not success:
+        raise HTTPException(status_code=400, detail="Springer scraper is not paused")
+
+    return {
+        "success": True,
+        "message": "Springer scraper resumed",
+        "status": manager.get_springer_status(),
+    }
+
 # ==================== All Scrapers ====================
 
 class RoundRobinRequest(BaseModel):
@@ -471,7 +557,7 @@ async def stop_all():
 
 @router.get("/logs", summary="Scraper logları")
 async def get_logs(
-    scraper_type: str = Query("all", description="Scraper tipi: all, ieee, sciencedirect, acm, wiley"),
+    scraper_type: str = Query("all", description="Scraper tipi: all, ieee, sciencedirect, acm, wiley, springer"),
     limit: int = Query(50, ge=1, le=1000, description="Maksimum log sayısı"),
 ):
     """Scraper loglarını getir"""
