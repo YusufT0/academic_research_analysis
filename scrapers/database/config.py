@@ -41,11 +41,24 @@ class DatabaseSettings:
     # Timeouts (ms)
     @property
     def mongodb_connect_timeout_ms(self) -> int:
-        return 5000
+        return int(os.getenv("MONGODB_CONNECT_TIMEOUT_MS", "30000"))
         
     @property
     def mongodb_server_selection_timeout_ms(self) -> int:
-        return 5000
+        return int(os.getenv("MONGODB_SERVER_SELECTION_TIMEOUT_MS", "30000"))
+
+    @property
+    def mongodb_socket_timeout_ms(self) -> int:
+        return int(os.getenv("MONGODB_SOCKET_TIMEOUT_MS", "60000"))
+
+    @property
+    def mongodb_max_idle_time_ms(self) -> int:
+        return int(os.getenv("MONGODB_MAX_IDLE_TIME_MS", "120000"))
+
+    @property
+    def mongodb_wait_queue_timeout_ms(self) -> int:
+        return int(os.getenv("MONGODB_WAIT_QUEUE_TIMEOUT_MS", "30000"))
+
     
     @property
     def connection_string(self) -> str:

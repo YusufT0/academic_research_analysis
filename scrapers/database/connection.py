@@ -84,6 +84,9 @@ class DatabaseConnection:
                     maxPoolSize=self.settings.mongodb_max_pool_size,
                     connectTimeoutMS=self.settings.mongodb_connect_timeout_ms,
                     serverSelectionTimeoutMS=self.settings.mongodb_server_selection_timeout_ms,
+                    socketTimeoutMS=self.settings.mongodb_socket_timeout_ms,
+                    maxIdleTimeMS=self.settings.mongodb_max_idle_time_ms,
+                    waitQueueTimeoutMS=self.settings.mongodb_wait_queue_timeout_ms,
                 )
                 
                 # Bağlantıyı test et

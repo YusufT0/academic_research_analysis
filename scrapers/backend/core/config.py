@@ -187,6 +187,16 @@ class Settings(BaseSettings):
         alias="NLP_LAZY_INIT",
         description="NLP modelleri başlangıçta değil ilk kullanımda yüklensin mi"
     )
+    nlp_model_dir: str = Field(
+        default="nlp_models",
+        alias="NLP_MODEL_DIR",
+        description="Yerel NLP model deposu dizini"
+    )
+    nlp_cross_encoder_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        alias="NLP_CROSS_ENCODER_MODEL",
+        description="CrossEncoder model adı"
+    )
     
     # Redis Cache Settings
     redis_enabled: bool = Field(
@@ -358,12 +368,22 @@ class Settings(BaseSettings):
     )
     
     @property
-    def nlp_model_full_path(self) -> Path:
-        """NLP model tam yolu"""
-        model_path = Path(self.nlp_model_path)
+    def nlp_model_dir_path(self) -> Path:
+        """Yerel NLP model dizini tam yolu"""
+        model_path = Path(self.nlp_model_dir)
         if model_path.is_absolute():
             return model_path
         return Path(__file__).parent.parent.parent / model_path
+
+    @property
+    def nlp_embedder_path(self) -> Path:
+        """Embedder model yerel yolu"""
+        return self.nlp_model_dir_path / "embedder"
+
+    @property
+    def nlp_cross_encoder_path(self) -> Path:
+        """CrossEncoder model yerel yolu"""
+        return self.nlp_model_dir_path / "cross_encoder"
     
     class Config:
         env_file = str(ENV_FILE)
