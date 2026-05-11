@@ -10,6 +10,8 @@ import os
 import sys
 import time
 import random
+import queue
+import threading
 from typing import Optional, List, Dict, Any, Callable
 from pathlib import Path
 
@@ -346,6 +348,7 @@ class WileyScraper:
         self,
         issue: Dict[str, Any],
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback: Callable = None,
         article_list_callback: Callable = None,
         issue_idx: int = 1,
@@ -397,84 +400,91 @@ class WileyScraper:
                 pass
 
         # Her makaleyi scrape et
-        articles = []
-        retry_queue = []
-        consecutive_failures = 0
+        if max_tabs > 1:
+            articles, retry_queue = self._process_issue_articles_parallel(
+                full_text_stubs=full_text_stubs,
+                max_tabs=max_tabs,
+                article_progress_callback=article_progress_callback,
+            )
+        else:
+            articles = []
+            retry_queue = []
+            consecutive_failures = 0
 
-        for idx, stub in enumerate(full_text_stubs, 1):
-            self.check_stop_flag()
+            for idx, stub in enumerate(full_text_stubs, 1):
+                self.check_stop_flag()
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(idx, len(full_text_stubs), None)
-                except Exception:
-                    pass
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(full_text_stubs), None)
+                    except Exception:
+                        pass
 
-            doi_url = stub.get('doi_url', '') or stub.get('doi', '')
-            if doi_url.startswith('/doi'):
-                article_url = f"{self.WILEY_BASE}{doi_url}"
-            elif doi_url.startswith('http'):
-                article_url = doi_url
-            else:
-                article_url = f"{self.WILEY_BASE}/doi/full/{doi_url}"
+                doi_url = stub.get('doi_url', '') or stub.get('doi', '')
+                if doi_url.startswith('/doi'):
+                    article_url = f"{self.WILEY_BASE}{doi_url}"
+                elif doi_url.startswith('http'):
+                    article_url = doi_url
+                else:
+                    article_url = f"{self.WILEY_BASE}/doi/full/{doi_url}"
 
-            stub_title = stub.get('title', '')
-            logger.info(f"[{idx}/{len(full_text_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
+                stub_title = stub.get('title', '')
+                logger.info(f"[{idx}/{len(full_text_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
 
-            article_data = None
-            success = False
+                article_data = None
+                success = False
 
-            for attempt in range(2):
-                if attempt > 0:
-                    self._interruptible_sleep(3)
+                for attempt in range(2):
+                    if attempt > 0:
+                        self._interruptible_sleep(3)
 
-                if not self.selenium_driver.get(article_url, wait_after=4):
-                    continue
+                    if not self.selenium_driver.get(article_url, wait_after=4):
+                        continue
 
-                self._close_modals()
-                self._check_cloudflare_and_handle()
-                wait_for_page_load(self.selenium_driver)
+                    self._close_modals()
+                    self._check_cloudflare_and_handle()
+                    wait_for_page_load(self.selenium_driver)
 
-                article_data = ArticleParser.parse_article_detail(
-                    self.selenium_driver.page_source, article_url
-                )
-                if article_data and article_data.get('title'):
-                    success = True
-                    break
-
-            if success and article_data:
-                # Stub'dan eksik alanları tamamla
-                if not article_data.get('authors') and stub.get('authors'):
-                    article_data['authors'] = [{'name': a} for a in stub['authors']]
-                if not article_data.get('pub_date') and stub.get('pub_date'):
-                    article_data['pub_date'] = stub['pub_date']
-                articles.append(article_data)
-                logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
-                consecutive_failures = 0
-                self.rate_limiter.record_success()
-            else:
-                retry_queue.append(article_url)
-                consecutive_failures += 1
-                self.rate_limiter.record_failure()
-                logger.warning(f"  ✗ Makale alınamadı, retry kuyruğuna eklendi")
-
-            if article_progress_callback:
-                try:
-                    article_progress_callback(
-                        idx, len(full_text_stubs),
-                        article_data.get('title') if (success and article_data) else None
+                    article_data = ArticleParser.parse_article_detail(
+                        self.selenium_driver.page_source, article_url
                     )
-                except Exception:
-                    pass
+                    if article_data and article_data.get('title'):
+                        success = True
+                        break
 
-            # Art arda 3 hata → browser restart
-            if consecutive_failures >= 3:
-                logger.error("Üst üste 3 hata! Tarayıcı yeniden başlatılıyor...")
-                self.selenium_driver.restart()
-                self._interruptible_sleep(30)
-                consecutive_failures = 0
+                if success and article_data:
+                    # Stub'dan eksik alanları tamamla
+                    if not article_data.get('authors') and stub.get('authors'):
+                        article_data['authors'] = [{'name': a} for a in stub['authors']]
+                    if not article_data.get('pub_date') and stub.get('pub_date'):
+                        article_data['pub_date'] = stub['pub_date']
+                    articles.append(article_data)
+                    logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
+                    consecutive_failures = 0
+                    self.rate_limiter.record_success()
+                else:
+                    retry_queue.append(article_url)
+                    consecutive_failures += 1
+                    self.rate_limiter.record_failure()
+                    logger.warning(f"  ✗ Makale alınamadı, retry kuyruğuna eklendi")
 
-            self._random_wait()
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(
+                            idx, len(full_text_stubs),
+                            article_data.get('title') if (success and article_data) else None
+                        )
+                    except Exception:
+                        pass
+
+                # Art arda 3 hata → browser restart
+                if consecutive_failures >= 3:
+                    logger.error("Üst üste 3 hata! Tarayıcı yeniden başlatılıyor...")
+                    self.selenium_driver.restart()
+                    self._interruptible_sleep(30)
+                    consecutive_failures = 0
+
+                self._random_wait()
 
         # Retry kuyruğu
         if retry_queue:
@@ -506,6 +516,109 @@ class WileyScraper:
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue, 'articles': articles}
 
+    def _process_issue_articles_parallel(
+        self,
+        full_text_stubs: List[Dict[str, Any]],
+        max_tabs: int,
+        article_progress_callback: Callable = None,
+    ) -> tuple[List[Dict[str, Any]], List[str]]:
+        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        total = len(full_text_stubs)
+        worker_count = max(1, min(max_tabs, total))
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(full_text_stubs, 1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        retry_urls: List[str] = []
+        lock = threading.Lock()
+        processed_count = 0
+
+        def _to_article_url(stub: Dict[str, Any]) -> str:
+            doi_url = stub.get('doi_url', '') or stub.get('doi', '')
+            if doi_url.startswith('/doi'):
+                return f"{self.WILEY_BASE}{doi_url}"
+            if doi_url.startswith('http'):
+                return doi_url
+            return f"{self.WILEY_BASE}/doi/full/{doi_url}"
+
+        def _worker(worker_id: int):
+            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if not local_driver.start():
+                logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+                while not jobs.empty():
+                    try:
+                        _, stub = jobs.get_nowait()
+                    except queue.Empty:
+                        break
+                    with lock:
+                        retry_urls.append(_to_article_url(stub))
+                return
+
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    try:
+                        idx, stub = jobs.get_nowait()
+                    except queue.Empty:
+                        return
+
+                    article_url = _to_article_url(stub)
+                    article_data = None
+
+                    for attempt in range(2):
+                        if attempt > 0:
+                            time.sleep(1)
+                        try:
+                            if not local_driver.get(article_url, wait_after=4):
+                                continue
+                            detail = ArticleParser.parse_article_detail(local_driver.page_source, article_url)
+                            if detail and detail.get('title'):
+                                if not detail.get('authors') and stub.get('authors'):
+                                    detail['authors'] = [{'name': a} for a in stub['authors']]
+                                if not detail.get('pub_date') and stub.get('pub_date'):
+                                    detail['pub_date'] = stub['pub_date']
+                                article_data = detail
+                                break
+                        except Exception:
+                            article_data = None
+
+                    with lock:
+                        nonlocal processed_count
+                        processed_count += 1
+                        if article_data and article_data.get('title'):
+                            results_by_index[idx] = article_data
+                        else:
+                            retry_urls.append(article_url)
+
+                        if article_progress_callback:
+                            try:
+                                article_progress_callback(
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
+                            except Exception:
+                                pass
+            finally:
+                local_driver.close()
+
+        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        return ordered_articles, retry_urls
+
     # ------------------------------------------------------------------ #
     #  Article-based journal
     # ------------------------------------------------------------------ #
@@ -514,6 +627,7 @@ class WileyScraper:
         self,
         journal_id: str,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback: Callable = None,
         article_list_callback: Callable = None,
         issue_start_callback: Callable = None,
@@ -600,6 +714,7 @@ class WileyScraper:
         result = self._process_single_issue(
             issue=virtual_issue,
             max_articles=max_articles,
+            max_tabs=max_tabs,
             article_progress_callback=article_progress_callback,
             article_list_callback=None,  # zaten yukarıda çağrıldı
             issue_idx=1,
@@ -627,6 +742,7 @@ class WileyScraper:
         journal: Dict[str, Any],
         depth: int = 1,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback: Callable = None,
         article_list_callback: Callable = None,
         journal_name_callback: Callable = None,
@@ -733,7 +849,7 @@ class WileyScraper:
                     if journal_type == 'unknown':
                         logger.info("Fallback: article-based deneniyor...")
                         return self._scrape_article_based_journal(
-                            journal_id, max_articles, article_progress_callback,
+                            journal_id, max_articles, max_tabs, article_progress_callback,
                             article_list_callback, issue_start_callback,
                             issue_complete_callback, existing_article_dois,
                         )
@@ -793,6 +909,7 @@ class WileyScraper:
                     result = self._process_single_issue(
                         issue=issue,
                         max_articles=max_articles,
+                        max_tabs=max_tabs,
                         article_progress_callback=article_progress_callback,
                         article_list_callback=article_list_callback,
                         issue_idx=idx,
@@ -825,7 +942,7 @@ class WileyScraper:
             # ── 3b. Article-based ─────────────────────────────────────────────
             else:
                 return self._scrape_article_based_journal(
-                    journal_id, max_articles, article_progress_callback,
+                    journal_id, max_articles, max_tabs, article_progress_callback,
                     article_list_callback, issue_start_callback,
                     issue_complete_callback, existing_article_dois,
                 )

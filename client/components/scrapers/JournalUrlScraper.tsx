@@ -10,7 +10,7 @@
  * - Onay sonrası mevcut JournalQueue + WebSocket takip altyapısını kullanır
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import {
   Link2,
@@ -29,7 +29,9 @@ import {
   Zap,
   FileText,
   Clock,
+  BarChart3,
 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -38,10 +40,13 @@ import {
   checkJournalExists,
   startSingleJournalScraper,
   getJournal,
+  getJournals,
+  getJournalIssues,
+  getJournalCitationMetrics,
   type JournalExistsResponse,
   type JournalUrlValidateResponse,
 } from '@/lib/api';
-import type { ScraperStatus, IssueProgress, Journal } from '@/lib/types';
+import type { ScraperStatus, IssueProgress, Journal, Issue, JournalCitationMetrics } from '@/lib/types';
 import { JournalCard } from '@/app/journals/JournalCard';
 
 // ==================== URL Valdiation (Frontend) ====================
@@ -195,6 +200,46 @@ function ExistingJournalBanner({
 
 // ── Helpers shared with JournalQueue ────────────────────────────────────────
 
+type CompletedJournalDetails = {
+  loading: boolean;
+  journal: Journal | null;
+  issues: Issue[];
+  citationMetrics: JournalCitationMetrics | null;
+  error?: string;
+};
+
+function CitationHistoryMiniChart({ data, loading }: { data: JournalCitationMetrics | null; loading: boolean }) {
+  const chartData = useMemo(() => {
+    if (!data?.historical_citation_data) return [];
+    return Object.entries(data.historical_citation_data)
+      .map(([year, count]) => ({ year, count }))
+      .sort((a, b) => a.year.localeCompare(b.year));
+  }, [data]);
+
+  if (loading) {
+    return <div className="h-28 rounded bg-slate-100 animate-pulse" />;
+  }
+
+  if (chartData.length === 0) {
+    return <p className="text-xs text-slate-400 italic">Atıf geçmişi verisi bulunamadı.</p>;
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={140}>
+      <BarChart data={chartData} margin={{ top: 6, right: 8, left: -18, bottom: 2 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+        <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+        <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+        <Tooltip
+          contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+          formatter={(value) => [`${Number(value).toLocaleString()} atıf`, 'Atıf']}
+        />
+        <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 function IssueArticleList({ articles }: { articles: string[] }) {
   if (!articles.length) return null;
   return (
@@ -243,9 +288,92 @@ function CompletedIssueRow({ issue, expanded, onToggle }: {
 function InlineJournalQueue({ scraper }: { scraper: ScraperStatus }) {
   const [expandedJournals, setExpandedJournals] = useState<Set<string>>(new Set());
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
+  const [journalDetails, setJournalDetails] = useState<Record<string, CompletedJournalDetails>>({});
 
-  const toggleJournal = (name: string) =>
-    setExpandedJournals(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
+  const sourceMap: Record<string, string> = {
+    ieee: 'ieeexplore',
+    sciencedirect: 'sciencedirect',
+    acm: 'acm',
+    wiley: 'wiley',
+    springer: 'springer',
+  };
+
+  const loadCompletedJournalDetails = useCallback(async (journalName: string) => {
+    if (!journalName || journalDetails[journalName]?.loading || journalDetails[journalName]) return;
+
+    setJournalDetails(prev => ({
+      ...prev,
+      [journalName]: { loading: true, journal: null, issues: [], citationMetrics: null },
+    }));
+
+    try {
+      const sourceWebsite = sourceMap[scraper.scraper_type] || undefined;
+      const list = await getJournals({
+        search: journalName,
+        source_website: sourceWebsite,
+        page: 1,
+        page_size: 20,
+      });
+
+      const match = list.items.find(j => j.name.trim().toLowerCase() === journalName.trim().toLowerCase()) ?? list.items[0] ?? null;
+      if (!match) {
+        setJournalDetails(prev => ({
+          ...prev,
+          [journalName]: {
+            loading: false,
+            journal: null,
+            issues: [],
+            citationMetrics: null,
+            error: 'Dergi detayı veritabanında bulunamadı.',
+          },
+        }));
+        return;
+      }
+
+      const [issuesData, citationMetrics] = await Promise.all([
+        getJournalIssues(match.id, 1, 100),
+        getJournalCitationMetrics(match.id).catch(() => null),
+      ]);
+      const issues = Array.isArray(issuesData)
+        ? (issuesData as Issue[])
+        : (((issuesData as { items?: Issue[] }).items) ?? []);
+
+      setJournalDetails(prev => ({
+        ...prev,
+        [journalName]: {
+          loading: false,
+          journal: match,
+          issues,
+          citationMetrics,
+        },
+      }));
+    } catch {
+      setJournalDetails(prev => ({
+        ...prev,
+        [journalName]: {
+          loading: false,
+          journal: null,
+          issues: [],
+          citationMetrics: null,
+          error: 'Dergi detayları yüklenemedi.',
+        },
+      }));
+    }
+  }, [journalDetails, scraper.scraper_type]);
+
+  const toggleJournal = (name: string) => {
+    setExpandedJournals(prev => {
+      const s = new Set(prev);
+      const willOpen = !s.has(name);
+      if (willOpen) {
+        s.add(name);
+        void loadCompletedJournalDetails(name);
+      } else {
+        s.delete(name);
+      }
+      return s;
+    });
+  };
 
   const toggleIssue = (key: string) =>
     setExpandedIssues(prev => { const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s; });
@@ -293,6 +421,52 @@ function InlineJournalQueue({ scraper }: { scraper: ScraperStatus }) {
               </button>
               <div className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">
+                  {isOpen && (
+                    <div className="bg-slate-50 border-t border-slate-100 px-3 py-3 space-y-3">
+                      <div>
+                        <h4 className="font-medium text-slate-700 mb-2 flex items-center gap-1.5 text-xs">
+                          <BarChart3 className="h-3.5 w-3.5 text-indigo-600" />
+                          Yıllık Atıf Grafiği
+                        </h4>
+                        <CitationHistoryMiniChart
+                          data={journalDetails[j.name]?.citationMetrics ?? null}
+                          loading={!!journalDetails[j.name]?.loading}
+                        />
+                      </div>
+
+                      <div>
+                        <h4 className="font-medium text-slate-700 mb-2 flex items-center gap-1.5 text-xs">
+                          <BookOpen className="h-3.5 w-3.5 text-purple-600" />
+                          Dergi Sayıları
+                        </h4>
+                        {journalDetails[j.name]?.error ? (
+                          <p className="text-xs text-amber-600">{journalDetails[j.name]?.error}</p>
+                        ) : !!journalDetails[j.name]?.loading ? (
+                          <div className="space-y-1">
+                            <div className="h-6 bg-slate-100 rounded animate-pulse" />
+                            <div className="h-6 bg-slate-100 rounded animate-pulse" />
+                          </div>
+                        ) : (journalDetails[j.name]?.issues?.length ?? 0) > 0 ? (
+                          <div className="space-y-1 max-h-36 overflow-y-auto">
+                            {(journalDetails[j.name]?.issues ?? []).slice(0, 25).map((issue) => {
+                              const title = issue.volume
+                                ? `Cilt ${issue.volume}${issue.issue_number ? `, Sayı ${issue.issue_number}` : ''}`
+                                : `Sayı ${issue.issue_number || issue.year || 'Bilinmiyor'}`;
+                              return (
+                                <div key={issue.id} className="text-xs text-slate-600 bg-white border border-slate-200 rounded px-2 py-1 flex items-center justify-between gap-2">
+                                  <span className="truncate">{title}</span>
+                                  <span className="text-[11px] text-slate-400 flex-shrink-0">{issue.article_count} makale</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">Bu dergiye ait sayı bulunamadı.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {issues.length > 0 ? (
                     <div className="bg-slate-50 border-t border-slate-100 divide-y divide-slate-100">
                       {issues.map((issue, ii) => {
@@ -468,6 +642,7 @@ export function JournalUrlScraper() {
   const [url, setUrl] = useState('');
   const [maxArticles, setMaxArticles] = useState(50);
   const [depth, setDepth] = useState(1);
+  const [maxTabs, setMaxTabs] = useState(3);
   const [flowState, setFlowState] = useState<FlowState>('idle');
   const [frontendPlatform, setFrontendPlatform] = useState<string | null>(null);
   const [backendValidation, setBackendValidation] = useState<JournalUrlValidateResponse | null>(null);
@@ -656,14 +831,14 @@ export function JournalUrlScraper() {
     setScraperStatus(null);
 
     try {
-      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false);
+      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs);
       startTracking(scraperType);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Scraper başlatılamadı';
       setErrorMsg(msg);
       setFlowState('error');
     }
-  }, [url, backendValidation, maxArticles, depth, startTracking]);
+  }, [url, backendValidation, maxArticles, depth, maxTabs, startTracking]);
 
   const platform = frontendPlatform ?? backendValidation?.scraper_type;
   const platformCfg = platform ? URL_PATTERNS[platform] : null;
@@ -771,9 +946,9 @@ export function JournalUrlScraper() {
         )}
 
         {/* Parameters Row */}
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
-            <label htmlFor="jus-max-articles" className="text-sm text-slate-600 whitespace-nowrap">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="jus-max-articles" className="text-xs text-slate-600 whitespace-nowrap">
               Makale limiti:
             </label>
             <input
@@ -784,11 +959,11 @@ export function JournalUrlScraper() {
               value={maxArticles}
               onChange={(e) => setMaxArticles(parseInt(e.target.value) || 50)}
               disabled={flowState === 'scraping'}
-              className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
+              className="w-14 px-1.5 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="jus-depth" className="text-sm text-slate-600 whitespace-nowrap">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="jus-depth" className="text-xs text-slate-600 whitespace-nowrap">
               Issue derinliği:
             </label>
             <input
@@ -799,8 +974,24 @@ export function JournalUrlScraper() {
               value={depth}
               onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
               disabled={flowState === 'scraping'}
-              className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
               title="Kaç issue işlenecek (1 = sadece en yeni)"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="jus-max-tabs" className="text-xs text-slate-600 whitespace-nowrap">
+              Max Tab:
+            </label>
+            <input
+              id="jus-max-tabs"
+              type="number"
+              min={1}
+              max={10}
+              value={maxTabs}
+              onChange={(e) => setMaxTabs(parseInt(e.target.value) || 3)}
+              disabled={flowState === 'scraping'}
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
+              title="Makale listesi çıkarıldıktan sonra aynı anda çalışacak tab sayısı"
             />
           </div>
 

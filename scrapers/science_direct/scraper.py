@@ -5,7 +5,9 @@ Main scraper class for Science Direct
 import os
 import sys
 import time
-from typing import Optional
+import queue
+import threading
+from typing import Optional, List, Dict, Any
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -627,6 +629,7 @@ class ScienceDirectScraper:
         self,
         issue_stub: dict,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         issue_idx: int = 1,
@@ -686,59 +689,197 @@ class ScienceDirectScraper:
             except Exception:
                 pass
 
-        articles = []
-        for idx, article_stub in enumerate(article_stubs, 1):
-            article_url = article_stub['url']
-            self.check_stop_flag()
+        if max_tabs > 1:
+            articles, failed_stubs = self._process_issue_articles_parallel(
+                article_stubs=article_stubs,
+                max_tabs=max_tabs,
+                article_progress_callback=article_progress_callback,
+            )
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(idx, len(article_stubs), None)
-                except Exception:
-                    pass
+            if failed_stubs:
+                logger.info(f"{len(failed_stubs)} makale paralel aşamada alınamadı, tekli retry yapılıyor...")
+                for article_stub in failed_stubs:
+                    self.check_stop_flag()
+                    article_url = article_stub.get('url', '')
+                    article_details = self.extract_article_details(article_url, retry_attempt=1)
+                    if article_details:
+                        article_details['journal_name'] = None
+                        article_details['issue_number'] = issue_info.get('issue_number')
+                        article_details['issue_date'] = issue_info.get('date')
+                        articles.append(article_details)
 
-            stub_title = article_stub.get('title', '')
-            logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
-            article_details = self.extract_article_details(article_url)
+            if self.rate_limiter.retry_queue:
+                retry_results = self._process_retry_queue()
+                for r in retry_results:
+                    r['issue_number'] = issue_info.get('issue_number')
+                    r['issue_date'] = issue_info.get('date')
+                articles.extend(retry_results)
+        else:
+            articles = []
+            for idx, article_stub in enumerate(article_stubs, 1):
+                article_url = article_stub['url']
+                self.check_stop_flag()
 
-            if article_details:
-                article_details['journal_name'] = None  # caller fills this
-                article_details['issue_number'] = issue_info.get('issue_number')
-                article_details['issue_date'] = issue_info.get('date')
-                articles.append(article_details)
-                self.rate_limiter.reset_consecutive_failures()
-            else:
-                logger.warning("  Makale detayları alınamadı")
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_stubs), None)
+                    except Exception:
+                        pass
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(
-                        idx, len(article_stubs),
-                        article_details.get('title') if article_details else None
-                    )
-                except Exception:
-                    pass
+                stub_title = article_stub.get('title', '')
+                logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
+                article_details = self.extract_article_details(article_url)
 
-            if self.rate_limiter.should_wait_for_failures():
-                self.rate_limiter.wait_for_failures()
+                if article_details:
+                    article_details['journal_name'] = None  # caller fills this
+                    article_details['issue_number'] = issue_info.get('issue_number')
+                    article_details['issue_date'] = issue_info.get('date')
+                    articles.append(article_details)
+                    self.rate_limiter.reset_consecutive_failures()
+                else:
+                    logger.warning("  Makale detayları alınamadı")
+
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(
+                            idx, len(article_stubs),
+                            article_details.get('title') if article_details else None
+                        )
+                    except Exception:
+                        pass
+
+                if self.rate_limiter.should_wait_for_failures():
+                    self.rate_limiter.wait_for_failures()
+                    retry_results = self._process_retry_queue()
+                    for r in retry_results:
+                        r['issue_number'] = issue_info.get('issue_number')
+                        r['issue_date'] = issue_info.get('date')
+                    articles.extend(retry_results)
+
+                self.rate_limiter.random_wait()
+
+            # Kalan retry queue
+            if self.rate_limiter.retry_queue:
                 retry_results = self._process_retry_queue()
                 for r in retry_results:
                     r['issue_number'] = issue_info.get('issue_number')
                     r['issue_date'] = issue_info.get('date')
                 articles.extend(retry_results)
 
-            self.rate_limiter.random_wait()
-
-        # Kalan retry queue
-        if self.rate_limiter.retry_queue:
-            retry_results = self._process_retry_queue()
-            for r in retry_results:
-                r['issue_number'] = issue_info.get('issue_number')
-                r['issue_date'] = issue_info.get('date')
-            articles.extend(retry_results)
-
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
+
+    def _process_issue_articles_parallel(
+        self,
+        article_stubs: List[Dict[str, Any]],
+        max_tabs: int,
+        article_progress_callback=None,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        total = len(article_stubs)
+        worker_count = max(1, min(max_tabs, total))
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(article_stubs, 1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        failed_stubs: List[Dict[str, Any]] = []
+        lock = threading.Lock()
+        processed_count = 0
+
+        def _worker(worker_id: int):
+            local_driver = SeleniumDriver(
+                self.proxy_config,
+                headless=getattr(self.selenium_driver, 'headless', False),
+                use_undetected=getattr(self.selenium_driver, 'use_undetected', True),
+            )
+            try:
+                local_driver.start()
+            except Exception:
+                logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+                while not jobs.empty():
+                    try:
+                        _, failed_stub = jobs.get_nowait()
+                    except queue.Empty:
+                        break
+                    with lock:
+                        failed_stubs.append(failed_stub)
+                return
+
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    try:
+                        idx, article_stub = jobs.get_nowait()
+                    except queue.Empty:
+                        return
+
+                    article_url = article_stub.get('url', '')
+                    full_url = (
+                        f"https://www.sciencedirect.com{article_url}"
+                        if article_url.startswith('/') else article_url
+                    )
+                    article_data = None
+
+                    try:
+                        local_driver.driver.set_page_load_timeout(10)
+                        try:
+                            local_driver.driver.get(full_url)
+                        except TimeoutException:
+                            pass
+                        finally:
+                            local_driver.driver.set_page_load_timeout(30)
+
+                        try:
+                            WebDriverWait(local_driver.driver, 8).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
+                            )
+                        except Exception:
+                            pass
+
+                        article_data = ArticleParser.extract_article_details(
+                            local_driver.driver.page_source,
+                            article_url,
+                        )
+                    except Exception:
+                        article_data = None
+
+                    with lock:
+                        nonlocal processed_count
+                        processed_count += 1
+                        if article_data and article_data.get('title'):
+                            article_data['journal_name'] = None
+                            results_by_index[idx] = article_data
+                        else:
+                            failed_stubs.append(article_stub)
+
+                        if article_progress_callback:
+                            try:
+                                article_progress_callback(
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
+                            except Exception:
+                                pass
+            finally:
+                local_driver.close()
+
+        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        return ordered_articles, failed_stubs
 
     def extract_article_details(self, article_url: str, retry_attempt: int = 0) -> dict:
         """
@@ -868,6 +1009,7 @@ class ScienceDirectScraper:
         journal_info: dict,
         depth: int = 1,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         journal_name_callback=None,
@@ -968,6 +1110,7 @@ class ScienceDirectScraper:
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
+                    max_tabs=max_tabs,
                     article_progress_callback=article_progress_callback,
                     article_list_callback=article_list_callback,
                     issue_idx=issue_idx,

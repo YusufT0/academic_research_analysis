@@ -40,7 +40,16 @@ _ACM_PATTERNS = [
     re.compile(r"https?://dl\.acm\.org/loi/[a-zA-Z0-9\-]+", re.IGNORECASE),
 ]
 
-ScraperType = Literal["ieee", "sciencedirect", "acm"]
+_WILEY_PATTERNS = [
+    re.compile(r"https?://(?:www\.)?onlinelibrary\.wiley\.com/(?:journal|toc)/[a-zA-Z0-9\-\.]+", re.IGNORECASE),
+]
+
+_SPRINGER_PATTERNS = [
+    re.compile(r"https?://(?:www\.)?link\.springer\.com/journal/[a-zA-Z0-9\-]+", re.IGNORECASE),
+    re.compile(r"https?://(?:www\.)?link\.springer\.com/brands/springer/journals(?:/computer-science)?", re.IGNORECASE),
+]
+
+ScraperType = Literal["ieee", "sciencedirect", "acm", "wiley", "springer"]
 
 
 def _detect_scraper_type(url: str) -> Optional[ScraperType]:
@@ -54,6 +63,12 @@ def _detect_scraper_type(url: str) -> Optional[ScraperType]:
     for pattern in _ACM_PATTERNS:
         if pattern.match(url):
             return "acm"
+    for pattern in _WILEY_PATTERNS:
+        if pattern.match(url):
+            return "wiley"
+    for pattern in _SPRINGER_PATTERNS:
+        if pattern.match(url):
+            return "springer"
     return None
 
 
@@ -87,6 +102,7 @@ class StartSingleJournalRequest(BaseModel):
     scraper_type: str
     max_articles: int = 50
     depth: int = 1
+    max_tabs: int = 3
     headless: bool = True
     force: bool = False  # DB'de varsa bile zorla çalıştır
 
@@ -101,7 +117,7 @@ class StartSingleJournalRequest(BaseModel):
     @field_validator("scraper_type")
     @classmethod
     def scraper_type_must_be_valid(cls, v: str) -> str:
-        allowed = ("ieee", "sciencedirect", "acm")
+        allowed = ("ieee", "sciencedirect", "acm", "wiley", "springer")
         if v not in allowed:
             raise ValueError(f"scraper_type şunlardan biri olmalı: {allowed}")
         return v
@@ -118,6 +134,13 @@ class StartSingleJournalRequest(BaseModel):
     def depth_range(cls, v: int) -> int:
         if not (1 <= v <= 50):
             raise ValueError("depth 1-50 arasında olmalı")
+        return v
+
+    @field_validator("max_tabs")
+    @classmethod
+    def max_tabs_range(cls, v: int) -> int:
+        if not (1 <= v <= 10):
+            raise ValueError("max_tabs 1-10 arasında olmalı")
         return v
 
 
@@ -151,7 +174,9 @@ async def validate_journal_url(request: ValidateUrlRequest):
                 "URL desteklenen bir platforma ait değil. "
                 "ACM (dl.acm.org/journal/...), "
                 "ScienceDirect (sciencedirect.com/journal/...) veya "
-                "IEEE Xplore (ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=...) "
+                "IEEE Xplore (ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=...), "
+                "Wiley (onlinelibrary.wiley.com/journal/...) veya "
+                "Springer (link.springer.com/journal/...) "
                 "URL'si girin."
             ),
         )
@@ -160,6 +185,8 @@ async def validate_journal_url(request: ValidateUrlRequest):
         "ieee": "IEEE Xplore",
         "sciencedirect": "ScienceDirect",
         "acm": "ACM Digital Library",
+        "wiley": "Wiley Online Library",
+        "springer": "Springer Link",
     }
     return ValidateUrlResponse(
         valid=True,
@@ -293,7 +320,7 @@ async def start_single_journal(request: StartSingleJournalRequest):
     if scraper_type is None:
         raise HTTPException(
             status_code=400,
-            detail="URL desteklenen bir platforma ait değil (IEEE, ScienceDirect veya ACM).",
+            detail="URL desteklenen bir platforma ait değil (IEEE, ScienceDirect, ACM, Wiley veya Springer).",
         )
 
     if scraper_type != request.scraper_type:
@@ -310,6 +337,8 @@ async def start_single_journal(request: StartSingleJournalRequest):
         "ieee": manager.ieee_progress,
         "sciencedirect": manager.sciencedirect_progress,
         "acm": manager.acm_progress,
+        "wiley": manager.wiley_progress,
+        "springer": manager.springer_progress,
     }
     progress = status_map[scraper_type]
     if progress.status.value in ("running", "starting", "paused", "stopping"):
@@ -327,6 +356,7 @@ async def start_single_journal(request: StartSingleJournalRequest):
         scraper_type=scraper_type,
         max_articles=request.max_articles,
         depth=request.depth,
+        max_tabs=request.max_tabs,
         headless=request.headless,
     )
 
@@ -357,6 +387,8 @@ async def get_single_journal_status(scraper_type: str = Query("ieee")):
         "ieee": manager.get_ieee_status,
         "sciencedirect": manager.get_sciencedirect_status,
         "acm": manager.get_acm_status,
+        "wiley": manager.get_wiley_status,
+        "springer": manager.get_springer_status,
     }
     getter = status_map.get(scraper_type)
     if not getter:
@@ -375,6 +407,8 @@ async def stop_single_journal(scraper_type: str = Query(..., description="Durdur
         "ieee": manager.stop_ieee,
         "sciencedirect": manager.stop_sciencedirect,
         "acm": manager.stop_acm,
+        "wiley": manager.stop_wiley,
+        "springer": manager.stop_springer,
     }
     stopper = stop_map.get(scraper_type)
     if not stopper:

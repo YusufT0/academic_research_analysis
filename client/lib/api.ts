@@ -240,10 +240,10 @@ export async function getScrapersStatus(): Promise<AllScrapersStatus> {
   return fetchApi<AllScrapersStatus>('/scrapers/status');
 }
 
-export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/ieee/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -259,10 +259,10 @@ export async function resumeIeeeScraper() {
   return fetchApi('/scrapers/ieee/resume', { method: 'POST' });
 }
 
-export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/sciencedirect/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -278,10 +278,10 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
-export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/acm/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -297,10 +297,10 @@ export async function resumeAcmScraper() {
   return fetchApi('/scrapers/acm/resume', { method: 'POST' });
 }
 
-export async function startWileyScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startWileyScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/wiley/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -316,10 +316,10 @@ export async function resumeWileyScraper() {
   return fetchApi('/scrapers/wiley/resume', { method: 'POST' });
 }
 
-export async function startSpringerScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startSpringerScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/springer/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -402,6 +402,7 @@ export async function startSingleJournalScraper(
   maxArticles = 50,
   depth = 1,
   headless = false,
+  maxTabs = 3,
 ) {
   return fetchApi('/scrapers/journal/start', {
     method: 'POST',
@@ -411,6 +412,7 @@ export async function startSingleJournalScraper(
       max_articles: maxArticles,
       depth,
       headless,
+      max_tabs: maxTabs,
     }),
   });
 }

@@ -60,7 +60,7 @@ import {
   syncElasticsearch,
 } from '@/lib/api';
 import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
-import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
+import type { AllScrapersStatus, ScraperStatus, IssueProgress } from '@/lib/types';
 import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
 import { OpenAlexScanner } from '@/components/dashboard/OpenAlexScanner';
 import { JournalUrlScraper } from '@/components/scrapers/JournalUrlScraper';
@@ -106,8 +106,6 @@ function ConnectionBadge({ status }: { status: ConnectionStatus }) {
 }
 
 // ==================== Journal Queue ====================
-
-import type { IssueProgress } from '@/lib/types';
 
 /** Tamamlanmış bir issue'nun makale listesini gösterir (accordion içi) */
 function IssueArticleList({ articles }: { articles: string[] }) {
@@ -161,7 +159,6 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
   const [expandedJournals, setExpandedJournals] = useState<Set<string>>(new Set());
   // expandedIssues: "journalName|issueTitle" key ile issue accordion durumu
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
-
   const toggleJournal = (name: string) =>
     setExpandedJournals(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
 
@@ -363,7 +360,7 @@ interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: (limit: number, depth?: number, issueOrder?: string, headless?: boolean, continuous?: boolean) => Promise<void>;
+  onStart: (limit: number, depth?: number, issueOrder?: string, headless?: boolean, continuous?: boolean, maxTabs?: number) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
@@ -375,6 +372,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
   const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
   const [limit, setLimit] = useState<number>(25);
   const [depth, setDepth] = useState<number>(1);
+  const [maxTabs, setMaxTabs] = useState<number>(3);
   const [issueOrder, setIssueOrder] = useState<string>('newest_first');
   const [headless, setHeadless] = useState<boolean>(true);
   const [continuous, setContinuous] = useState<boolean>(false);
@@ -501,10 +499,10 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Actions Menu */}
         <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
           {canStart && (
-            <div className="flex flex-col gap-3 w-full">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+            <div className="flex flex-col gap-2 w-full">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor={`limit-${title}`} className="text-xs text-slate-600 whitespace-nowrap">
                     Makale Limiti:
                   </label>
                   <input
@@ -514,13 +512,13 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
                     max="5000"
                     value={limit}
                     onChange={(e) => setLimit(parseInt(e.target.value) || 25)}
-                    className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    className="w-14 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
                   />
                 </div>
 
                 {showDepth && (
-                  <div className="flex items-center gap-2">
-                    <label htmlFor={`depth-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor={`depth-${title}`} className="text-xs text-slate-600 whitespace-nowrap">
                       Issue Derinliği:
                     </label>
                     <input
@@ -530,11 +528,27 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
                       max="50"
                       value={depth}
                       onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
-                      className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
                       title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
                     />
                   </div>
                 )}
+
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor={`max-tabs-${title}`} className="text-xs text-slate-600 whitespace-nowrap">
+                    Max Tab:
+                  </label>
+                  <input
+                    id={`max-tabs-${title}`}
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={maxTabs}
+                    onChange={(e) => setMaxTabs(parseInt(e.target.value) || 3)}
+                    className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    title="Issue içindeki makaleler için aynı anda açılacak tab sayısı"
+                  />
+                </div>
               </div>
 
               {/* Issue Sırası Toggle */}
@@ -605,7 +619,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
 
               <Button
                 variant="primary"
-                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder, headless, continuous))}
+                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder, headless, continuous, maxTabs))}
                 isLoading={actionLoading}
                 className="w-full"
               >
@@ -1511,7 +1525,7 @@ export default function ScrapersPage() {
                 title="IEEE Xplore Scraper"
                 description="IEEE akademik makalelerini toplar"
                 showDepth
-                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
                 onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
                 onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
                 onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
@@ -1523,7 +1537,7 @@ export default function ScrapersPage() {
                 title="ScienceDirect Scraper"
                 description="Elsevier ScienceDirect makalelerini toplar"
                 showDepth
-                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
                 onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
                 onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
                 onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
@@ -1535,7 +1549,7 @@ export default function ScrapersPage() {
                 title="ACM Digital Library Scraper"
                 description="ACM akademik makalelerini toplar"
                 showDepth
-                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
                 onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
                 onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
                 onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
@@ -1547,7 +1561,7 @@ export default function ScrapersPage() {
                 title="Wiley Online Library"
                 description="Wiley akademik makalelerini toplar"
                 showDepth
-                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startWileyScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startWileyScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
                 onStop={async () => { await stopWileyScraper(); await fetchStatus(); }}
                 onPause={async () => { await pauseWileyScraper(); await fetchStatus(); }}
                 onResume={async () => { await resumeWileyScraper(); await fetchStatus(); }}
@@ -1559,7 +1573,7 @@ export default function ScrapersPage() {
                 title="Springer Link"
                 description="Springer akademik makalelerini toplar"
                 showDepth
-                onStart={async (limit, depth, issueOrder, headless, continuous) => { await startSpringerScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startSpringerScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
                 onStop={async () => { await stopSpringerScraper(); await fetchStatus(); }}
                 onPause={async () => { await pauseSpringerScraper(); await fetchStatus(); }}
                 onResume={async () => { await resumeSpringerScraper(); await fetchStatus(); }}

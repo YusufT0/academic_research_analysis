@@ -5,7 +5,9 @@ Main scraper class for IEEE Xplore
 import os
 import sys
 import time
-from typing import Optional, List, Dict, Any
+import queue
+import threading
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from pathlib import Path
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -445,6 +447,8 @@ class IEEEXploreScraper:
         self,
         issue_stub: Dict[str, Any],
         max_articles: int = None,
+        max_tabs: int = 1,
+        parallel_drivers: Optional[List[SeleniumDriver]] = None,
         article_progress_callback=None,
         article_list_callback=None,
         issue_idx: int = 1,
@@ -524,63 +528,71 @@ class IEEEXploreScraper:
             except Exception:
                 pass
 
-        articles = []
-        failed_stubs = []  # Yüklenemeyen makaleler için retry kuyruğu
+        if max_tabs > 1:
+            articles, failed_stubs = self._process_issue_articles_parallel(
+                article_stubs=article_stubs,
+                max_tabs=max_tabs,
+                reusable_drivers=parallel_drivers,
+                article_progress_callback=article_progress_callback,
+            )
+        else:
+            articles = []
+            failed_stubs = []  # Yüklenemeyen makaleler için retry kuyruğu
 
-        for idx, article_stub in enumerate(article_stubs, 1):
-            article_url = article_stub['url']
-            self.check_stop_flag()
-
-            if article_progress_callback:
-                try:
-                    article_progress_callback(idx, len(article_stubs), None)
-                except Exception:
-                    pass
-
-            try:
-                full_url = (
-                    f"https://ieeexplore.ieee.org{article_url}"
-                    if article_url.startswith('/') else article_url
-                )
-
-                stub_title = article_stub.get('title', '')
-                logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
-
-                if not self.selenium_driver.get(full_url, wait_after=2):
-                    logger.warning(f"Makale sayfası yüklenemedi, retry kuyruğuna eklendi: {article_url}")
-                    failed_stubs.append(article_stub)
-                    continue
-
-                wait_for_page_load(self.driver)
-                self.rate_limiter.check_and_handle_rate_limit()
-
-                article_data = ArticleParser.extract_article_details(
-                    self.driver.page_source, full_url
-                )
-
-                if article_data and article_data.get('title'):
-                    articles.append(article_data)
-                    logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
+            for idx, article_stub in enumerate(article_stubs, 1):
+                article_url = article_stub['url']
+                self.check_stop_flag()
 
                 if article_progress_callback:
                     try:
-                        article_progress_callback(
-                            idx, len(article_stubs),
-                            article_data.get('title') if article_data else None
-                        )
+                        article_progress_callback(idx, len(article_stubs), None)
                     except Exception:
                         pass
 
-                self._interruptible_sleep(0.3)  # anti-bot politeness (azaltıldı)
+                try:
+                    full_url = (
+                        f"https://ieeexplore.ieee.org{article_url}"
+                        if article_url.startswith('/') else article_url
+                    )
 
-            except RateLimitException:
-                raise
-            except ScraperStoppedException:
-                raise
-            except Exception as e:
-                logger.warning(f"Makale {idx} hatası, retry kuyruğuna eklendi: {e}")
-                failed_stubs.append(article_stub)
-                continue
+                    stub_title = article_stub.get('title', '')
+                    logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
+
+                    if not self.selenium_driver.get(full_url, wait_after=2):
+                        logger.warning(f"Makale sayfası yüklenemedi, retry kuyruğuna eklendi: {article_url}")
+                        failed_stubs.append(article_stub)
+                        continue
+
+                    wait_for_page_load(self.driver)
+                    self.rate_limiter.check_and_handle_rate_limit()
+
+                    article_data = ArticleParser.extract_article_details(
+                        self.driver.page_source, full_url
+                    )
+
+                    if article_data and article_data.get('title'):
+                        articles.append(article_data)
+                        logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
+
+                    if article_progress_callback:
+                        try:
+                            article_progress_callback(
+                                idx, len(article_stubs),
+                                article_data.get('title') if article_data else None
+                            )
+                        except Exception:
+                            pass
+
+                    self._interruptible_sleep(0.3)  # anti-bot politeness (azaltıldı)
+
+                except RateLimitException:
+                    raise
+                except ScraperStoppedException:
+                    raise
+                except Exception as e:
+                    logger.warning(f"Makale {idx} hatası, retry kuyruğuna eklendi: {e}")
+                    failed_stubs.append(article_stub)
+                    continue
 
         # Retry kuyruğunu işle
         if failed_stubs:
@@ -626,11 +638,115 @@ class IEEEXploreScraper:
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
 
+    def _process_issue_articles_parallel(
+        self,
+        article_stubs: List[Dict[str, Any]],
+        max_tabs: int,
+        reusable_drivers: Optional[List[SeleniumDriver]] = None,
+        article_progress_callback=None,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        total = len(article_stubs)
+        requested_worker_count = max(1, min(max_tabs, total))
+
+        worker_slots: List[Tuple[int, SeleniumDriver, bool]] = []
+        if reusable_drivers:
+            for worker_id, driver in enumerate(reusable_drivers[:requested_worker_count], 1):
+                worker_slots.append((worker_id, driver, False))
+        else:
+            for worker_id in range(1, requested_worker_count + 1):
+                local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                if local_driver.start():
+                    worker_slots.append((worker_id, local_driver, True))
+                else:
+                    logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+
+        if not worker_slots:
+            logger.warning("Parallel mod için kullanılabilir worker driver yok")
+            return [], article_stubs[:]
+
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(article_stubs, 1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        failed_stubs: List[Dict[str, Any]] = []
+        lock = threading.Lock()
+        processed_count = 0
+
+        def _worker(worker_id: int, local_driver: SeleniumDriver, owns_driver: bool):
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    try:
+                        idx, article_stub = jobs.get_nowait()
+                    except queue.Empty:
+                        return
+
+                    article_url = article_stub.get('url', '')
+                    full_url = (
+                        f"https://ieeexplore.ieee.org{article_url}"
+                        if article_url.startswith('/') else article_url
+                    )
+
+                    article_data = None
+                    try:
+                        if local_driver.get(full_url, wait_after=2):
+                            wait_for_page_load(local_driver.driver)
+                            article_data = ArticleParser.extract_article_details(
+                                local_driver.driver.page_source,
+                                full_url,
+                            )
+                    except Exception:
+                        article_data = None
+
+                    with lock:
+                        nonlocal processed_count
+                        processed_count += 1
+                        if article_data and article_data.get('title'):
+                            results_by_index[idx] = article_data
+                        else:
+                            failed_stubs.append(article_stub)
+
+                        if article_progress_callback:
+                            try:
+                                article_progress_callback(
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
+                            except Exception:
+                                pass
+            finally:
+                local_driver.close()
+                if owns_driver:
+                    local_driver.close()
+
+        threads = [
+            threading.Thread(target=_worker, args=(worker_id, driver, owns_driver), daemon=True)
+            for worker_id, driver, owns_driver in worker_slots
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        return ordered_articles, failed_stubs
+
     def scrape_journal_articles(
         self,
         journal: Dict[str, Any],
         depth: int = 1,
         max_articles: int = 100,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         journal_name_callback=None,
@@ -695,6 +811,19 @@ class IEEEXploreScraper:
         logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_name}")
 
         try:
+            parallel_drivers: List[SeleniumDriver] = []
+            if max_tabs > 1:
+                for worker_id in range(1, max_tabs + 1):
+                    local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                    if local_driver.start():
+                        parallel_drivers.append(local_driver)
+                    else:
+                        logger.warning(f"Worker-{worker_id}: journal-level local driver başlatılamadı")
+                if parallel_drivers:
+                    logger.info(f"Journal-level worker havuzu hazır: {len(parallel_drivers)} driver")
+                else:
+                    logger.warning("Parallel worker havuzu başlatılamadı, serial moda düşülüyor")
+
             # 1. Aims & scope + tüm issue listesini al
             aims_and_scope, all_issues = self.extract_all_issues(
                 journal_home_url,
@@ -749,6 +878,8 @@ class IEEEXploreScraper:
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
+                    max_tabs=max_tabs if parallel_drivers else 1,
+                    parallel_drivers=parallel_drivers,
                     article_progress_callback=article_progress_callback,
                     article_list_callback=article_list_callback,
                     issue_idx=issue_idx,
@@ -785,6 +916,12 @@ class IEEEXploreScraper:
             import traceback
             traceback.print_exc()
             return []
+        finally:
+            for local_driver in parallel_drivers:
+                try:
+                    local_driver.close()
+                except Exception as close_error:
+                    logger.warning(f"Worker driver kapatma hatası: {close_error}")
 
     def close(self):
         """Tarayıcıyı kapat"""

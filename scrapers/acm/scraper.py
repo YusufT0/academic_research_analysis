@@ -6,6 +6,8 @@ import os
 import sys
 import time
 import random
+import queue
+import threading
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -470,6 +472,7 @@ class ACMScraper:
         self,
         issue_stub: dict,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         issue_idx: int = 1,
@@ -534,70 +537,78 @@ class ACMScraper:
             except Exception:
                 pass
 
-        articles = []
-        retry_queue = []
-        consecutive_failures = 0
+        if max_tabs > 1:
+            articles, retry_queue = self._process_issue_articles_parallel(
+                article_list=article_list,
+                max_tabs=max_tabs,
+                article_progress_callback=article_progress_callback,
+            )
+            consecutive_failures = 0
+        else:
+            articles = []
+            retry_queue = []
+            consecutive_failures = 0
 
-        for idx, article_stub in enumerate(article_list, 1):
-            self.check_stop_flag()
+            for idx, article_stub in enumerate(article_list, 1):
+                self.check_stop_flag()
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(idx, len(article_list), None)
-                except Exception:
-                    pass
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_list), None)
+                    except Exception:
+                        pass
 
-            article_url = article_stub.get('url', '')
-            full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
-            stub_title = article_stub.get('title', '')
-            logger.info(f"[{idx}/{len(article_list)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else full_url}")
+                article_url = article_stub.get('url', '')
+                full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+                stub_title = article_stub.get('title', '')
+                logger.info(f"[{idx}/{len(article_list)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else full_url}")
 
-            article_data = None
-            success = False
+                article_data = None
+                success = False
 
-            for attempt in range(2):
-                if attempt > 0:
-                    self._interruptible_sleep(2)
+                for attempt in range(2):
+                    if attempt > 0:
+                        self._interruptible_sleep(2)
 
-                if not self.selenium_driver.get(full_url, wait_after=3):
-                    continue
+                    if not self.selenium_driver.get(full_url, wait_after=3):
+                        continue
 
-                self._close_modals()
-                # Modal etkileşimleri sonrası sayfa settle olana kadar bekle
-                wait_for_page_load(self.selenium_driver)
+                    self._close_modals()
+                    # Modal etkileşimleri sonrası sayfa settle olana kadar bekle
+                    wait_for_page_load(self.selenium_driver)
 
-                article_data = ArticleDetailParser.extract_article_details(
-                    self.selenium_driver.page_source, full_url
-                )
-
-                if article_data and article_data.get('title'):
-                    success = True
-                    break
-
-            if success and article_data:
-                articles.append(article_data)
-                logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
-                consecutive_failures = 0
-            else:
-                retry_queue.append(full_url)
-                consecutive_failures += 1
-
-            if article_progress_callback:
-                try:
-                    article_progress_callback(
-                        idx, len(article_list),
-                        article_data.get('title') if (success and article_data) else None
+                    article_data = ArticleDetailParser.extract_article_details(
+                        self.selenium_driver.page_source, full_url
                     )
-                except Exception:
-                    pass
 
-            if consecutive_failures >= 3:
-                logger.error("Üst üste 3 makale hatası! Tarayıcı yeniden başlatılıyor...")
-                self.selenium_driver.restart()
-                self._interruptible_sleep(60)
-                consecutive_failures = 0
+                    if article_data and article_data.get('title'):
+                        success = True
+                        break
 
-            self._random_wait()
+                if success and article_data:
+                    articles.append(article_data)
+                    logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
+                    consecutive_failures = 0
+                else:
+                    retry_queue.append(full_url)
+                    consecutive_failures += 1
+
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(
+                            idx, len(article_list),
+                            article_data.get('title') if (success and article_data) else None
+                        )
+                    except Exception:
+                        pass
+
+                if consecutive_failures >= 3:
+                    logger.error("Üst üste 3 makale hatası! Tarayıcı yeniden başlatılıyor...")
+                    self.selenium_driver.restart()
+                    self._interruptible_sleep(60)
+                    consecutive_failures = 0
+
+                self._random_wait()
 
         # Retry kuyruğu
         if retry_queue:
@@ -630,6 +641,100 @@ class ACMScraper:
 
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
+
+    def _process_issue_articles_parallel(
+        self,
+        article_list: List[Dict[str, Any]],
+        max_tabs: int,
+        article_progress_callback=None,
+    ) -> tuple[List[Dict[str, Any]], List[str]]:
+        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        total = len(article_list)
+        worker_count = max(1, min(max_tabs, total))
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(article_list, 1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        retry_urls: List[str] = []
+        lock = threading.Lock()
+        processed_count = 0
+
+        def _worker(worker_id: int):
+            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if not local_driver.start():
+                logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+                while not jobs.empty():
+                    try:
+                        _, stub = jobs.get_nowait()
+                    except queue.Empty:
+                        break
+                    article_url = stub.get('url', '')
+                    full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+                    with lock:
+                        retry_urls.append(full_url)
+                return
+
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    try:
+                        idx, article_stub = jobs.get_nowait()
+                    except queue.Empty:
+                        return
+
+                    article_url = article_stub.get('url', '')
+                    full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+                    article_data = None
+
+                    for attempt in range(2):
+                        if attempt > 0:
+                            time.sleep(1)
+                        try:
+                            if not local_driver.get(full_url, wait_after=3):
+                                continue
+                            page_source = local_driver.page_source
+                            article_data = ArticleDetailParser.extract_article_details(page_source, full_url)
+                            if article_data and article_data.get('title'):
+                                break
+                        except Exception:
+                            article_data = None
+
+                    with lock:
+                        nonlocal processed_count
+                        processed_count += 1
+                        if article_data and article_data.get('title'):
+                            results_by_index[idx] = article_data
+                        else:
+                            retry_urls.append(full_url)
+
+                        if article_progress_callback:
+                            try:
+                                article_progress_callback(
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
+                            except Exception:
+                                pass
+            finally:
+                local_driver.close()
+
+        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        return ordered_articles, retry_urls
 
     def _extract_issue_info_from_url(self, url: str) -> dict:
         """
@@ -667,6 +772,7 @@ class ACMScraper:
         journal: Dict[str, Any],
         depth: int = 1,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         journal_name_callback=None,
@@ -794,6 +900,7 @@ class ACMScraper:
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
+                    max_tabs=max_tabs,
                     article_progress_callback=article_progress_callback,
                     article_list_callback=article_list_callback,
                     issue_idx=issue_idx,

@@ -122,10 +122,12 @@ export interface ScraperStatus {
   elapsed_seconds: number;
   progress_percent: number;
   last_error: string | null;
+  max_tabs?: number | null;
   is_single_journal_mode?: boolean;
   single_journal_url?: string | null;
   single_journal_max_articles?: number | null;
   single_journal_depth?: number | null;
+  single_journal_max_tabs?: number | null;
 }
 
 export interface AllScrapersStatus {

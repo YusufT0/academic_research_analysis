@@ -142,6 +142,7 @@ class ScraperProgress:
         
         # Hata
         self.last_error: Optional[str] = None
+        self.max_tabs: Optional[int] = None
         
         # Logs
         self.logs: List[Dict[str, Any]] = []
@@ -154,6 +155,7 @@ class ScraperProgress:
         self.single_journal_url: Optional[str] = None
         self.single_journal_max_articles: Optional[int] = None
         self.single_journal_depth: Optional[int] = None
+        self.single_journal_max_tabs: Optional[int] = None
         
     @property
     def status(self) -> ScraperStatus:
@@ -260,10 +262,12 @@ class ScraperProgress:
             "elapsed_seconds": self.elapsed_seconds,
             "progress_percent": self.progress_percent,
             "last_error": self.last_error,
+            "max_tabs": self.max_tabs,
             "is_single_journal_mode": self.is_single_journal_mode,
             "single_journal_url": self.single_journal_url,
             "single_journal_max_articles": self.single_journal_max_articles,
             "single_journal_depth": self.single_journal_depth,
+            "single_journal_max_tabs": self.single_journal_max_tabs,
         }
     
     def reset(self):
@@ -292,9 +296,11 @@ class ScraperProgress:
         self.last_activity = None
         self.last_error = None
         self.logs = []
+        self.max_tabs = None
         self.single_journal_url = None
         self.single_journal_max_articles = None
         self.single_journal_depth = None
+        self.single_journal_max_tabs = None
         # Not: is_single_journal_mode burada sıfırlanmaz —
         # thread fonksiyonu override varlığına göre bunu yönetir.
         
@@ -406,34 +412,44 @@ class ScraperManager:
             self.ieee_headless = _settings.scraper_headless
             self.ieee_max_articles = _settings.ieee_max_articles
             self.ieee_depth = _settings.ieee_depth
+            self.ieee_max_tabs = _settings.ieee_max_tabs if hasattr(_settings, 'ieee_max_tabs') else 3
             self.sciencedirect_headless = _settings.scraper_headless
             self.sciencedirect_max_articles = _settings.sciencedirect_max_articles
             self.sciencedirect_depth = 1  # ScienceDirect depth is set per start_sciencedirect call
+            self.sciencedirect_max_tabs = _settings.sciencedirect_max_tabs if hasattr(_settings, 'sciencedirect_max_tabs') else 3
             self.acm_headless = _settings.scraper_headless
             self.acm_max_articles = _settings.acm_max_articles
             self.acm_depth = 1
+            self.acm_max_tabs = _settings.acm_max_tabs if hasattr(_settings, 'acm_max_tabs') else 3
             self.wiley_headless = _settings.scraper_headless
             self.wiley_max_articles = getattr(_settings, 'wiley_max_articles', 100)
             self.wiley_depth = 1
+            self.wiley_max_tabs = _settings.wiley_max_tabs if hasattr(_settings, 'wiley_max_tabs') else 3
             self.springer_headless = _settings.scraper_headless
             self.springer_max_articles = getattr(_settings, 'springer_max_articles', 100)
             self.springer_depth = 1
+            self.springer_max_tabs = _settings.springer_max_tabs if hasattr(_settings, 'springer_max_tabs') else 3
         except Exception:
             self.ieee_headless = True
             self.ieee_max_articles = 100
             self.ieee_depth = 1
+            self.ieee_max_tabs = 3
             self.sciencedirect_headless = True
             self.sciencedirect_max_articles = 100
             self.sciencedirect_depth = 1
+            self.sciencedirect_max_tabs = 3
             self.acm_headless = True
             self.acm_max_articles = 100
             self.acm_depth = 1
+            self.acm_max_tabs = 3
             self.wiley_headless = True
             self.wiley_max_articles = 100
             self.wiley_depth = 1
+            self.wiley_max_tabs = 3
             self.springer_headless = True
             self.springer_max_articles = 100
             self.springer_depth = 1
+            self.springer_max_tabs = 3
 
         # Issue işleme sırası: "newest_first" (yeniden eskiye) veya "oldest_first" (eskiden yeniye)
         # Varsayılan: yeniden eskiye (newest_first)
@@ -582,6 +598,7 @@ class ScraperManager:
         scraper_type: str,
         max_articles: int = 50,
         depth: int = 1,
+        max_tabs: int = 3,
         headless: bool = True,
     ) -> bool:
         """
@@ -607,6 +624,7 @@ class ScraperManager:
             progress.single_journal_url = url
             progress.single_journal_max_articles = max_articles
             progress.single_journal_depth = depth
+            progress.single_journal_max_tabs = max_tabs
 
         # Platforma göre tek-elemanlı journal dicts oluştur
         if scraper_type == "ieee":
@@ -627,11 +645,13 @@ class ScraperManager:
                 "url": url,
                 "max_articles": max_articles,
                 "depth": depth,
+                "max_tabs": max_tabs,
             }
             return await self.start_ieee(
                 headless=headless,
                 max_articles=max_articles,
                 depth=depth,
+                max_tabs=max_tabs,
             )
 
         elif scraper_type == "sciencedirect":
@@ -650,11 +670,13 @@ class ScraperManager:
                 "url": url,
                 "max_articles": max_articles,
                 "depth": depth,
+                "max_tabs": max_tabs,
             }
             return await self.start_sciencedirect(
                 headless=headless,
                 max_articles=max_articles,
                 depth=depth,
+                max_tabs=max_tabs,
             )
 
         elif scraper_type == "acm":
@@ -673,11 +695,13 @@ class ScraperManager:
                 "url": url,
                 "max_articles": max_articles,
                 "depth": depth,
+                "max_tabs": max_tabs,
             }
             return await self.start_acm(
                 headless=headless,
                 max_articles=max_articles,
                 depth=depth,
+                max_tabs=max_tabs,
             )
 
         elif scraper_type == "wiley":
@@ -696,11 +720,13 @@ class ScraperManager:
                 "url": url,
                 "max_articles": max_articles,
                 "depth": depth,
+                "max_tabs": max_tabs,
             }
             return await self.start_wiley(
                 headless=headless,
                 max_articles=max_articles,
                 depth=depth,
+                max_tabs=max_tabs,
             )
 
         elif scraper_type == "springer":
@@ -719,11 +745,13 @@ class ScraperManager:
                 "url": url,
                 "max_articles": max_articles,
                 "depth": depth,
+                "max_tabs": max_tabs,
             }
             return await self.start_springer(
                 headless=headless,
                 max_articles=max_articles,
                 depth=depth,
+                max_tabs=max_tabs,
             )
 
         return False
@@ -731,7 +759,7 @@ class ScraperManager:
 
     # ==================== IEEE Scraper ====================
     
-    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
+    async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """IEEE scraper'ı başlat (ayrı thread'de)"""
         if self.ieee_progress.status == ScraperStatus.RUNNING:
             logger.warning("IEEE scraper already running")
@@ -745,6 +773,7 @@ class ScraperManager:
         self.ieee_headless = headless
         self.ieee_max_articles = max_articles
         self.ieee_depth = depth
+        self.ieee_max_tabs = max_tabs
         self.ieee_issues_order = issues_order
         self.ieee_continuous = continuous
 
@@ -765,12 +794,14 @@ class ScraperManager:
         """
         progress = self.ieee_progress
         progress.reset()
+        progress.max_tabs = self.ieee_max_tabs
         # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
         progress.is_single_journal_mode = bool(getattr(self, '_ieee_single_journal_override', None))
         if progress.is_single_journal_mode and self._ieee_single_journal_context:
             progress.single_journal_url = self._ieee_single_journal_context.get("url")
             progress.single_journal_max_articles = self._ieee_single_journal_context.get("max_articles")
             progress.single_journal_depth = self._ieee_single_journal_context.get("depth")
+            progress.single_journal_max_tabs = self._ieee_single_journal_context.get("max_tabs")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "IEEE scraper başlatılıyor (ayrı thread)...")
@@ -967,6 +998,7 @@ class ScraperManager:
                         journal,
                         depth=self.ieee_depth,
                         max_articles=self.ieee_max_articles,
+                        max_tabs=self.ieee_max_tabs,
                         article_progress_callback=_ieee_article_cb,
                         article_list_callback=_ieee_article_list_cb,
                         journal_name_callback=_ieee_journal_name_cb,
@@ -1218,7 +1250,7 @@ class ScraperManager:
     
     # ==================== ScienceDirect Scraper ====================
     
-    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
+    async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """ScienceDirect scraper'ı başlat (ayrı thread'de)"""
         if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
             logger.warning("ScienceDirect scraper already running")
@@ -1232,6 +1264,7 @@ class ScraperManager:
         self.sciencedirect_headless = headless
         self.sciencedirect_max_articles = max_articles
         self.sciencedirect_depth = depth
+        self.sciencedirect_max_tabs = max_tabs
         self.sciencedirect_issues_order = issues_order
         self.sciencedirect_continuous = continuous
 
@@ -1252,12 +1285,14 @@ class ScraperManager:
         """
         progress = self.sciencedirect_progress
         progress.reset()
+        progress.max_tabs = self.sciencedirect_max_tabs
         # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
         progress.is_single_journal_mode = bool(getattr(self, '_sd_single_journal_override', None))
         if progress.is_single_journal_mode and self._sd_single_journal_context:
             progress.single_journal_url = self._sd_single_journal_context.get("url")
             progress.single_journal_max_articles = self._sd_single_journal_context.get("max_articles")
             progress.single_journal_depth = self._sd_single_journal_context.get("depth")
+            progress.single_journal_max_tabs = self._sd_single_journal_context.get("max_tabs")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "ScienceDirect scraper başlatılıyor (ayrı thread)...")
@@ -1457,6 +1492,7 @@ class ScraperManager:
                         journal,
                         depth=self.sciencedirect_depth,
                         max_articles=self.sciencedirect_max_articles,
+                        max_tabs=self.sciencedirect_max_tabs,
                         article_progress_callback=_sd_article_cb,
                         article_list_callback=_sd_article_list_cb,
                         journal_name_callback=_sd_journal_name_cb,
@@ -1704,7 +1740,7 @@ class ScraperManager:
 
     # ==================== ACM Scraper ====================
     
-    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
+    async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """ACM scraper'ı başlat (ayrı thread'de)"""
         if self.acm_progress.status == ScraperStatus.RUNNING:
             logger.warning("ACM scraper already running")
@@ -1718,6 +1754,7 @@ class ScraperManager:
         self.acm_headless = headless
         self.acm_max_articles = max_articles
         self.acm_depth = depth
+        self.acm_max_tabs = max_tabs
         self.acm_issues_order = issues_order
         self.acm_continuous = continuous
 
@@ -1738,12 +1775,14 @@ class ScraperManager:
         """
         progress = self.acm_progress
         progress.reset()
+        progress.max_tabs = self.acm_max_tabs
         # Tekil journal modu kontrolü — override set edilmişse flag'ı koru
         progress.is_single_journal_mode = bool(getattr(self, '_acm_single_journal_override', None))
         if progress.is_single_journal_mode and self._acm_single_journal_context:
             progress.single_journal_url = self._acm_single_journal_context.get("url")
             progress.single_journal_max_articles = self._acm_single_journal_context.get("max_articles")
             progress.single_journal_depth = self._acm_single_journal_context.get("depth")
+            progress.single_journal_max_tabs = self._acm_single_journal_context.get("max_tabs")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "ACM scraper başlatılıyor (ayrı thread)...")
@@ -1940,6 +1979,7 @@ class ScraperManager:
                         journal,
                         depth=self.acm_depth,
                         max_articles=self.acm_max_articles,
+                        max_tabs=self.acm_max_tabs,
                         article_progress_callback=_acm_article_cb,
                         article_list_callback=_acm_article_list_cb,
                         journal_name_callback=_acm_journal_name_cb,
@@ -2186,7 +2226,7 @@ class ScraperManager:
 
     # ==================== Wiley Scraper ====================
     
-    async def start_wiley(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
+    async def start_wiley(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """Wiley scraper'ı başlat (ayrı thread'de)"""
         if self.wiley_progress.status == ScraperStatus.RUNNING:
             logger.warning("Wiley scraper already running")
@@ -2200,6 +2240,7 @@ class ScraperManager:
         self.wiley_headless = headless
         self.wiley_max_articles = max_articles
         self.wiley_depth = depth
+        self.wiley_max_tabs = max_tabs
         self.wiley_issues_order = issues_order
         self.wiley_continuous = continuous
 
@@ -2220,12 +2261,14 @@ class ScraperManager:
         """
         progress = self.wiley_progress
         progress.reset()
+        progress.max_tabs = self.wiley_max_tabs
         # Tekil journal modu kontrolü
         progress.is_single_journal_mode = bool(getattr(self, '_wiley_single_journal_override', None))
         if progress.is_single_journal_mode and self._wiley_single_journal_context:
             progress.single_journal_url = self._wiley_single_journal_context.get("url")
             progress.single_journal_max_articles = self._wiley_single_journal_context.get("max_articles")
             progress.single_journal_depth = self._wiley_single_journal_context.get("depth")
+            progress.single_journal_max_tabs = self._wiley_single_journal_context.get("max_tabs")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "Wiley scraper başlatılıyor (ayrı thread)...")
@@ -2407,6 +2450,7 @@ class ScraperManager:
                         journal=journal,
                         depth=self.wiley_depth,
                         max_articles=self.wiley_max_articles,
+                        max_tabs=self.wiley_max_tabs,
                         article_progress_callback=on_article_progress,
                         article_list_callback=on_article_list,
                         journal_name_callback=on_journal_name_resolved,
@@ -2701,7 +2745,7 @@ class ScraperManager:
         return True
 # ==================== Springer Scraper ====================
     
-    async def start_springer(self, headless: bool = True, max_articles: int = 100, depth: int = 1, issues_order: str = "newest_first", continuous: bool = False) -> bool:
+    async def start_springer(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """Springer scraper'ı başlat (ayrı thread'de)"""
         if self.springer_progress.status == ScraperStatus.RUNNING:
             logger.warning("Springer scraper already running")
@@ -2715,6 +2759,7 @@ class ScraperManager:
         self.springer_headless = headless
         self.springer_max_articles = max_articles
         self.springer_depth = depth
+        self.springer_max_tabs = max_tabs
         self.springer_issues_order = issues_order
         self.springer_continuous = continuous
 
@@ -2735,12 +2780,14 @@ class ScraperManager:
         """
         progress = self.springer_progress
         progress.reset()
+        progress.max_tabs = self.springer_max_tabs
         # Tekil journal modu kontrolü
         progress.is_single_journal_mode = bool(getattr(self, '_springer_single_journal_override', None))
         if progress.is_single_journal_mode and self._springer_single_journal_context:
             progress.single_journal_url = self._springer_single_journal_context.get("url")
             progress.single_journal_max_articles = self._springer_single_journal_context.get("max_articles")
             progress.single_journal_depth = self._springer_single_journal_context.get("depth")
+            progress.single_journal_max_tabs = self._springer_single_journal_context.get("max_tabs")
         progress.status = ScraperStatus.STARTING
         progress.started_at = datetime.utcnow()
         progress.add_log("info", "Springer scraper başlatılıyor (ayrı thread)...")
@@ -2922,6 +2969,7 @@ class ScraperManager:
                         journal=journal,
                         depth=self.springer_depth,
                         max_articles=self.springer_max_articles,
+                        max_tabs=self.springer_max_tabs,
                         article_progress_callback=on_article_progress,
                         article_list_callback=on_article_list,
                         journal_name_callback=on_journal_name_resolved,

@@ -3,6 +3,8 @@
 import random
 import sys
 import time
+import queue
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -241,11 +243,104 @@ class SpringerScraper:
             logger.warning(f"Makale detay parse edilemedi: {article_url}")
         return detail
 
+    def _scrape_issue_articles_parallel(
+        self,
+        stubs: List[Dict[str, Any]],
+        journal_name: str,
+        max_tabs: int,
+        article_progress_callback: Callable = None,
+        existing_article_dois: set = None,
+    ) -> List[Dict[str, Any]]:
+        """Issue icindeki makale detaylarini worker havuzu ile paralel toplar."""
+        existing_article_dois = existing_article_dois or set()
+        candidates = [s for s in stubs if not (s.get("doi", "") and s.get("doi", "") in existing_article_dois)]
+        skipped = len(stubs) - len(candidates)
+        if skipped:
+            logger.info(f"Parallel mod: {skipped} makale mevcut DOI nedeniyle atlandi")
+
+        if not candidates:
+            return []
+
+        total = len(candidates)
+        worker_count = max(1, min(max_tabs, total))
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(candidates, start=1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        lock = threading.Lock()
+        processed_count = 0
+
+        def _worker(worker_id: int):
+            local_driver = SeleniumDriver(
+                self.proxy_config,
+                headless=self.headless,
+                page_load_timeout=self.config.page_load_timeout,
+            )
+            if not local_driver.start():
+                logger.warning(f"Worker-{worker_id}: local driver baslatilamadi")
+                return
+
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    try:
+                        idx, stub = jobs.get_nowait()
+                    except queue.Empty:
+                        return
+
+                    detail_data: Dict[str, Any] = {}
+                    article_url = stub.get("url", "")
+                    try:
+                        if article_url and local_driver.get(article_url, wait_after=4):
+                            handle_cookie_consent(local_driver)
+                            wait_for_page_load(local_driver)
+                            detail_data = ArticleDetailParser.parse_article_detail(local_driver.page_source, article_url)
+                    except Exception:
+                        detail_data = {}
+
+                    merged = {**stub, **detail_data}
+                    merged["journal_name"] = journal_name
+
+                    with lock:
+                        nonlocal processed_count
+                        processed_count += 1
+                        results_by_index[idx] = merged
+
+                        if article_progress_callback:
+                            try:
+                                article_progress_callback(
+                                    processed_count,
+                                    total,
+                                    merged.get("title") or stub.get("title"),
+                                )
+                            except Exception:
+                                pass
+            finally:
+                local_driver.close()
+
+        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        ordered = [results_by_index[i] for i in sorted(results_by_index.keys())]
+        return ordered
+
     def scrape_journal_articles(
         self,
         journal: Dict[str, Any],
         depth: int = 1,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback: Callable = None,
         article_list_callback: Callable = None,
         journal_name_callback: Callable = None,
@@ -326,33 +421,42 @@ class SpringerScraper:
                     except Exception:
                         pass
 
-                issue_articles: List[Dict[str, Any]] = []
-                for art_idx, stub in enumerate(stubs, start=1):
-                    self.check_stop_flag()
-                    logger.info(f"Makale isleniyor ({art_idx}/{len(stubs)}): {stub.get('title', '')}")
+                if max_tabs > 1:
+                    issue_articles = self._scrape_issue_articles_parallel(
+                        stubs=stubs,
+                        journal_name=journal.get("name", ""),
+                        max_tabs=max_tabs,
+                        article_progress_callback=article_progress_callback,
+                        existing_article_dois=existing_article_dois,
+                    )
+                else:
+                    issue_articles = []
+                    for art_idx, stub in enumerate(stubs, start=1):
+                        self.check_stop_flag()
+                        logger.info(f"Makale isleniyor ({art_idx}/{len(stubs)}): {stub.get('title', '')}")
 
-                    if article_progress_callback:
-                        try:
-                            article_progress_callback(art_idx, len(stubs), stub.get("title"))
-                        except Exception:
-                            pass
+                        if article_progress_callback:
+                            try:
+                                article_progress_callback(art_idx, len(stubs), stub.get("title"))
+                            except Exception:
+                                pass
 
-                    doi = stub.get("doi", "")
-                    if doi and doi in existing_article_dois:
-                        logger.info(f"Mevcut DOI atlandi: {doi}")
-                        continue
+                        doi = stub.get("doi", "")
+                        if doi and doi in existing_article_dois:
+                            logger.info(f"Mevcut DOI atlandi: {doi}")
+                            continue
 
-                    detail_data = self._scrape_article_detail(stub.get("url", "")) if stub.get("url") else {}
-                    merged = {**stub, **detail_data}
-                    merged["journal_name"] = journal.get("name", "")
-                    issue_articles.append(merged)
-                    logger.success(f"Makale eklendi: {merged.get('title', '')[:50]}...")
+                        detail_data = self._scrape_article_detail(stub.get("url", "")) if stub.get("url") else {}
+                        merged = {**stub, **detail_data}
+                        merged["journal_name"] = journal.get("name", "")
+                        issue_articles.append(merged)
+                        logger.success(f"Makale eklendi: {merged.get('title', '')[:50]}...")
 
-                    if max_articles and len(issue_articles) >= max_articles:
-                        logger.info(f"Issue max article limitine ulasildi: {max_articles}")
-                        break
+                        if max_articles and len(issue_articles) >= max_articles:
+                            logger.info(f"Issue max article limitine ulasildi: {max_articles}")
+                            break
 
-                    self._random_wait()
+                        self._random_wait()
 
                 issue_results.append({"issue_info": issue, "articles": issue_articles})
                 logger.success(
