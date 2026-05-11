@@ -26,6 +26,7 @@ from database.repositories import (
     AnalysisRunRepository,
 )
 from backend.core.config import settings
+from backend.schemas.article import ArticleNLPProjection
 from utils.logger import get_logger
 from collections import defaultdict
 
@@ -306,7 +307,7 @@ class NLPService:
             logger.info("Fetching articles from database...")
             articles = await Article.find(
                 {"abstract": {"$exists": True, "$ne": None}}
-            ).to_list()
+            ).project(ArticleNLPProjection).to_list()
 
             # Abstract'ı olan ve yeterli uzunlukta olanları filtrele
             valid_articles = []
@@ -389,10 +390,10 @@ class NLPService:
                     article_journals.append(article.journal_id)
                     article_objects.append(article)
 
-            # Merge keywords with cleaned text for richer embeddings
+            # Merge keywords with original text for richer embeddings
             texts_for_embedding = [
-                f"{cleaned} {' '.join(kws)}"
-                for cleaned, kws in zip(cleaned_texts, article_keywords)
+                f"{article.abstract} Keywords: {', '.join(kws)}"
+                for article, kws in zip(valid_articles, article_keywords)
             ]
 
             # Embedding
@@ -451,7 +452,9 @@ class NLPService:
                 )
                 embedding_docs.append(embedding_doc)
 
-            await self.embedding_repo.bulk_create(embedding_docs)
+            batch_size_db = 1000
+            for i in range(0, len(embedding_docs), batch_size_db):
+                await self.embedding_repo.bulk_create(embedding_docs[i:i + batch_size_db])
             logger.success(f"Saved {len(embedding_docs)} embeddings")
 
             # 4. HDBSCAN ile clustering
@@ -718,7 +721,7 @@ class NLPService:
         }
         if journal_ids:
             article_query["journal_id"] = {"$in": journal_ids}
-        new_articles = await Article.find(article_query).to_list()
+        new_articles = await Article.find(article_query).project(ArticleNLPProjection).to_list()
 
         # Filter by abstract length
         valid_new = [
@@ -812,10 +815,10 @@ class NLPService:
                 "affected_clusters": [],
             }
 
-        # 5. Generate full embeddings (keywords + cleaned text)
+        # 5. Generate full embeddings (keywords + raw text)
         texts_for_embedding = [
-            f"{cleaned} {' '.join(kws)}"
-            for cleaned, kws in zip(cleaned_texts, article_keywords)
+            f"{article.abstract} Keywords: {', '.join(kws)}"
+            for article, kws in zip(valid_new, article_keywords)
         ]
         logger.info(
             f"Generating embeddings for {len(texts_for_embedding)} new articles..."
@@ -884,7 +887,9 @@ class NLPService:
             )
             embedding_docs.append(embedding_doc)
 
-        await self.embedding_repo.bulk_create(embedding_docs)
+        batch_size_db = 1000
+        for i in range(0, len(embedding_docs), batch_size_db):
+            await self.embedding_repo.bulk_create(embedding_docs[i:i + batch_size_db])
         logger.success(f"Saved {len(embedding_docs)} new embeddings.")
 
         # 9. Update existing "all" clusters with newly assigned article IDs
