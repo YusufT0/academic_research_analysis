@@ -40,9 +40,9 @@ function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string
 
   return (
     <Link href="/scrapers" className="block group cursor-pointer">
-      <div className="rounded-lg border border-slate-200 p-4 hover:border-emerald-300 hover:shadow-sm transition-all">
+      <div className="rounded-lg border border-slate-200 p-4 hover:border-indigo-300 hover:shadow-sm transition-all">
         <div className="flex items-center justify-between mb-3">
-          <h4 className="font-semibold text-slate-900 group-hover:text-emerald-700 transition-colors flex items-center gap-1.5">
+          <h4 className="font-semibold text-slate-900 group-hover:text-indigo-700 transition-colors flex items-center gap-1.5">
             {title}
             <ExternalLink className="h-3 w-3 opacity-0 group-hover:opacity-50 transition-opacity" />
           </h4>
@@ -60,7 +60,7 @@ function ScraperCard({ scraper, title }: { scraper: ScraperStatus; title: string
           </div>
           <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
             <div
-              className="h-full bg-emerald-500 transition-all duration-500"
+              className="h-full bg-indigo-500 transition-all duration-500"
               style={{ width: `${scraper.progress_percent}%` }}
             />
           </div>
@@ -165,9 +165,9 @@ export default function ScraperStatusComponent() {
   return (
     <Card>
       <CardHeader>
-        <Link href="/scrapers" className="cursor-pointer group inline-flex items-center gap-2 hover:text-emerald-700 transition-colors">
-          <CardTitle className="group-hover:text-emerald-700 transition-colors">Scraper Durumu</CardTitle>
-          <ExternalLink className="h-4 w-4 text-slate-400 group-hover:text-emerald-500 transition-colors" />
+        <Link href="/scrapers" className="cursor-pointer group inline-flex items-center gap-2 hover:text-indigo-700 transition-colors">
+          <CardTitle className="group-hover:text-indigo-700 transition-colors">Scraper Durumu</CardTitle>
+          <ExternalLink className="h-4 w-4 text-slate-400 group-hover:text-indigo-500 transition-colors" />
         </Link>
       </CardHeader>
       <CardContent>
