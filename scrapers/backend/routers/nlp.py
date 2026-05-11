@@ -635,6 +635,7 @@ async def list_clusters(
 )
 async def patch_cluster_labels(
     model_version: str = Query(..., description="Patch uygulanacak model versiyonu"),
+    force_recompute: bool = Query(False, description="Var olan labelları zorla yeniden hesapla"),
     background_tasks: BackgroundTasks = None,
 ):
     """
@@ -643,7 +644,9 @@ async def patch_cluster_labels(
     hesaplayarak günceller. Yeni bir eğitim başlatmaz.
     """
     try:
-        result = await nlp_service.patch_cluster_labels(model_version=model_version)
+        result = await nlp_service.patch_cluster_labels(
+            model_version=model_version, force_recompute=force_recompute
+        )
         return result
     except Exception as e:
         logger.error(f"Patch labels error: {e}")

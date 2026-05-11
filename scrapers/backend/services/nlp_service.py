@@ -1709,7 +1709,7 @@ class NLPService:
         series = [{"date": d, "count": c} for d, c in sorted(date_counts.items())]
         return {"topic_tag": topic_tag, "cluster_id": cluster_id, "series": series}
 
-    async def patch_cluster_labels(self, model_version: str) -> Dict[str, Any]:
+    async def patch_cluster_labels(self, model_version: str, force_recompute: bool = False) -> Dict[str, Any]:
         """
         Mevcut bir model versiyonundaki label=null veya top_keywords=[] olan
         cluster'ları yeniden hesaplayıp DB'ye yazar. Train gerektirmez.
@@ -1753,7 +1753,7 @@ class NLPService:
                 continue
 
             # Zaten label ve keywords varsa atla
-            if cluster.label and cluster.top_keywords:
+            if not force_recompute and cluster.label and cluster.top_keywords:
                 skipped += 1
                 continue
 
@@ -1769,7 +1769,6 @@ class NLPService:
             if not top_keywords:
                 skipped += 1
                 continue
-
             label_text = await self._take_cluster_and_find_word(top_keywords)
 
             cluster.top_keywords = top_keywords
@@ -2060,29 +2059,42 @@ class NLPService:
         if n == 1:
             return cluster_list[0]
 
-        pairs = []
-        pair_indices = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                pairs.append((cluster_list[i], cluster_list[j]))
-                pair_indices.append((i, j))
+        def _compute_best_word():
+            import torch
+            
+            # 1. Generate embeddings for all candidate words
+            embeddings = self.embedder.encode(cluster_list, show_progress_bar=False)
+            
+            # 2. Outlier rejection (if we have enough words to confidently reject)
+            if n >= 3:
+                # Calculate full pair-wise cosine similarity matrix
+                sim_matrix = cosine_similarity(embeddings)
+                
+                # Calculate the average similarity of each word to the rest of the group
+                avg_similarities = (np.sum(sim_matrix, axis=1) - 1) / (n - 1)
+                
+                # Drop bottom 20% of words (the outliers), but keep at least 2 words
+                keep_count = max(2, int(n * 0.8))
+                
+                # Get indices of the highly-relevant "core" words
+                core_indices = np.argsort(avg_similarities)[-keep_count:]
+                
+                # Calculate the centroid using ONLY the core words
+                core_embeddings = embeddings[core_indices]
+                centroid = np.mean(core_embeddings, axis=0)
+            else:
+                centroid = np.mean(embeddings, axis=0)
+                
+            # 3. Find the exact word from the list closest to this pure centroid
+            centroid_similarities = cosine_similarity([centroid], embeddings)[0]
+            best_idx = np.argmax(centroid_similarities)
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            return cluster_list[best_idx]
 
-        # One single batch prediction on GPU (disable progress bar to prevent terminal spam)
-        def _predict():
-            return self.cross_encoder.predict(
-                pairs, batch_size=256, show_progress_bar=False
-            )
-
-        scores = await asyncio.to_thread(_predict)
-
-        running_totals = [0.0] * n
-        for idx, (i, j) in enumerate(pair_indices):
-            score = float(scores[idx])
-            running_totals[i] += score
-            running_totals[j] += score
-
-        max_idx = np.argmax(running_totals)
-        return cluster_list[max_idx]
+        return await asyncio.to_thread(_compute_best_word)
 
     async def _extract_abstarct_keywords(self, text):
         def _extract():
