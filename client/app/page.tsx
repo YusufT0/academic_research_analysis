@@ -92,7 +92,7 @@ function YearlyTrendChart({ data }: { data: Record<string, number> }) {
           <span className="text-sm font-medium text-slate-600 w-12">{year}</span>
           <div className="flex-1 h-8 bg-slate-100 rounded-lg overflow-hidden relative">
             <div
-              className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-lg transition-all duration-700 flex items-center justify-end pr-2"
+              className="h-full bg-gradient-to-r from-indigo-500 to-violet-400 rounded-lg transition-all duration-700 flex items-center justify-end pr-2"
               style={{ width: `${Math.max((count / maxCount) * 100, 5)}%` }}
             >
               <span className="text-xs font-semibold text-white">{count}</span>
@@ -124,8 +124,8 @@ function KeywordCloud({ keywords }: { keywords: Array<{ _id: string; count: numb
   const maxCount = Math.max(...keywords.map(k => k.count), 1);
   const getSize = (count: number) => {
     const ratio = count / maxCount;
-    if (ratio > 0.7) return 'text-xl font-bold text-emerald-700';
-    if (ratio > 0.4) return 'text-lg font-semibold text-emerald-600';
+    if (ratio > 0.7) return 'text-xl font-bold text-indigo-700';
+    if (ratio > 0.4) return 'text-lg font-semibold text-indigo-600';
     if (ratio > 0.2) return 'text-base font-medium text-slate-700';
     return 'text-sm text-slate-500';
   };
@@ -135,7 +135,7 @@ function KeywordCloud({ keywords }: { keywords: Array<{ _id: string; count: numb
       {keywords.map((kw) => (
         <span
           key={kw._id}
-          className={`${getSize(kw.count)} hover:text-emerald-500 cursor-pointer transition-colors px-2 py-1 rounded hover:bg-emerald-50`}
+          className={`${getSize(kw.count)} hover:text-indigo-500 cursor-pointer transition-colors px-2 py-1 rounded hover:bg-indigo-50`}
           title={`${kw.count} makale`}
         >
           {kw._id}
@@ -197,12 +197,12 @@ function TopAuthors({ authors }: { authors: Array<{ _id: string; count: number }
           href={`/authors/${encodeURIComponent(author._id)}`}
           className="flex items-center gap-3 rounded-lg px-1 py-0.5 hover:bg-slate-50 transition-colors group"
         >
-          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${idx < 3 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${idx < 3 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
             {idx + 1}
           </span>
-          <span className="flex-1 text-sm font-medium text-slate-700 truncate group-hover:text-emerald-600 transition-colors">{author._id}</span>
+          <span className="flex-1 text-sm font-medium text-slate-700 truncate group-hover:text-indigo-600 transition-colors">{author._id}</span>
           <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden flex-shrink-0">
-            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${(author.count / maxCount) * 100}%` }} />
+            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(author.count / maxCount) * 100}%` }} />
           </div>
           <span className="text-sm font-semibold text-slate-900 w-8 text-right flex-shrink-0">{author.count}</span>
         </Link>
@@ -315,7 +315,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <TrendingUp className="h-5 w-5 text-emerald-600" />
+                  <TrendingUp className="h-5 w-5 text-indigo-600" />
                   <CardTitle>Yıllara Göre Yayın Trendi</CardTitle>
                 </div>
                 <CardDescription>Son 10 yılın makale dağılımı</CardDescription>
@@ -326,7 +326,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <PieChart className="h-5 w-5 text-emerald-600" />
+                  <PieChart className="h-5 w-5 text-indigo-600" />
                   <CardTitle>Kaynak Dağılımı</CardTitle>
                 </div>
                 <CardDescription>Platformlara göre makale dağılımı</CardDescription>
@@ -340,7 +340,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <BarChart3 className="h-5 w-5 text-emerald-600" />
+                  <BarChart3 className="h-5 w-5 text-indigo-600" />
                   <CardTitle>Popüler Anahtar Kelimeler (ACM)</CardTitle>
                 </div>
                 <CardDescription>En sık kullanılan anahtar kelimeler</CardDescription>
@@ -351,7 +351,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <Users className="h-5 w-5 text-emerald-600" />
+                  <Users className="h-5 w-5 text-indigo-600" />
                   <CardTitle>En Aktif Yazarlar</CardTitle>
                 </div>
                 <CardDescription>En çok makalesi olan yazarlar</CardDescription>

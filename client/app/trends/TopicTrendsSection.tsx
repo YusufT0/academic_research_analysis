@@ -194,7 +194,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                   id="trend-model-select"
                   value={modelVersion ?? ''}
                   onChange={(e) => handleModelVersionChange(e.target.value)}
-                  className="h-8 min-w-[210px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  className="h-8 min-w-[210px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   {modelOptions.map((v) => <option key={v} value={v}>{v}</option>)}
                 </select>
@@ -263,7 +263,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                   key={m}
                   onClick={() => handleModeChange(m)}
                   className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    mode === m ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    mode === m ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                   }`}
                 >
                   {m === 'all' ? 'Tümü' : m === 'journal' ? 'Dergi Bazlı' : 'Yayıncı Bazlı'}
@@ -289,7 +289,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                     onFocus={() => journalSuggestions.length > 0 && setShowJournalSuggestions(true)}
                     onBlur={() => setTimeout(() => setShowJournalSuggestions(false), 150)}
                     placeholder="Dergi adı girin..."
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                   />
                   {showJournalSuggestions && journalSuggestions.length > 0 && (
                     <ul className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto text-sm">
@@ -303,7 +303,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                             setSubmittedName(name);
                             fetchBoth(name);
                           }}
-                          className="px-3 py-2 cursor-pointer hover:bg-emerald-50 hover:text-emerald-700 truncate border-b border-slate-100 last:border-0"
+                          className="px-3 py-2 cursor-pointer hover:bg-indigo-50 hover:text-indigo-700 truncate border-b border-slate-100 last:border-0"
                         >
                           {name}
                         </li>
@@ -314,7 +314,7 @@ export function TopicTrendsSection({ collapsible = false }: { collapsible?: bool
                 <button
                   onClick={handleSearch}
                   disabled={!nameInput.trim() || loading || !modelVersion}
-                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   Ara
                 </button>

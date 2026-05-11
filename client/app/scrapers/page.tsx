@@ -434,8 +434,8 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-500 ${effectiveScraper.status === 'error' ? 'bg-red-500' :
-                effectiveScraper.status === 'completed' ? 'bg-emerald-500' :
-                  'bg-gradient-to-r from-emerald-500 to-teal-400'
+                effectiveScraper.status === 'completed' ? 'bg-indigo-500' :
+                  'bg-gradient-to-r from-indigo-500 to-violet-400'
                 }`}
               style={{ width: `${effectiveScraper.progress_percent}%` }}
             />
@@ -453,7 +453,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
             <p className="text-xs text-slate-500">Sayı</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
-            <p className="text-2xl font-bold text-emerald-600">{effectiveScraper.articles_scraped}</p>
+            <p className="text-2xl font-bold text-indigo-600">{effectiveScraper.articles_scraped}</p>
             <p className="text-xs text-slate-500">Yeni Makale</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
@@ -1257,7 +1257,7 @@ function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefre
               key={key}
               onClick={() => setMode(key)}
               className={`p-3 rounded-lg border text-left transition-colors ${mode === key
-                ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                ? 'border-indigo-500 bg-indigo-50 text-indigo-800'
                 : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
               }`}
             >

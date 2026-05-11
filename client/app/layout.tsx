@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import Sidebar from "@/components/layout/Sidebar";
+import DoodleBackground from "@/components/layout/DoodleBackground";
 import { ScraperProvider } from "@/components/providers/ScraperProvider";
 
 const geistSans = Geist({
@@ -29,10 +30,11 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
+        <DoodleBackground />
         <ScraperProvider>
-          <div className="flex min-h-screen">
+          <div className="flex min-h-screen relative z-10">
             <Sidebar />
-            <main className="ml-64 flex-1 p-8">
+            <main className="ml-20 flex-1 p-8">
               {children}
             </main>
           </div>

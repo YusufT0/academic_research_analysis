@@ -379,7 +379,7 @@ function SearchPageInner() {
                   variant="secondary"
                   isLoading={aiLoading}
                   onClick={handleAiAnalysis}
-                  className="w-full justify-center bg-violet-100 text-violet-800 hover:bg-violet-200 border-violet-200"
+                  className="w-full justify-center bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border-emerald-200"
                 >
                   <Brain className="h-5 w-5 mr-2" />
                   AI Analiz
