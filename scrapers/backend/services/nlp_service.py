@@ -336,9 +336,12 @@ class NLPService:
             def _extract_batch():
                 import torch
                 from tqdm import tqdm
+                from keyphrase_vectorizers import KeyphraseCountVectorizer
 
                 results = []
                 batch_size = 32
+                vectorizer = KeyphraseCountVectorizer()
+                
                 # Process in chunks to provide a progress bar
                 for i in tqdm(
                     range(0, len(abstracts), batch_size), desc="Extracting keywords"
@@ -346,10 +349,8 @@ class NLPService:
                     chunk = abstracts[i : i + batch_size]
                     chunk_res = self.kw_model.extract_keywords(
                         chunk,
-                        keyphrase_ngram_range=(1, 2),
-                        stop_words="english",
+                        vectorizer=vectorizer,
                         use_mmr=False,
-                        diversity=0.2,
                         top_n=3,
                     )
                     if i % 200 == 0 and torch.cuda.is_available():
@@ -2098,12 +2099,15 @@ class NLPService:
 
     async def _extract_abstarct_keywords(self, text):
         def _extract():
+            # Use KeyphraseCountVectorizer to extract grammatically correct noun phrases 
+            # instead of blindly crushing non-stop-words together into Frankenstein bigrams.
+            from keyphrase_vectorizers import KeyphraseCountVectorizer
+            vectorizer = KeyphraseCountVectorizer()
+            
             return self.kw_model.extract_keywords(
                 text,
-                keyphrase_ngram_range=(1, 2),
-                stop_words="english",
-                use_mmr=True,
-                diversity=0.2,
+                vectorizer=vectorizer,
+                use_mmr=False,
                 top_n=5,  # Extract top 5 candidates to evaluate
             )
 
