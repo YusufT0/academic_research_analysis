@@ -2282,7 +2282,7 @@ class NLPService:
             }
         ).to_list()
 
-        top_embeddings = self.articles[:top_k]
+        top_embeddings = articles[:top_k]
         article_ids = [ae.article_id for ae in top_embeddings]
         article_docs = await Article.find({"_id": {"$in": article_ids}}).to_list()
         article_map = {str(a.id): a for a in article_docs}

@@ -13,9 +13,6 @@ import type {
   SearchSuggestion,
   SearchFacets,
   NlpSearchResponse,
-  NlpBarChartData,
-  NlpPieChartData,
-  NlpScatterPoint,
   NlpStatus,
   JournalCitationMetrics,
 } from './types';
@@ -595,6 +592,11 @@ export async function getPublisherTopicTrends(name: string, model_version: strin
   return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_publisher_topic_trends?${params.toString()}`);
 }
 
+export async function getKeywordTopicTrends(keyword: string, model_version: string, top_n = 10): Promise<import('./types').TopicTrendsData> {
+  const params = new URLSearchParams({ keyword, model_version, top_n: String(top_n) });
+  return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_keyword_topic_trends?${params.toString()}`);
+}
+
 export async function listClusters(
   model_version: string,
   cluster_type: 'all' | 'journal' | 'publisher' = 'all',
@@ -702,16 +704,4 @@ export async function nlpSearch(
     auto_train: autoTrain.toString(),
   });
   return fetchApi<NlpSearchResponse>(`/nlp/search?${params.toString()}`);
-}
-
-export async function getNlpBarChartInput(): Promise<NlpBarChartData> {
-  return fetchApi<NlpBarChartData>('/nlp/get_bar_chart_input');
-}
-
-export async function getNlpPieChartInput(): Promise<NlpPieChartData> {
-  return fetchApi<NlpPieChartData>('/nlp/get_pie_chart_input');
-}
-
-export async function getNlpScatterChartInput(): Promise<NlpScatterPoint[]> {
-  return fetchApi<NlpScatterPoint[]>('/nlp/get_scatter_chart_input');
 }

@@ -21,6 +21,7 @@ const navigation = [
   { name: 'Dergiler', href: '/journals', icon: BookOpen },
   { name: 'Yazarlar', href: '/authors', icon: Users },
   { name: 'Makale Arama', href: '/search', icon: Search },
+  { name: 'Trend Analizi', href: '/trends', icon: TrendingUp },
   { name: 'Atıf Haritası', href: '/citation-map', icon: Network },
   { name: 'Scraper Kontrol', href: '/scrapers', icon: Database },
 ];

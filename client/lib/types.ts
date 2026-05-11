@@ -319,7 +319,8 @@ export interface TopicCluster {
 
 export interface TopicTrendsData {
   graph_data: Array<Record<string, string | number>>;
-  clusters: TopicCluster[];
+  clusters?: TopicCluster[];
+  keyword_distribution?: Record<string, number>;
 }
 
 export interface NlpStatus {
@@ -358,14 +359,6 @@ export interface NlpSearchResponse {
   cluster_label: string | null;
   total_in_cluster: number | null;
   articles: NlpSearchArticle[];
-}
-
-export type NlpBarChartData = Record<string, number>;
-export type NlpPieChartData = Record<string, number>;
-
-export interface NlpScatterPoint {
-  x: number;
-  y: number;
 }
 
 // ==================== Journal Citation Metrics ====================
