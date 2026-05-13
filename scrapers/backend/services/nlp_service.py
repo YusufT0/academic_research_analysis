@@ -26,6 +26,7 @@ from database.repositories import (
     AnalysisRunRepository,
 )
 from backend.core.config import settings
+from backend.schemas.article import ArticleNLPProjection
 from utils.logger import get_logger
 from collections import defaultdict
 
@@ -306,7 +307,7 @@ class NLPService:
             logger.info("Fetching articles from database...")
             articles = await Article.find(
                 {"abstract": {"$exists": True, "$ne": None}}
-            ).to_list()
+            ).project(ArticleNLPProjection).to_list()
 
             # Abstract'ı olan ve yeterli uzunlukta olanları filtrele
             valid_articles = []
@@ -335,9 +336,12 @@ class NLPService:
             def _extract_batch():
                 import torch
                 from tqdm import tqdm
+                from keyphrase_vectorizers import KeyphraseCountVectorizer
 
                 results = []
                 batch_size = 32
+                vectorizer = KeyphraseCountVectorizer()
+                
                 # Process in chunks to provide a progress bar
                 for i in tqdm(
                     range(0, len(abstracts), batch_size), desc="Extracting keywords"
@@ -345,10 +349,8 @@ class NLPService:
                     chunk = abstracts[i : i + batch_size]
                     chunk_res = self.kw_model.extract_keywords(
                         chunk,
-                        keyphrase_ngram_range=(1, 2),
-                        stop_words="english",
+                        vectorizer=vectorizer,
                         use_mmr=False,
-                        diversity=0.2,
                         top_n=3,
                     )
                     if i % 200 == 0 and torch.cuda.is_available():
@@ -389,10 +391,10 @@ class NLPService:
                     article_journals.append(article.journal_id)
                     article_objects.append(article)
 
-            # Merge keywords with cleaned text for richer embeddings
+            # Merge keywords with original text for richer embeddings
             texts_for_embedding = [
-                f"{cleaned} {' '.join(kws)}"
-                for cleaned, kws in zip(cleaned_texts, article_keywords)
+                f"{article.abstract} Keywords: {', '.join(kws)}"
+                for article, kws in zip(valid_articles, article_keywords)
             ]
 
             # Embedding
@@ -451,7 +453,9 @@ class NLPService:
                 )
                 embedding_docs.append(embedding_doc)
 
-            await self.embedding_repo.bulk_create(embedding_docs)
+            batch_size_db = 1000
+            for i in range(0, len(embedding_docs), batch_size_db):
+                await self.embedding_repo.bulk_create(embedding_docs[i:i + batch_size_db])
             logger.success(f"Saved {len(embedding_docs)} embeddings")
 
             # 4. HDBSCAN ile clustering
@@ -718,7 +722,7 @@ class NLPService:
         }
         if journal_ids:
             article_query["journal_id"] = {"$in": journal_ids}
-        new_articles = await Article.find(article_query).to_list()
+        new_articles = await Article.find(article_query).project(ArticleNLPProjection).to_list()
 
         # Filter by abstract length
         valid_new = [
@@ -812,10 +816,10 @@ class NLPService:
                 "affected_clusters": [],
             }
 
-        # 5. Generate full embeddings (keywords + cleaned text)
+        # 5. Generate full embeddings (keywords + raw text)
         texts_for_embedding = [
-            f"{cleaned} {' '.join(kws)}"
-            for cleaned, kws in zip(cleaned_texts, article_keywords)
+            f"{article.abstract} Keywords: {', '.join(kws)}"
+            for article, kws in zip(valid_new, article_keywords)
         ]
         logger.info(
             f"Generating embeddings for {len(texts_for_embedding)} new articles..."
@@ -884,7 +888,9 @@ class NLPService:
             )
             embedding_docs.append(embedding_doc)
 
-        await self.embedding_repo.bulk_create(embedding_docs)
+        batch_size_db = 1000
+        for i in range(0, len(embedding_docs), batch_size_db):
+            await self.embedding_repo.bulk_create(embedding_docs[i:i + batch_size_db])
         logger.success(f"Saved {len(embedding_docs)} new embeddings.")
 
         # 9. Update existing "all" clusters with newly assigned article IDs
@@ -1704,7 +1710,7 @@ class NLPService:
         series = [{"date": d, "count": c} for d, c in sorted(date_counts.items())]
         return {"topic_tag": topic_tag, "cluster_id": cluster_id, "series": series}
 
-    async def patch_cluster_labels(self, model_version: str) -> Dict[str, Any]:
+    async def patch_cluster_labels(self, model_version: str, force_recompute: bool = False) -> Dict[str, Any]:
         """
         Mevcut bir model versiyonundaki label=null veya top_keywords=[] olan
         cluster'ları yeniden hesaplayıp DB'ye yazar. Train gerektirmez.
@@ -1748,7 +1754,7 @@ class NLPService:
                 continue
 
             # Zaten label ve keywords varsa atla
-            if cluster.label and cluster.top_keywords:
+            if not force_recompute and cluster.label and cluster.top_keywords:
                 skipped += 1
                 continue
 
@@ -1764,7 +1770,6 @@ class NLPService:
             if not top_keywords:
                 skipped += 1
                 continue
-
             label_text = await self._take_cluster_and_find_word(top_keywords)
 
             cluster.top_keywords = top_keywords
@@ -2055,38 +2060,54 @@ class NLPService:
         if n == 1:
             return cluster_list[0]
 
-        pairs = []
-        pair_indices = []
-        for i in range(n):
-            for j in range(i + 1, n):
-                pairs.append((cluster_list[i], cluster_list[j]))
-                pair_indices.append((i, j))
+        def _compute_best_word():
+            import torch
+            
+            # 1. Generate embeddings for all candidate words
+            embeddings = self.embedder.encode(cluster_list, show_progress_bar=False)
+            
+            # 2. Outlier rejection (if we have enough words to confidently reject)
+            if n >= 3:
+                # Calculate full pair-wise cosine similarity matrix
+                sim_matrix = cosine_similarity(embeddings)
+                
+                # Calculate the average similarity of each word to the rest of the group
+                avg_similarities = (np.sum(sim_matrix, axis=1) - 1) / (n - 1)
+                
+                # Drop bottom 20% of words (the outliers), but keep at least 2 words
+                keep_count = max(2, int(n * 0.8))
+                
+                # Get indices of the highly-relevant "core" words
+                core_indices = np.argsort(avg_similarities)[-keep_count:]
+                
+                # Calculate the centroid using ONLY the core words
+                core_embeddings = embeddings[core_indices]
+                centroid = np.mean(core_embeddings, axis=0)
+            else:
+                centroid = np.mean(embeddings, axis=0)
+                
+            # 3. Find the exact word from the list closest to this pure centroid
+            centroid_similarities = cosine_similarity([centroid], embeddings)[0]
+            best_idx = np.argmax(centroid_similarities)
+            
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                
+            return cluster_list[best_idx]
 
-        # One single batch prediction on GPU (disable progress bar to prevent terminal spam)
-        def _predict():
-            return self.cross_encoder.predict(
-                pairs, batch_size=256, show_progress_bar=False
-            )
-
-        scores = await asyncio.to_thread(_predict)
-
-        running_totals = [0.0] * n
-        for idx, (i, j) in enumerate(pair_indices):
-            score = float(scores[idx])
-            running_totals[i] += score
-            running_totals[j] += score
-
-        max_idx = np.argmax(running_totals)
-        return cluster_list[max_idx]
+        return await asyncio.to_thread(_compute_best_word)
 
     async def _extract_abstarct_keywords(self, text):
         def _extract():
+            # Use KeyphraseCountVectorizer to extract grammatically correct noun phrases 
+            # instead of blindly crushing non-stop-words together into Frankenstein bigrams.
+            from keyphrase_vectorizers import KeyphraseCountVectorizer
+            vectorizer = KeyphraseCountVectorizer()
+            
             return self.kw_model.extract_keywords(
                 text,
-                keyphrase_ngram_range=(1, 2),
-                stop_words="english",
-                use_mmr=True,
-                diversity=0.2,
+                vectorizer=vectorizer,
+                use_mmr=False,
                 top_n=5,  # Extract top 5 candidates to evaluate
             )
 
