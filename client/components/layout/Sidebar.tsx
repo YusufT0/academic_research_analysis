@@ -42,8 +42,11 @@ export default function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <div className="fixed left-0.5 top-0.5 bottom-0.5 z-40 group w-[68px] hover:w-[calc(16rem+4px)] transition-[width] duration-150 ease-in-out">
-      <aside className="absolute inset-0.5 bg-[#0c1220] text-white rounded-2xl shadow-xl overflow-hidden">
+    <div
+      className="fixed left-0.5 top-0.5 bottom-0.5 z-40 group w-[68px] hover:w-[calc(16rem+4px)] transition-[width] duration-150 ease-in-out will-change-[width] [transform:translateZ(0)]"
+      style={{ WebkitBackfaceVisibility: 'hidden', backfaceVisibility: 'hidden' }}
+    >
+      <aside className="absolute inset-0.5 bg-[#0c1220] text-white rounded-2xl shadow-xl overflow-hidden [contain:layout] [transform:translateZ(0)]">
         <SidebarStars />
 
         {/* Logo */}
