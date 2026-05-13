@@ -4,14 +4,12 @@ import { Suspense } from 'react';
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Search, ExternalLink, FileText, User, Tag, Filter, X, BookOpen, Sparkles, Brain, AlertTriangle, ChevronDown, Unlock, Star, TrendingUp, Target, Network } from 'lucide-react';
+import { Search, ExternalLink, FileText, User, Tag, Filter, X, BookOpen, Sparkles, ChevronDown, Unlock, Star, TrendingUp, Target, Network } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { elasticSearch, getSearchSuggestions, searchArticles, nlpSearch, getNlpBarChartInput, getNlpPieChartInput, getNlpScatterChartInput, getNlpStatus, getArticle } from '@/lib/api';
-import type { ElasticSearchResult, ElasticSearchHit, SearchSuggestion, SearchResult, NlpSearchResponse, NlpBarChartData, NlpPieChartData, NlpScatterPoint, Article } from '@/lib/types';
-import AiAnalysisSection from './AiAnalysisSection';
-import { TopicTrendsSection } from '../trends/TopicTrendsSection';
+import { elasticSearch, getSearchSuggestions, searchArticles, getArticle } from '@/lib/api';
+import type { ElasticSearchResult, ElasticSearchHit, SearchSuggestion, SearchResult, Article } from '@/lib/types';
 
 // ==================== Helpers ====================
 
@@ -99,17 +97,6 @@ function SearchPageInner() {
   const [page, setPage] = useState(1);
   const [useElastic, setUseElastic] = useState(true);
   const [showFilters, setShowFilters] = useState(false);
-
-  // AI Analysis state
-  const [aiResult, setAiResult] = useState<NlpSearchResponse | null>(null);
-  const [aiBarData, setAiBarData] = useState<NlpBarChartData | null>(null);
-  const [aiPieData, setAiPieData] = useState<NlpPieChartData | null>(null);
-  const [aiScatterData, setAiScatterData] = useState<NlpScatterPoint[] | null>(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiBarLoading, setAiBarLoading] = useState(false);
-  const [aiPieLoading, setAiPieLoading] = useState(false);
-  const [aiScatterLoading, setAiScatterLoading] = useState(false);
-  const [aiError, setAiError] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const suggestionsRef = useRef<HTMLDivElement>(null);
@@ -199,76 +186,6 @@ function SearchPageInner() {
     }
   }, [query, filters, useElastic, router]);
 
-  const [aiTraining, setAiTraining] = useState(false);
-
-  const handleAiAnalysis = useCallback(async () => {
-    const q = query.trim();
-    if (!q) return;
-
-    setAiLoading(true);
-    setAiTraining(false);
-    setAiError(null);
-    setAiResult(null);
-    setAiBarData(null);
-    setAiPieData(null);
-    setAiScatterData(null);
-    setSearched(true);
-    setShowSuggestions(false);
-
-    try {
-      let needsTraining = false;
-      try {
-        const status = await getNlpStatus();
-        needsTraining = !status.has_trained_model && !status.pkl_model_available && !status.cache_loaded;
-      } catch {
-        // Status endpoint unreachable - proceed anyway
-      }
-
-      if (needsTraining) {
-        setAiTraining(true);
-      }
-
-      const searchRes = await nlpSearch(q, 20, true);
-      setAiResult(searchRes);
-      setAiLoading(false);
-      setAiTraining(false);
-
-      setAiBarLoading(true);
-      setAiPieLoading(true);
-      setAiScatterLoading(true);
-
-      const [barRes, pieRes, scatterRes] = await Promise.allSettled([
-        getNlpBarChartInput(),
-        getNlpPieChartInput(),
-        getNlpScatterChartInput(),
-      ]);
-
-      if (barRes.status === 'fulfilled') setAiBarData(barRes.value);
-      setAiBarLoading(false);
-
-      if (pieRes.status === 'fulfilled') setAiPieData(pieRes.value);
-      setAiPieLoading(false);
-
-      if (scatterRes.status === 'fulfilled') setAiScatterData(scatterRes.value);
-      setAiScatterLoading(false);
-    } catch (err: any) {
-      console.error('AI analysis error:', err);
-      const msg = err?.message || '';
-      if (msg.includes('Yetersiz makale') || msg.includes('minimum')) {
-        setAiError('Veritabanında yeterli sayıda abstract\'lı makale bulunamadı. Lütfen önce scraper çalıştırarak daha fazla makale toplayın.');
-      } else if (msg.includes('API Error: 4')) {
-        setAiError(`AI analizi başarısız: ${msg}. Sorgunuzu kontrol edin.`);
-      } else {
-        setAiError(msg || 'AI analizi sırasında bir hata oluştu. Backend loglarını kontrol edin.');
-      }
-      setAiLoading(false);
-      setAiTraining(false);
-      setAiBarLoading(false);
-      setAiPieLoading(false);
-      setAiScatterLoading(false);
-    }
-  }, [query]);
-
   const onSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     handleSearch();
@@ -327,9 +244,6 @@ function SearchPageInner() {
         </button>
       </div>
 
-      {/* Topic Trends Section */}
-      <TopicTrendsSection collapsible />
-
       {/* Search Form */}
       <Card>
         <CardContent className="pt-6">
@@ -365,7 +279,7 @@ function SearchPageInner() {
                   </div>
                 )}
               </div>
-              <div className={`grid gap-2 min-w-[280px] ${showFilterButton ? 'grid-cols-3' : 'grid-cols-2'}`}>
+              <div className={`grid gap-2 min-w-[280px] ${showFilterButton ? 'grid-cols-2' : 'grid-cols-1'}`}>
                 {showFilterButton && (
                   <Button
                     type="button"
@@ -384,17 +298,6 @@ function SearchPageInner() {
                 <Button type="submit" size="lg" isLoading={loading} className="w-full justify-center">
                   <Search className="h-5 w-5 mr-2" />
                   Ara
-                </Button>
-                <Button
-                  type="button"
-                  size="lg"
-                  variant="secondary"
-                  isLoading={aiLoading}
-                  onClick={handleAiAnalysis}
-                  className="w-full justify-center bg-emerald-100 text-emerald-800 hover:bg-emerald-200 border-emerald-200"
-                >
-                  <Brain className="h-5 w-5 mr-2" />
-                  AI Analiz
                 </Button>
               </div>
             </div>
@@ -426,52 +329,6 @@ function SearchPageInner() {
           </form>
         </CardContent>
       </Card>
-
-      {/* AI Analysis Results — above the search list */}
-      {searched && aiError && (
-        <Card className="border-amber-200 bg-amber-50">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-3">
-              <AlertTriangle className="h-5 w-5 text-amber-600 flex-shrink-0" />
-              <p className="text-sm text-amber-800">{aiError}</p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {searched && aiLoading && (
-        <Card>
-          <CardContent className="py-12 text-center">
-            <Brain className="h-10 w-10 text-violet-400 mx-auto mb-3 animate-pulse" />
-            {aiTraining ? (
-              <>
-                <p className="text-slate-600 font-medium">NLP modeli eğitiliyor...</p>
-                <p className="text-sm text-slate-400 mt-1">
-                  İlk kullanımda model eğitimi gerekiyor. Bu işlem makale sayısına bağlı olarak 1-5 dakika sürebilir.
-                </p>
-                <p className="text-xs text-slate-400 mt-2">Lütfen sayfayı kapatmayın</p>
-              </>
-            ) : (
-              <>
-                <p className="text-slate-600 font-medium">AI analizi yapılıyor...</p>
-                <p className="text-sm text-slate-400 mt-1">NLP modeli sorgunuzu işliyor</p>
-              </>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {aiResult && (
-        <AiAnalysisSection
-          searchResult={aiResult}
-          barData={aiBarData}
-          pieData={aiPieData}
-          scatterData={aiScatterData}
-          barLoading={aiBarLoading}
-          pieLoading={aiPieLoading}
-          scatterLoading={aiScatterLoading}
-        />
-      )}
 
       {/* Results Area */}
       {searched && (

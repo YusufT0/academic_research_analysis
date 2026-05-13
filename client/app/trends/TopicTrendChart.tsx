@@ -9,10 +9,10 @@ import {
   YAxis,
   Tooltip,
 } from 'recharts';
-import { CheckCircle2, ChevronDown } from 'lucide-react';
 import { getClusterTrendSeries, getClusterArticles } from '@/lib/api';
 import type { TopicTrendsData, TopicCluster } from '@/lib/types';
 import Link from 'next/link';
+import { TopicDistributionPie } from './TopicDistributionPie';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -78,6 +78,8 @@ export interface TopicTrendChartProps {
   groupId?: string;
   /** Whether the chart is currently visible — guards wheel-zoom from firing when hidden. */
   visible?: boolean;
+  keywordDistribution?: Record<string, number>;
+  hideFullClusterList?: boolean;
 }
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -92,14 +94,17 @@ export function TopicTrendChart({
   clusterType,
   groupId,
   visible = true,
+  keywordDistribution,
+  hideFullClusterList = false,
 }: TopicTrendChartProps) {
+  const clusters = data.clusters ?? [];
   // ── On-demand series cache ──
   const [seriesCache, setSeriesCache] = useState<Map<string, Record<string, number>>>(new Map());
   const [fetchingTopics, setFetchingTopics] = useState<Set<string>>(new Set());
 
   // ── Visibility ──
   const [visibleTopics, setVisibleTopics] = useState<Set<string>>(
-    () => new Set(data.clusters.map((c) => c.topic_tag)),
+    () => new Set((data.clusters ?? []).map((c) => c.topic_tag)),
   );
 
   // ── Full-list UI ──
@@ -130,7 +135,7 @@ export function TopicTrendChart({
 
   // ── Reset all internal state when data changes ──
   useEffect(() => {
-    setVisibleTopics(new Set(data.clusters.map((c) => c.topic_tag)));
+    setVisibleTopics(new Set((data.clusters ?? []).map((c) => c.topic_tag)));
     setSeriesCache(new Map());
     setFetchingTopics(new Set());
     setZoomStart(0);
@@ -149,8 +154,8 @@ export function TopicTrendChart({
   // ── Derived ──
 
   const topNSet = useMemo(
-    () => new Set(data.clusters.map((c) => c.topic_tag)),
-    [data],
+    () => new Set(clusters.map((c) => c.topic_tag)),
+    [clusters],
   );
 
   const toggleVisible = useCallback(
@@ -186,8 +191,8 @@ export function TopicTrendChart({
 
   const topicColorMap = useMemo(() => {
     const map = new Map<string, string>();
-    data.clusters.forEach((c, idx) => map.set(c.topic_tag, COLOR_PALETTE[idx % COLOR_PALETTE.length]));
-    let extra = data.clusters.length;
+    clusters.forEach((c, idx) => map.set(c.topic_tag, COLOR_PALETTE[idx % COLOR_PALETTE.length]));
+    let extra = clusters.length;
     allClusters.forEach((c) => {
       if (!map.has(c.topic_tag)) {
         map.set(c.topic_tag, COLOR_PALETTE[extra % COLOR_PALETTE.length]);
@@ -195,7 +200,9 @@ export function TopicTrendChart({
       }
     });
     return map;
-  }, [data, allClusters]);
+  }, [clusters, allClusters]);
+
+  const pieSource = keywordDistribution ?? data.keyword_distribution;
 
   const mergedGraphData = useMemo(() => {
     if (!data?.graph_data) return [];
@@ -218,7 +225,7 @@ export function TopicTrendChart({
   const chartLines = useMemo(() => {
     const seen = new Set<string>();
     const lines: TopicCluster[] = [];
-    for (const c of data.clusters) {
+    for (const c of clusters) {
       if (visibleTopics.has(c.topic_tag) && !seen.has(c.topic_tag)) {
         seen.add(c.topic_tag);
         lines.push(c);
@@ -231,7 +238,7 @@ export function TopicTrendChart({
       }
     }
     return lines;
-  }, [data, allClusters, visibleTopics]);
+  }, [clusters, allClusters, visibleTopics]);
 
   const visibleChartData = useMemo(() => {
     if (mergedGraphData.length === 0) return mergedGraphData;
@@ -369,9 +376,9 @@ export function TopicTrendChart({
         <p className="text-sm text-slate-500">
           Grafik: en yüksek{' '}
           <span className="font-semibold text-slate-700">{topN}</span> konu
-          {data.clusters.length < topN && data.clusters.length > 0 && (
+          {clusters.length < topN && clusters.length > 0 && (
             <span className="ml-1 text-slate-400">
-              ({data.clusters.length} konu mevcut)
+              ({clusters.length} konu mevcut)
             </span>
           )}
           {isZoomed && (
@@ -457,6 +464,15 @@ export function TopicTrendChart({
         )}
       </div>
 
+      {pieSource && Object.keys(pieSource).length > 0 && (
+        <div className="border border-slate-200 rounded-xl p-4 mt-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
+            Konu dağılımı (toplam makale sayısı)
+          </p>
+          <TopicDistributionPie data={pieSource} colorMap={topicColorMap} />
+        </div>
+      )}
+
       {/* Topic badge list */}
       <div>
         <div className="flex items-center justify-between mb-3">
@@ -465,21 +481,21 @@ export function TopicTrendChart({
           </p>
           <button
             onClick={() => {
-              const allVisible = data.clusters.every((c) => visibleTopics.has(c.topic_tag));
+              const allVisible = clusters.every((c) => visibleTopics.has(c.topic_tag));
               if (allVisible) {
                 setVisibleTopics(new Set());
               } else {
-                setVisibleTopics(new Set(data.clusters.map((c) => c.topic_tag)));
+                setVisibleTopics(new Set(clusters.map((c) => c.topic_tag)));
               }
             }}
             className="cursor-pointer text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors flex-shrink-0"
           >
-            {data.clusters.every((c) => visibleTopics.has(c.topic_tag)) ? 'Hepsini Gizle' : 'Hepsini Göster'}
+            {clusters.every((c) => visibleTopics.has(c.topic_tag)) ? 'Hepsini Gizle' : 'Hepsini Göster'}
           </button>
         </div>
         <div className="flex flex-wrap gap-2">
-          {data.clusters.map((cluster, idx) => {
-            const color = COLOR_PALETTE[idx % COLOR_PALETTE.length];
+          {clusters.map((cluster, idx) => {
+            const color = topicColorMap.get(cluster.topic_tag) ?? COLOR_PALETTE[idx % COLOR_PALETTE.length];
             const isVisible = visibleTopics.has(cluster.topic_tag);
             return (
               <button
@@ -507,7 +523,7 @@ export function TopicTrendChart({
         </div>
       </div>
 
-      {/* Full cluster list */}
+      {!hideFullClusterList && (
       <div className="border border-slate-200 rounded-xl overflow-hidden mt-4">
         <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
           <span className="text-sm font-semibold text-slate-700">
@@ -707,6 +723,7 @@ export function TopicTrendChart({
           </div>
         )}
       </div>
+      )}
     </>
   );
 }
