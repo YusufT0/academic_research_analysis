@@ -1,7 +1,7 @@
 'use client';
 
-import { useMemo } from 'react';
-import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
+import { useMemo, memo } from 'react';
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, type PieLabelRenderProps } from 'recharts';
 
 /** Same order as TopicTrendChart.COLOR_PALETTE — fallback when colorMap misses a key */
 const TREND_COLOR_FALLBACK = [
@@ -21,11 +21,7 @@ const RADIAN = Math.PI / 180;
 
 function PieLabel({
   cx, cy, midAngle, outerRadius, name, percent,
-}: {
-  cx?: number; cy?: number; midAngle?: number; outerRadius?: number;
-  name?: string; percent?: number;
-  [key: string]: unknown;
-}) {
+}: PieLabelRenderProps) {
   if (cx == null || cy == null || midAngle == null || outerRadius == null || name == null || percent == null) return null;
   const radius = outerRadius + 22;
   const x = cx + radius * Math.cos(-midAngle * RADIAN);
@@ -57,7 +53,7 @@ export interface TopicDistributionPieProps {
   maxSlices?: number;
 }
 
-export function TopicDistributionPie({ data, colorMap, maxSlices = 10 }: TopicDistributionPieProps) {
+function TopicDistributionPieInner({ data, colorMap, maxSlices = 10 }: TopicDistributionPieProps) {
   const chartData = useMemo(() => {
     return Object.entries(data)
       .map(([name, value]) => ({ name, value }))
@@ -77,7 +73,7 @@ export function TopicDistributionPie({ data, colorMap, maxSlices = 10 }: TopicDi
   }
 
   return (
-    <div style={{ overflow: 'visible' }}>
+    <div className="min-h-[300px]" style={{ overflow: 'visible' }}>
       <ResponsiveContainer width="100%" height={300}>
         <PieChart margin={{ top: 30, right: 50, bottom: 30, left: 50 }}>
           <Pie
@@ -88,11 +84,12 @@ export function TopicDistributionPie({ data, colorMap, maxSlices = 10 }: TopicDi
             outerRadius={78}
             paddingAngle={2}
             dataKey="value"
+            isAnimationActive={false}
             labelLine={{ strokeWidth: 1 }}
-            label={(props) => <PieLabel {...props} />}
+            label={PieLabel}
           >
-            {chartData.map((_, i) => (
-              <Cell key={i} fill={fills[i]} />
+            {chartData.map((row, i) => (
+              <Cell key={row.name} fill={fills[i]} />
             ))}
           </Pie>
           <Tooltip
@@ -104,3 +101,32 @@ export function TopicDistributionPie({ data, colorMap, maxSlices = 10 }: TopicDi
     </div>
   );
 }
+
+function sameRecord(a: Record<string, number>, b: Record<string, number>) {
+  const ak = Object.keys(a);
+  const bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) {
+    if (a[k] !== b[k]) return false;
+  }
+  return true;
+}
+
+function sameColorMap(a?: Map<string, string>, b?: Map<string, string>) {
+  if (a === b) return true;
+  if (!a || !b || a.size !== b.size) return false;
+  for (const [k, v] of a) {
+    if (b.get(k) !== v) return false;
+  }
+  return true;
+}
+
+/** Zoom vb. üst state değişimlerinde yeniden çizilmemesi için sarmalanmış pie */
+export const TopicDistributionPie = memo(
+  TopicDistributionPieInner,
+  (prev, next) =>
+    prev.maxSlices === next.maxSlices &&
+    sameRecord(prev.data, next.data) &&
+    sameColorMap(prev.colorMap, next.colorMap),
+);
+TopicDistributionPie.displayName = 'TopicDistributionPie';
