@@ -256,7 +256,7 @@ function SearchPageInner() {
                   ref={inputRef}
                   type="text"
                   placeholder="Başlık, özet, anahtar kelime veya yazar adında ara..."
-                  className="w-full pl-12 pr-4 py-3 rounded-lg border border-slate-300 text-base focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                  className="w-full pl-12 pr-4 py-3 rounded-lg border border-slate-300 text-base focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); setShowSuggestions(true); }}
                   onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
@@ -269,7 +269,7 @@ function SearchPageInner() {
                       <button
                         key={i}
                         type="button"
-                        className="w-full px-4 py-2.5 text-left text-sm hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2 cursor-pointer transition-colors"
+                        className="w-full px-4 py-2.5 text-left text-sm hover:bg-indigo-50 hover:text-indigo-800 flex items-center gap-2 cursor-pointer transition-colors"
                         onClick={() => selectSuggestion(s)}
                       >
                         <Search className="h-3.5 w-3.5 text-slate-400" />
