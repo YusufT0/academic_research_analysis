@@ -133,11 +133,11 @@ function KeywordCloud({ keywords }: { keywords: Array<{ _id: string; count: numb
   };
 
   return (
-    <div className="flex flex-wrap gap-3 justify-center p-4">
+    <div className="flex flex-wrap gap-3 justify-center p-4 cursor-text select-text">
       {keywords.map((kw) => (
         <span
           key={kw._id}
-          className={`${getSize(kw.count)} hover:text-indigo-500 cursor-pointer transition-colors px-2 py-1 rounded hover:bg-indigo-50`}
+          className={`${getSize(kw.count)} px-2 py-1 rounded select-text cursor-text`}
           title={`${kw.count} makale`}
         >
           {kw._id}
