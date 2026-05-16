@@ -69,7 +69,7 @@ function AuthorsContent() {
                 placeholder="Yazar adı ara..."
                 value={searchInput}
                 onChange={(e) => setSearchInput(e.target.value)}
-                className="pl-9 bg-white"
+                className="pl-9 bg-white focus:border-indigo-500 focus:ring-indigo-500"
               />
             </div>
             
@@ -126,7 +126,7 @@ function AuthorsContent() {
                     </Link>
                     <div className="flex items-center gap-3 mt-2">
                       <div className="flex items-center gap-1.5 text-xs text-slate-600 bg-slate-50 px-2 py-1 rounded-md border border-slate-100">
-                        <FileText className="h-3.5 w-3.5 text-emerald-500" />
+                        <FileText className="h-3.5 w-3.5 text-indigo-500" />
                         <span className="font-semibold">{author.article_count}</span> Makale
                       </div>
                     </div>

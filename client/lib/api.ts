@@ -494,12 +494,14 @@ export async function elasticSearch(filters: ElasticSearchFilters): Promise<Elas
   const params = new URLSearchParams();
   params.set('q', filters.query);
   if (filters.source_website) params.set('source_website', filters.source_website);
-  if (filters.year) params.set('year', filters.year.toString());
+  // Backend search router expects publication_year (not "year")
+  if (filters.year != null) params.set('publication_year', filters.year.toString());
   if (filters.journal_name) params.set('journal_name', filters.journal_name);
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
 
-  return fetchApi<ElasticSearchResult>(`/search?${params.toString()}`);
+  // FastAPI route is @router.get("/") under prefix "/search" → path is /search/ (trailing slash)
+  return fetchApi<ElasticSearchResult>(`/search/?${params.toString()}`);
 }
 
 export async function getSearchSuggestions(prefix: string, limit = 5): Promise<SearchSuggestion[]> {

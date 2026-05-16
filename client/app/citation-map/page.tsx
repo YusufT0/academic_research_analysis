@@ -25,7 +25,7 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
   ssr: false,
   loading: () => (
     <div className="flex items-center justify-center h-full">
-      <div className="animate-spin h-8 w-8 border-2 border-emerald-500 rounded-full border-t-transparent" />
+      <div className="animate-spin h-8 w-8 border-2 border-indigo-500 rounded-full border-t-transparent" />
     </div>
   ),
 });
@@ -34,11 +34,11 @@ const ForceGraph2D = dynamic(() => import('react-force-graph-2d'), {
 function getCitationColor(node: CitationGraphNode, maxCount: number): string {
   if (node.is_root) return 'rgb(245, 158, 11)';
   const count = node.cited_by_count ?? 0;
-  if (maxCount === 0) return 'rgb(209, 250, 229)';
+  if (maxCount === 0) return 'rgb(224, 231, 255)';
   const t = Math.min(Math.log1p(count) / Math.log1p(maxCount), 1);
-  const r = Math.round(209 - t * (209 - 6));
-  const g = Math.round(250 - t * (250 - 95));
-  const b = Math.round(229 - t * (229 - 70));
+  const r = Math.round(224 + t * (79 - 224));
+  const g = Math.round(231 + t * (70 - 231));
+  const b = Math.round(255 + t * (229 - 255));
   return `rgb(${r}, ${g}, ${b})`;
 }
 
@@ -96,11 +96,11 @@ function ArticleSelector({ onSelect, defaultQuery = '' }: { onSelect: (article: 
           onChange={e => { setQuery(e.target.value); search(e.target.value); }}
           onFocus={() => results.length > 0 && setOpen(true)}
           placeholder="Makale başlığıyla ara..."
-          className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+          className="w-full pl-9 pr-4 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white"
         />
         {loading && (
           <div className="absolute right-3 top-1/2 -translate-y-1/2">
-            <div className="animate-spin h-4 w-4 border-2 border-emerald-500 rounded-full border-t-transparent" />
+            <div className="animate-spin h-4 w-4 border-2 border-indigo-500 rounded-full border-t-transparent" />
           </div>
         )}
       </div>
@@ -136,11 +136,11 @@ function GraphControls({
   return (
     <div className="flex items-center gap-4 flex-shrink-0">
       <div className="flex items-center gap-2">
-        <label className="text-xs font-medium text-slate-500 whitespace-nowrap">Mod:</label>
+        <label className="text-xs font-medium text-slate-700 whitespace-nowrap">Mod:</label>
         <select
           value={heatmapMode}
           onChange={e => onHeatmapModeChange(e.target.value as HeatmapMode)}
-          className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white disabled:opacity-50 min-w-32"
+          className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white disabled:opacity-50 min-w-32"
         >
           <option value="classic">Klasik Ağ</option>
           <option value="citation">Atıf Yoğunluğu</option>
@@ -148,12 +148,12 @@ function GraphControls({
         </select>
       </div>
       <div className="flex items-center gap-2">
-        <label className="text-xs font-medium text-slate-500 whitespace-nowrap">Derinlik:</label>
+        <label className="text-xs font-medium text-slate-700 whitespace-nowrap">Derinlik:</label>
         <select
           value={depth}
           onChange={e => onDepthChange(Number(e.target.value))}
           disabled={disabled}
-          className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-emerald-500 bg-white disabled:opacity-50"
+          className="text-sm border border-slate-200 rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-white disabled:opacity-50"
         >
           {[1, 2, 3, 4, 5].map(d => <option key={d} value={d}>{d}</option>)}
         </select>
@@ -176,7 +176,7 @@ function ColorLegend({ mode, stats }: { mode: HeatmapMode, stats: { maxCitation:
           <span className="inline-block w-3 h-3 rounded-full bg-amber-400 border border-amber-500" /> Seçili makale
         </span>
         <span className="flex items-center gap-1">
-          <span className="inline-block w-3 h-3 rounded-full bg-emerald-500" /> Ağdaki makaleler
+          <span className="inline-block w-3 h-3 rounded-full bg-indigo-500" /> Ağdaki makaleler
         </span>
       </div>
     );
@@ -198,9 +198,9 @@ function ColorLegend({ mode, stats }: { mode: HeatmapMode, stats: { maxCitation:
           const t = i / 11;
           let r, g, b;
           if (isCitation) {
-            r = Math.round(209 - t * (209 - 6));
-            g = Math.round(250 - t * (250 - 95));
-            b = Math.round(229 - t * (229 - 70));
+            r = Math.round(224 + t * (79 - 224));
+            g = Math.round(231 + t * (70 - 231));
+            b = Math.round(255 + t * (229 - 255));
           } else {
             r = Math.round(59 + t * (239 - 59));
             g = Math.round(130 + t * (68 - 130));
@@ -248,14 +248,14 @@ function RelationList({
               onMouseEnter={() => onHover(n.id)}
               onMouseLeave={() => onHover(null)}
               onClick={() => onClick(n.id)}
-              className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors hover:bg-emerald-50"
+              className="group flex items-center gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors hover:bg-indigo-50"
             >
               <span
                 className="w-2 h-2 rounded-full flex-shrink-0 transition-transform group-hover:scale-150"
-                style={{ backgroundColor: n.is_root ? '#f59e0b' : '#34d399' }}
+                style={{ backgroundColor: n.is_root ? '#f59e0b' : '#818cf8' }}
               />
               <span className="flex-1 min-w-0">
-                <span className="text-xs text-slate-700 line-clamp-1 group-hover:text-emerald-700 transition-colors">
+                <span className="text-xs text-slate-700 line-clamp-1 group-hover:text-indigo-700 transition-colors">
                   {n.title ?? n.id}
                 </span>
                 <span className="text-[10px] text-slate-400 ml-1">
@@ -338,7 +338,7 @@ function NodeDetailPanel({
               </>
             )}
             <span className="text-slate-400">Toplam atıf</span>
-            <span className="font-medium text-emerald-700">{node.cited_by_count ?? 0}</span>
+            <span className="font-medium text-indigo-700">{node.cited_by_count ?? 0}</span>
             <span className="text-slate-400">Graf derinliği</span>
             <span className="font-medium">{node.depth}</span>
             {node.id && (
@@ -354,7 +354,7 @@ function NodeDetailPanel({
                   href={`https://doi.org/${doiClean}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-1 text-emerald-600 hover:text-emerald-700 truncate"
+                  className="flex items-center gap-1 text-indigo-600 hover:text-indigo-700 truncate"
                 >
                   <ExternalLink className="h-3 w-3 flex-shrink-0" />
                   <span className="truncate">{doiClean}</span>
@@ -367,7 +367,7 @@ function NodeDetailPanel({
             {node.is_internal && node.internal_article_id && (
               <button
                 onClick={() => onNavigate(node.internal_article_id!)}
-                className="text-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-700 font-medium py-1.5 px-3 rounded-lg transition-colors"
+                className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-medium py-1.5 px-3 rounded-lg transition-colors"
               >
                 Bu makalenin grafiğini gör →
               </button>
@@ -459,7 +459,7 @@ ro.observe(el);
   const fgData = useMemo(() => graphData
     ? {
         nodes: graphData.nodes.map(n => {
-          let color = '#10b981';
+          let color = '#6366f1';
           let intensity = 0;
           
           if (heatmapMode === 'classic') {
@@ -624,7 +624,7 @@ ro.observe(el);
       <div>
         <h1 className="text-3xl font-bold text-slate-900">Atıf Haritası</h1>
         <p className="mt-1 text-slate-500">
-          Makale atıf ağını keşfedin — turuncu düğüm seçili makale, yeşil ton atıf yoğunluğu
+          Makale atıf ağını keşfedin — turuncu düğüm seçili makale, mor tonlar atıf yoğunluğu
         </p>
       </div>
 
@@ -655,7 +655,7 @@ ro.observe(el);
         <div ref={containerRef} className="h-[580px] bg-slate-50 overflow-hidden">
           {loading ? (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-400">
-              <div className="animate-spin h-10 w-10 border-2 border-emerald-500 rounded-full border-t-transparent" />
+              <div className="animate-spin h-10 w-10 border-2 border-indigo-500 rounded-full border-t-transparent" />
               <p className="text-sm">Atıf grafiği hesaplanıyor…</p>
             </div>
           ) : error ? (
@@ -664,7 +664,7 @@ ro.observe(el);
               <p className="text-sm text-red-500">{error}</p>
               <p className="text-xs text-slate-400">
                 Bu makale için OpenAlex verisi yok. Önce{' '}
-                <a href="/scrapers" className="text-emerald-600 underline">OpenAlex taramasını</a>{' '}
+                <a href="/scrapers" className="text-indigo-600 underline">OpenAlex taramasını</a>{' '}
                 çalıştırın.
               </p>
             </div>

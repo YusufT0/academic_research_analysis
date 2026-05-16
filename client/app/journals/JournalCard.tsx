@@ -119,7 +119,11 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
       <CardContent className="pt-6">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-slate-900 line-clamp-2">{journal.name}</h3>
+            <Link href={`/journals?journal_id=${journal.id}`} className="group/title block min-w-0">
+              <h3 className="font-semibold text-slate-900 line-clamp-2 transition-colors group-hover/title:text-indigo-700 group-hover/title:underline decoration-indigo-300 underline-offset-2">
+                {journal.name}
+              </h3>
+            </Link>
             <div className="flex items-center gap-2 mt-2">
               <Badge
                 variant={
@@ -145,7 +149,7 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
                   : 'ScienceDirect'}
               </Badge>
               {journal.open_access && (
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200" title="Açık Erişim Dergi">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200" title="Açık Erişim Dergi">
                   <Unlock className="h-3.5 w-3.5" />
                   <span>Açık Erişim</span>
                 </div>
@@ -157,7 +161,7 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
               href={getFullUrl(journal.url, journal.source_website)}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-slate-400 hover:text-emerald-600"
+              className="text-slate-400 hover:text-indigo-600 transition-colors"
             >
               <ExternalLink className="h-4 w-4" />
             </a>
@@ -324,7 +328,7 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
                                         </p>
                                       )}
                                       {article.citation_count > 0 && (
-                                        <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                        <span className="text-[10px] font-medium text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded flex items-center gap-1">
                                           <Star className="h-3 w-3" /> {article.citation_count}
                                         </span>
                                       )}

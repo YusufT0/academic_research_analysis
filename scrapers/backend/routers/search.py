@@ -62,7 +62,8 @@ async def sync_to_elasticsearch():
         return {"status": "error", "message": str(e)}
 
 
-@router.get("/", summary="Full-text makale arama")
+@router.get("", summary="Full-text makale arama") #todo: yeni eklenen, gerek var mı kontrol et
+@router.get("/", summary="Full-text makale arama") #eski olan
 async def search_articles(
     q: str = Query(..., min_length=2, description="Arama sorgusu"),
     source_website: Optional[str] = Query(None, description="Kaynak site filtresi"),

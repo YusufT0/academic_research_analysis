@@ -235,7 +235,7 @@ function SearchPageInner() {
         <button
           onClick={() => setUseElastic(!useElastic)}
           className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors cursor-pointer ${useElastic
-            ? 'bg-amber-100 text-amber-800 hover:bg-amber-200'
+            ? 'bg-indigo-100 text-indigo-800 hover:bg-indigo-200'
             : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
             }`}
         >
@@ -256,7 +256,7 @@ function SearchPageInner() {
                   ref={inputRef}
                   type="text"
                   placeholder="Başlık, özet, anahtar kelime veya yazar adında ara..."
-                  className="w-full pl-12 pr-4 py-3 rounded-lg border border-slate-300 text-base focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                  className="w-full pl-12 pr-4 py-3 rounded-lg border border-slate-300 text-base focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
                   value={query}
                   onChange={(e) => { setQuery(e.target.value); setShowSuggestions(true); }}
                   onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
@@ -269,7 +269,7 @@ function SearchPageInner() {
                       <button
                         key={i}
                         type="button"
-                        className="w-full px-4 py-2.5 text-left text-sm hover:bg-emerald-50 hover:text-emerald-800 flex items-center gap-2 cursor-pointer transition-colors"
+                        className="w-full px-4 py-2.5 text-left text-sm hover:bg-indigo-50 hover:text-indigo-800 flex items-center gap-2 cursor-pointer transition-colors"
                         onClick={() => selectSuggestion(s)}
                       >
                         <Search className="h-3.5 w-3.5 text-slate-400" />
@@ -289,7 +289,7 @@ function SearchPageInner() {
                   >
                     <Filter className="h-5 w-5" />
                     {activeFilterCount > 0 && (
-                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-emerald-500 text-white text-xs rounded-full flex items-center justify-center">
+                      <span className="absolute -top-1 -right-1 w-5 h-5 bg-indigo-500 text-white text-xs rounded-full flex items-center justify-center">
                         {activeFilterCount}
                       </span>
                     )}
@@ -339,9 +339,9 @@ function SearchPageInner() {
               {/* Source Facets */}
               {facets.sources?.length > 0 && (
                 <div className="rounded-xl border border-slate-200 overflow-hidden shadow-sm">
-                  <div className="flex items-center gap-2 px-4 py-2.5 bg-emerald-50 border-b border-emerald-100">
-                    <div className="w-1.5 h-4 rounded-full bg-emerald-500" />
-                    <span className="text-xs font-semibold text-emerald-800 uppercase tracking-wide">Kaynak</span>
+                  <div className="flex items-center gap-2 px-4 py-2.5 bg-indigo-50 border-b border-indigo-100">
+                    <div className="w-1.5 h-4 rounded-full bg-indigo-500" />
+                    <span className="text-xs font-semibold text-indigo-800 uppercase tracking-wide">Kaynak</span>
                   </div>
                   <div className="p-2 bg-white space-y-0.5">
                     {facets.sources.map((s) => (
@@ -349,12 +349,12 @@ function SearchPageInner() {
                         key={s.key}
                         onClick={() => { toggleFilter('source_website', s.key); handleSearch(query); }}
                         className={`cursor-pointer w-full flex items-center justify-between text-sm px-3 py-2 rounded-lg transition-colors ${filters.source_website === s.key
-                          ? 'bg-emerald-100 text-emerald-800 font-medium'
-                          : 'text-slate-600 hover:bg-emerald-50 hover:text-emerald-700'
+                          ? 'bg-indigo-100 text-indigo-800 font-medium'
+                          : 'text-slate-600 hover:bg-indigo-50 hover:text-indigo-700'
                           }`}
                       >
                         <span className="truncate">{formatSourceName(s.key)}</span>
-                        <span className={`text-xs ml-2 px-1.5 py-0.5 rounded-md font-medium flex-shrink-0 ${filters.source_website === s.key ? 'bg-emerald-200 text-emerald-800' : 'bg-slate-100 text-slate-500'}`}>{s.count}</span>
+                        <span className={`text-xs ml-2 px-1.5 py-0.5 rounded-md font-medium flex-shrink-0 ${filters.source_website === s.key ? 'bg-indigo-200 text-indigo-800' : 'bg-slate-100 text-slate-500'}`}>{s.count}</span>
                       </button>
                     ))}
                   </div>
@@ -581,7 +581,7 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
   const detail = fullArticle;
 
   return (
-    <Card className={`transition-all duration-300 ${expanded ? 'shadow-lg border-emerald-200 ring-1 ring-emerald-100' : 'hover:shadow-md hover:border-emerald-100'} group`}>
+    <Card className={`transition-all duration-300 ${expanded ? 'shadow-lg border-indigo-200 ring-1 ring-indigo-100' : 'hover:shadow-md hover:border-indigo-100'} group`}>
       <CardContent className="pt-6">
         {/* ── Clickable header ── */}
         <div className="cursor-pointer select-none" onClick={handleExpand}>
@@ -590,7 +590,7 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
               <Link
                 href={`/articles/${article.id}`}
                 onClick={(e) => e.stopPropagation()}
-                className={`font-semibold text-lg leading-tight transition-colors hover:underline ${expanded ? 'text-emerald-700' : 'text-slate-900 group-hover:text-emerald-700'}`}
+                className={`font-semibold text-lg leading-tight transition-colors hover:underline ${expanded ? 'text-indigo-700' : 'text-slate-900 group-hover:text-indigo-700'}`}
               >
                 {highlights?.title?.[0] ? <HighlightedText html={highlights.title[0]} /> : article.title}
               </Link>
@@ -599,7 +599,7 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
                 <Link
                   href={`/journals?search=${encodeURIComponent(article.journal_name)}`}
                   onClick={(e) => e.stopPropagation()}
-                  className="text-sm text-slate-600 font-medium hover:text-emerald-700 hover:underline cursor-pointer transition-colors"
+                  className="text-sm text-slate-600 font-medium hover:text-indigo-700 hover:underline cursor-pointer transition-colors"
                 >
                   {article.journal_name}
                 </Link>
@@ -616,7 +616,7 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
                       key={i}
                       href={`/authors/${encodeURIComponent(author)}`}
                       onClick={(e) => e.stopPropagation()}
-                      className="inline-flex items-center px-2.5 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
+                      className="inline-flex items-center px-2.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs rounded-full cursor-pointer transition-all hover:bg-indigo-100 hover:border-indigo-400 hover:shadow-[0_0_8px_rgba(99,102,241,0.35)]"
                     >
                       {highlights?.authors?.[0] && i === 0
                         ? <HighlightedText html={highlights.authors[0]} />
@@ -645,10 +645,10 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
 
             {/* Right controls */}
             <div className="flex-shrink-0 flex flex-col items-center gap-1.5">
-              <a href={getFullUrl(article.url, article.source_website)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-2 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all" title="Makaleyi aç">
+              <a href={getFullUrl(article.url, article.source_website)} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="p-2 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all" title="Makaleyi aç">
                 <ExternalLink className="h-4 w-4" />
               </a>
-              <div className={`p-2 rounded-lg transition-all duration-300 ${expanded ? 'bg-emerald-100 text-emerald-600' : 'text-slate-400 group-hover:text-emerald-500 group-hover:bg-emerald-50'}`}>
+              <div className={`p-2 rounded-lg transition-all duration-300 ${expanded ? 'bg-indigo-100 text-indigo-600' : 'text-slate-400 group-hover:text-indigo-500 group-hover:bg-indigo-50'}`}>
                 <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${expanded ? 'rotate-180' : ''}`} />
               </div>
             </div>
@@ -692,7 +692,7 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
                         )}
                       </div>
                       {detail.open_access && (
-                        <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-md border border-emerald-200">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-1 rounded-md border border-indigo-200">
                           <Unlock className="h-3.5 w-3.5" />
                           <span>Açık Erişim</span>
                         </div>
@@ -743,9 +743,9 @@ function ArticleCard({ article }: { article: ElasticSearchHit }) {
                             key={i}
                             href={`/authors/${encodeURIComponent(author)}`}
                             onClick={(e) => e.stopPropagation()}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs rounded-full cursor-pointer transition-all hover:bg-indigo-100 hover:border-indigo-400 hover:shadow-[0_0_8px_rgba(99,102,241,0.35)]"
                           >
-                            <span className="text-[9px] text-emerald-500 font-mono">{i + 1}</span>
+                            <span className="text-[9px] text-indigo-500 font-mono">{i + 1}</span>
                             {author}
                           </Link>
                         ))}

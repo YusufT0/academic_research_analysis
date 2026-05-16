@@ -129,12 +129,14 @@ function ArticleCard({ article }: { article: Article }) {
                 <Link
                   href={`/journals?journal_id=${article.journal_id}`}
                   onClick={(e) => e.stopPropagation()}
-                  className="text-sm text-slate-600 font-medium hover:text-emerald-700 hover:underline cursor-pointer transition-colors"
+                  className="text-sm text-indigo-700 font-medium hover:text-indigo-900 hover:underline cursor-pointer transition-colors"
                 >
                   {article.journal_name}
                 </Link>
                 {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
-                <Badge variant={sourceBadgeVariant}>{sourceLabel}</Badge>
+                <Badge variant={sourceBadgeVariant} className="border border-indigo-200 bg-indigo-50 text-indigo-700">
+                  {sourceLabel}
+                </Badge>
                 {article.article_type && (
                   <span className="text-xs text-slate-400 italic">{article.article_type}</span>
                 )}
@@ -182,7 +184,7 @@ function ArticleCard({ article }: { article: Article }) {
                       key={i}
                       href={`/authors/${encodeURIComponent(author)}`}
                       onClick={(e) => e.stopPropagation()}
-                      className="inline-flex items-center px-2.5 py-0.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
+                      className="inline-flex items-center px-2.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs rounded-full cursor-pointer transition-all hover:bg-indigo-100 hover:border-indigo-400 hover:shadow-[0_0_8px_rgba(99,102,241,0.35)]"
                     >
                       {author}
                     </Link>
@@ -221,7 +223,7 @@ function ArticleCard({ article }: { article: Article }) {
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="p-2 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all"
+                className="p-2 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                 title="Makaleyi aç"
               >
                 <ExternalLink className="h-4.5 w-4.5" />
@@ -368,9 +370,9 @@ function ArticleCard({ article }: { article: Article }) {
                         key={i}
                         href={`/authors/${encodeURIComponent(author)}`}
                         onClick={(e) => e.stopPropagation()}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm rounded-full cursor-pointer transition-all hover:bg-emerald-100 hover:border-emerald-400 hover:shadow-[0_0_8px_rgba(16,185,129,0.35)]"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-800 text-sm rounded-full cursor-pointer transition-all hover:bg-indigo-100 hover:border-indigo-400 hover:shadow-[0_0_8px_rgba(99,102,241,0.35)]"
                       >
-                        <span className="text-[10px] text-emerald-500 font-mono">{i + 1}</span>
+                        <span className="text-[10px] text-indigo-500 font-mono">{i + 1}</span>
                         {author}
                       </Link>
                     ))}
@@ -439,7 +441,7 @@ function ArticleCard({ article }: { article: Article }) {
                         <Link
                           href={`/journals?journal_id=${detail.journal_id}`}
                           onClick={(e) => e.stopPropagation()}
-                          className="text-emerald-700 hover:underline cursor-pointer transition-colors"
+                          className="text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer transition-colors"
                         >
                           {detail.journal_name}
                         </Link>
@@ -643,9 +645,14 @@ function ArticlesContent() {
         )}
       </div>
 
-      {/* Filters */}
-      {showFilters && (
-        <Card>
+      {/* Filters — smooth height open/close */}
+      <div
+        className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${
+          showFilters ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+        }`}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <Card className={showFilters ? '' : 'pointer-events-none'}>
           <CardContent className="pt-6">
             <div className="flex flex-col lg:flex-row gap-6">
               {/* Sol yarı — 3 dropdown */}
@@ -733,7 +740,8 @@ function ArticlesContent() {
             </div>
           </CardContent>
         </Card>
-      )}
+        </div>
+      </div>
 
       {/* Articles List */}
       <div className="space-y-4">
