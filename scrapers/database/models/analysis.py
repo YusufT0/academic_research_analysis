@@ -40,8 +40,8 @@ class ArticleEmbedding(Document, TimestampMixin):
         ..., description="Makaleye ait anahtar kelimeler."
     )
     article_dates: str = Field(..., description="Date Published.")
-    article_publisher: str = Field(None, description="Publisher of the article.")
-    article_journal_id: PydanticObjectId = Field(None, description="Journal ID.")
+    article_publisher: Optional[str] = Field(None, description="Publisher of the article.")
+    article_journal_id: Optional[PydanticObjectId] = Field(None, description="Journal ID.")
 
     class Settings:
         # name = "article_embeddings_sample"
