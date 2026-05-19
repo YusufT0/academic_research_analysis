@@ -40,6 +40,14 @@ logger = get_logger('springer')
 
 from .config import ProxyConfig
 
+# Yavaş internet optimizasyonu — paylaşımlı yardımcılar (SB ailesi: CDP modu
+# kullandığı için resilient_get DEĞİL; breaker + adaptif timeout + backoff).
+from backend.core.config import settings
+from backend.core.circuit_breaker import get_circuit_breaker
+from utils.network_probe import NetworkProbe, effective_page_load_timeout
+from utils.resilient_fetch import FetchResult
+from utils.chrome_tuning import maybe_emulate_slow_network
+
 
 class SeleniumDriver:
     """
@@ -54,10 +62,14 @@ class SeleniumDriver:
         self.proxy_config = proxy_config
         self.headless = headless
         self.page_load_timeout = page_load_timeout
+        self._base_page_load_timeout = page_load_timeout  # adaptif ölçekleme tabanı
         self.driver = None       # Underlying Selenium driver (sb.driver)
         self._sb = None          # SB instance
         self._sb_context = None  # SB context manager
         self._cdp_active = False
+        # Yavaş internet adaptasyonu için durum
+        self.network_class = "fast"
+        self.last_fetch = None
 
     # ------------------------------------------------------------------ #
     #  Properties
@@ -119,7 +131,12 @@ class SeleniumDriver:
                 "test": True,
                 "incognito": True,
                 "locale_code": "en",
+                # Yavaş internet: DOMContentLoaded'da devam (görseller beklenmez)
+                "page_load_strategy": settings.page_load_strategy,
             }
+            # SB-native görsel engelleme (yavaş hatta en büyük bant kazancı)
+            if settings.block_resources_for('springer'):
+                sb_kwargs["block_images"] = True
 
             if self.headless:
                 sb_kwargs["headless"] = True
@@ -146,11 +163,27 @@ class SeleniumDriver:
                 self._sb = self._sb_context.__enter__()
                 self.driver = self._sb.driver
                 self._cdp_active = False
+
+                # ── Adaptif timeout: ağ hızını ölç, timeout'u ölçekle ──
+                try:
+                    self.network_class = NetworkProbe().measure_and_classify(self.driver)
+                except Exception:
+                    self.network_class = "fast"
+                self.page_load_timeout = effective_page_load_timeout(
+                    self._base_page_load_timeout, self.network_class
+                )
                 self.driver.set_page_load_timeout(self.page_load_timeout)
+                logger.info(
+                    "page_load_timeout_set",
+                    effective_timeout=self.page_load_timeout,
+                    network_class=self.network_class,
+                )
             finally:
                 sys.argv = original_argv
 
             self.driver.set_window_size(1920, 1080)
+            # Yalnızca test/doğrulama: yavaş ağ emülasyonu (varsayılan kapalı)
+            maybe_emulate_slow_network(self.driver, settings)
             logger.success(f"WebDriver başarıyla başlatıldı {'(proxy ile)' if use_proxy else '(proxy yok)'}")
             return True
 
@@ -363,15 +396,36 @@ class SeleniumDriver:
         İlk navigasyon: activate_cdp_mode(url) → CDP moduna geçer
         Sonraki navigasyonlar: sb.cdp.get(url) → CDP modunda kalır
         """
-        for attempt in range(max_retries + 1):
+        breaker = get_circuit_breaker(
+            'springer',
+            failure_threshold=settings.cb_failure_threshold,
+            recovery_timeout=settings.cb_recovery_timeout,
+        )
+        if not breaker.can_execute():
+            logger.warning("fetch_skipped_circuit_open", scraper='springer', url=url,
+                            retry_after=round(breaker.time_until_recovery, 1))
+            self.last_fetch = FetchResult(ok=False, error='circuit_open',
+                                          error_kind='circuit_open')
+            return False
+
+        max_attempts = max(1, settings.retry_max)
+        backoff_base = settings.retry_backoff_base
+        backoff_cap = settings.retry_backoff_cap
+        _started = time.perf_counter()
+
+        for attempt in range(max_attempts):
             try:
                 if self._sb is None:
                     logger.warning("Driver aktif değil, başlatılıyor...")
                     if not self.start():
+                        breaker.record_failure()
+                        self.last_fetch = FetchResult(ok=False, attempts=attempt + 1,
+                                                      error='driver_start_failed',
+                                                      error_kind='fatal')
                         return False
 
                 if attempt > 0:
-                    logger.info(f"Yeniden deneniyor ({attempt}/{max_retries})...")
+                    logger.info(f"Yeniden deneniyor ({attempt}/{max_attempts - 1})...")
 
                 logger.info(f"Açılıyor: {url}")
 
@@ -405,6 +459,13 @@ class SeleniumDriver:
                 self._wait_for_render(url)
 
                 logger.success("Sayfa yüklendi")
+                breaker.record_success()
+                self.last_fetch = FetchResult(
+                    ok=True, attempts=attempt + 1,
+                    duration_s=round(time.perf_counter() - _started, 2),
+                )
+                logger.info("fetch_complete", scraper='springer', url=url,
+                            duration_s=self.last_fetch.duration_s, attempts=attempt + 1)
                 return True
 
             except Exception as e:
@@ -417,14 +478,23 @@ class SeleniumDriver:
                     ]
                 )
 
-                if is_conn_err and attempt < max_retries:
-                    logger.warning("Bağlantı hatası — driver yeniden başlatılıyor...")
+                if is_conn_err and attempt < max_attempts - 1:
+                    wait = min(backoff_base ** (attempt + 1), backoff_cap)
+                    logger.warning("fetch_retry_backoff", scraper='springer', url=url,
+                                   attempt=attempt + 1, backoff_s=round(wait, 1))
                     if not self.restart():
-                        return False
-                    time.sleep(2)
+                        break
+                    time.sleep(wait)
                     continue
                 else:
                     logger.error(f"Sayfa yükleme hatası: {e}")
-                    return False
+                    break
 
+        breaker.record_failure()
+        self.last_fetch = FetchResult(
+            ok=False, attempts=max_attempts,
+            duration_s=round(time.perf_counter() - _started, 2),
+            error_kind='fatal',
+        )
+        logger.error("fetch_failed", scraper='springer', url=url, attempts=max_attempts)
         return False

@@ -383,7 +383,10 @@ class JournalParser:
             soup = _soup(html)
             articles = []
 
-            items = soup.select('div.issue-item, li.issue-item')
+            items = soup.select(
+                'div.issue-item, li.issue-item, '
+                'ul#search-result > li, li.search__item, li.bulkDownloadWrapper'
+            )
             logger.found(len(items), "item")
 
             for idx, item in enumerate(items, 1):
@@ -391,24 +394,37 @@ class JournalParser:
                     art = {}
 
                     # Başlık
-                    title_el = item.select_one('a.issue-item__title h2, h2.issue-item__title a, .issue-item__title')
+                    title_el = item.select_one(
+                        'a.issue-item__title h2, h2.issue-item__title a, .issue-item__title, '
+                        'h2.meta__title a.publication_title, span.hlFld-Title a.publication_title, '
+                        'h2.meta__title a[href*="/doi/"]'
+                    )
                     if not title_el:
                         continue
                     art['title'] = _clean(title_el.get_text())
 
                     # DOI / URL
-                    doi_input = item.select_one('input.bulkDownloadInput, input[name*="doi"]')
+                    doi_input = item.select_one(
+                        '.bulkDownloadInput input[value], '
+                        'input.bulkDownloadInput, input[name*="doi" i], '
+                        'input[type="hidden"][value^="10."]'
+                    )
                     doi_link = item.select_one('a[href*="/doi/"]')
                     if doi_input:
                         raw_doi = doi_input.get('value', '')
                         import urllib.parse
-                        art['doi'] = urllib.parse.unquote(raw_doi)
-                        art['doi_url'] = f"/doi/full/{art['doi']}"
+                        decoded_doi = urllib.parse.unquote(raw_doi).strip()
+                        art['doi'] = decoded_doi
+                        art['doi_url'] = f"/doi/full/{decoded_doi}" if decoded_doi else ''
                     elif doi_link:
                         href = doi_link.get('href', '')
-                        m = re.search(r'/doi/(?:full|abs|10\.)(.+)', href)
-                        art['doi'] = m.group(1) if m else href
-                        art['doi_url'] = href
+                        m = re.search(r'/doi/(?:full|abs|epdf)?/?(10\.[^\s?#"\']+)', href)
+                        if m:
+                            art['doi'] = m.group(1)
+                            art['doi_url'] = f"/doi/full/{art['doi']}"
+                        else:
+                            art['doi'] = ''
+                            art['doi_url'] = href
                     else:
                         art['doi'] = ''
                         art['doi_url'] = ''
@@ -428,12 +444,12 @@ class JournalParser:
                             art['authors'].append(name)
 
                     # Yayın tarihi
-                    date_el = item.select_one('li.ePubDate span:last-child, .pub-date, time')
+                    date_el = item.select_one('li.ePubDate span:last-child, .pub-date, time, p.meta__epubDate, .meta__epubDate')
                     art['pub_date'] = _clean(date_el.get_text()) if date_el else ''
 
                     # Erişim tipi
                     access_el = item.select_one('div.access-type, span.access-type')
-                    art['access_type'] = access_el.get('class', [''])[1] if access_el else ''
+                    art['access_type'] = _clean(access_el.get_text()) if access_el else ''
 
                     if art['title']:
                         articles.append(art)

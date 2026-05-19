@@ -22,6 +22,7 @@ logger = get_logger('wiley')
 
 from .config import ProxyConfig, WileyConfig
 from .driver import SeleniumDriver
+from utils.adaptive_concurrency import controller as concurrency_controller
 from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
 from .utils import (
@@ -93,6 +94,11 @@ class WileyScraper:
         self.headless = headless
         self.all_journals: List[Dict] = []
 
+        # Oturum boyunca yaşayan paralel worker driver havuzu.
+        # Bir kez açılır; tüm journal/issue'larda yeniden kullanılır,
+        # geçişlerde KAPATILMAZ. Yalnızca close() ile kapanır.
+        self._worker_pool: List[SeleniumDriver] = []
+
     # ------------------------------------------------------------------ #
     #  Lifecycle
     # ------------------------------------------------------------------ #
@@ -105,8 +111,43 @@ class WileyScraper:
         self.navigator = PageNavigator(self.selenium_driver, self.WILEY_BASE)
         logger.success(f"Hedef URL: {self.config.base_url}")
 
+    def _ensure_worker_pool(self, max_tabs: int) -> List[SeleniumDriver]:
+        """
+        Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
+
+        İlk ihtiyaçta bir kez açılır; tüm journal ve issue'larda yeniden
+        kullanılır. Journal/issue geçişlerinde KAPATILMAZ. Tekil driver
+        hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
+        kendi get()/restart() mantığıyla iyileşir; havuz korunur. Havuz
+        yalnızca scraper.close() ile (oturum sonu) kapatılır.
+        """
+        if max_tabs <= 1:
+            return []
+        # Eksik worker varsa tamamla (ilk açılış ya da daha büyük max_tabs)
+        while len(self._worker_pool) < max_tabs:
+            worker_id = len(self._worker_pool) + 1
+            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if local_driver.start():
+                self._worker_pool.append(local_driver)
+                logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+            else:
+                logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+                break
+        if self._worker_pool:
+            logger.info(
+                f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                f"(journal/issue boyunca yeniden kullanılır)"
+            )
+        return self._worker_pool
+
     def close(self):
-        """Scraper'ı kapat"""
+        """Scraper'ı kapat (oturum sonu — worker havuzu dahil)"""
+        for wd in self._worker_pool:
+            try:
+                wd.close()
+            except Exception as close_err:
+                logger.warning(f"Worker driver kapatma hatası: {close_err}")
+        self._worker_pool = []
         self.selenium_driver.close()
         logger.info("Wiley Scraper kapatıldı")
 
@@ -133,6 +174,44 @@ class WileyScraper:
             if remaining <= 0:
                 break
             time.sleep(min(0.3, remaining))
+
+    def _restart_single_worker(self, worker_id: int, pool_index: int, reason: str = "unknown"):
+        """
+        Hata durumunda tek bir worker'ı (tarayıcı) kapatıp yeniden açar.
+        Diğer worker'lar çalışmaya devam eder.
+        
+        Args:
+            worker_id: Worker'ın ID'si (loglama için)
+            pool_index: Worker pool'da index
+            reason: Restart nedeni (loglama için)
+        """
+        if pool_index < 0 or pool_index >= len(self._worker_pool):
+            logger.warning(f"Worker-{worker_id}: havuzda geçersiz index {pool_index}, atlanıyor")
+            return False
+        
+        old_driver = self._worker_pool[pool_index]
+        logger.warning(f"Worker-{worker_id}: yeniden başlatılıyor (neden: {reason})")
+        
+        try:
+            old_driver.close()
+            logger.info(f"Worker-{worker_id}: eski tarayıcı kapatıldı")
+        except Exception as e:
+            logger.warning(f"Worker-{worker_id}: eski tarayıcı kapatma hatası: {e}")
+        
+        try:
+            new_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if new_driver.start():
+                self._worker_pool[pool_index] = new_driver
+                logger.success(f"Worker-{worker_id}: yeni tarayıcı başlatıldı ve havuza kondu")
+                return True
+            else:
+                logger.error(f"Worker-{worker_id}: yeni tarayıcı başlatılamadı")
+                self._worker_pool[pool_index] = None  # slot'u null yap
+                return False
+        except Exception as e:
+            logger.error(f"Worker-{worker_id}: yeni tarayıcı oluşturma hatası: {e}")
+            self._worker_pool[pool_index] = None
+            return False
 
     def _random_wait(self):
         """Rate limiting için rastgele bekleme"""
@@ -353,6 +432,8 @@ class WileyScraper:
         article_list_callback: Callable = None,
         issue_idx: int = 1,
         total_issues: int = 1,
+        reusable_drivers=None,
+        article_stubs_override: List[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Tek bir issue sayfasını işle: makale listesi al ve her makaleyi scrape et.
@@ -371,15 +452,19 @@ class WileyScraper:
         logger.section(f"Issue {issue_idx}/{total_issues}: {issue.get('title', issue_url)}")
         logger.info(f"  Issue URL: {full_url}")
 
-        if not self.navigator.go_to_issue_toc(full_url):
-            logger.warning(f"Issue ToC yüklenemedi: {full_url}")
-            return {'issue_info': issue, 'articles': []}
+        if article_stubs_override is None:
+            if not self.navigator.go_to_issue_toc(full_url):
+                logger.warning(f"Issue ToC yüklenemedi: {full_url}")
+                return {'issue_info': issue, 'articles': []}
 
-        self._close_modals()
-        self._check_cloudflare_and_handle()
+            self._close_modals()
+            self._check_cloudflare_and_handle()
 
-        # Makale listesini parse et
-        article_stubs = JournalParser.parse_article_list_from_toc(self.selenium_driver.page_source)
+            # Makale listesini parse et
+            article_stubs = JournalParser.parse_article_list_from_toc(self.selenium_driver.page_source)
+        else:
+            # Article-based akışta daha önce filtrelenmiş stub listesi kullanılır
+            article_stubs = article_stubs_override
 
         # Full Text filtresi
         full_text_stubs = [a for a in article_stubs if a.get('has_full_text')]
@@ -405,6 +490,7 @@ class WileyScraper:
                 full_text_stubs=full_text_stubs,
                 max_tabs=max_tabs,
                 article_progress_callback=article_progress_callback,
+                reusable_drivers=reusable_drivers,
             )
         else:
             articles = []
@@ -521,10 +607,13 @@ class WileyScraper:
         full_text_stubs: List[Dict[str, Any]],
         max_tabs: int,
         article_progress_callback: Callable = None,
+        reusable_drivers=None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """Issue içindeki makaleleri worker havuzu ile paralel işler."""
         total = len(full_text_stubs)
-        worker_count = max(1, min(max_tabs, total))
+        # Adaptif eşzamanlılık: yavaş/dengesiz hatta worker havuzunu kısıtla
+        adaptive_tabs = concurrency_controller.effective_max_tabs('wiley', max_tabs)
+        worker_count = max(1, min(adaptive_tabs, total))
         jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
         for idx, stub in enumerate(full_text_stubs, 1):
             jobs.put((idx, stub))
@@ -542,19 +631,34 @@ class WileyScraper:
                 return doi_url
             return f"{self.WILEY_BASE}/doi/full/{doi_url}"
 
-        def _worker(worker_id: int):
-            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
-            if not local_driver.start():
-                logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
-                while not jobs.empty():
-                    try:
-                        _, stub = jobs.get_nowait()
-                    except queue.Empty:
-                        break
-                    with lock:
-                        retry_urls.append(_to_article_url(stub))
-                return
+        # Build worker slots: (worker_id, driver, owns_driver, pool_index)
+        # If reusable_drivers provided, use them (don't close on exit).
+        # Otherwise create new drivers (close on exit).
+        worker_slots = []
+        if reusable_drivers:
+            for pool_index, driver in enumerate(reusable_drivers[:worker_count]):
+                worker_id = pool_index + 1
+                worker_slots.append((worker_id, driver, False, pool_index))
+        else:
+            for worker_id in range(1, worker_count + 1):
+                local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                if local_driver.start():
+                    worker_slots.append((worker_id, local_driver, True, -1))
+                else:
+                    logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+                    # Jobs for this worker will be handled by remaining workers or retry
 
+        if not worker_slots:
+            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
+            while not jobs.empty():
+                try:
+                    _, stub = jobs.get_nowait()
+                    retry_urls.append(_to_article_url(stub))
+                except queue.Empty:
+                    break
+            return [], retry_urls
+
+        def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int):
             try:
                 while True:
                     if self.stop_flag and self.stop_flag.is_set():
@@ -587,36 +691,78 @@ class WileyScraper:
                                     detail['pub_date'] = stub['pub_date']
                                 article_data = detail
                                 break
+                        except RateLimitException as e:
+                            logger.warning(f"Worker-{worker_id}: rate limit hatası")
+                            if pool_index >= 0:
+                                self._restart_single_worker(worker_id, pool_index, "rate_limit_error")
+                            else:
+                                local_driver.restart()
+                            jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                            break  # attempt döngüsünden çık
+                        except CloudflareBlockedException as e:
+                            logger.warning(f"Worker-{worker_id}: Cloudflare bloklama hatası")
+                            if pool_index >= 0:
+                                self._restart_single_worker(worker_id, pool_index, "cloudflare_blocked")
+                            else:
+                                local_driver.restart()
+                            jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                            break  # attempt döngüsünden çık
                         except Exception:
                             article_data = None
+
+                    article_ok = bool(article_data and article_data.get('title'))
+                    callback_payload = None
 
                     with lock:
                         nonlocal processed_count
                         processed_count += 1
-                        if article_data and article_data.get('title'):
+                        if article_ok:
                             results_by_index[idx] = article_data
                         else:
                             retry_urls.append(article_url)
 
                         if article_progress_callback:
-                            try:
-                                article_progress_callback(
-                                    processed_count,
-                                    total,
-                                    article_data.get('title') if article_data else None,
-                                )
-                            except Exception:
-                                pass
-            finally:
-                local_driver.close()
+                            callback_payload = (
+                                processed_count,
+                                total,
+                                article_data.get('title') if article_data else None,
+                            )
 
-        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+                    if callback_payload:
+                        try:
+                            article_progress_callback(*callback_payload)
+                        except Exception:
+                            pass
+
+                    # Adaptif eşzamanlılık geri beslemesi (lock dışında — kendi lock'lı)
+                    _fetch = getattr(local_driver, 'last_fetch', None)
+                    concurrency_controller.record(
+                        'wiley',
+                        ok=article_ok,
+                        duration_s=getattr(_fetch, 'duration_s', 0.0) if _fetch else 0.0,
+                        recovered=getattr(_fetch, 'recovered', False) if _fetch else False,
+                    )
+            finally:
+                if owns_driver:
+                    local_driver.close()
+
+        threads = [
+            threading.Thread(target=_worker, args=(wid, drv, owns, pool_idx), daemon=True)
+            for wid, drv, owns, pool_idx in worker_slots
+        ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
         ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        logger.info(
+            "issue_fetch_summary",
+            total=total,
+            ok=len(ordered_articles),
+            failed=len(retry_urls),
+            effective_tabs=worker_count,
+        )
         return ordered_articles, retry_urls
 
     # ------------------------------------------------------------------ #
@@ -633,6 +779,7 @@ class WileyScraper:
         issue_start_callback: Callable = None,
         issue_complete_callback: Callable = None,
         existing_article_dois: set = None,
+        reusable_drivers=None,
     ) -> List[Dict[str, Any]]:
         """
         Article-based journal'ı işle: /index/{journal_id} sayfasından tüm makaleleri topla.
@@ -646,6 +793,8 @@ class WileyScraper:
         existing_article_dois = existing_article_dois or set()
         index_url = f"{self.WILEY_BASE}/index/{journal_id}"
         all_stubs = []
+        filtered_candidates = []
+        seen_article_keys = set()
         page = 0
         max_pages = 100
 
@@ -666,10 +815,38 @@ class WileyScraper:
                 break
 
             all_stubs.extend(stubs)
+            page_new_count = 0
+            for stub in stubs:
+                if not stub.get('has_full_text'):
+                    continue
+
+                doi = (stub.get('doi') or '').strip()
+                doi_url = (stub.get('doi_url') or '').strip()
+                title = (stub.get('title') or '').strip().lower()
+                key = doi or doi_url or title
+                if not key:
+                    continue
+
+                if doi and doi in existing_article_dois:
+                    continue
+                if key in seen_article_keys:
+                    continue
+
+                seen_article_keys.add(key)
+                filtered_candidates.append(stub)
+                page_new_count += 1
+
             pagination = JournalParser.parse_pagination(self.selenium_driver.page_source)
             total_pages = pagination.get('total_pages', 1)
 
-            logger.info(f"Index sayfa {page}: {len(stubs)} makale | Toplam: {len(all_stubs)}")
+            logger.info(
+                f"Index sayfa {page}: {len(stubs)} makale | "
+                f"Yeni aday: +{page_new_count} | Toplam yeni aday: {len(filtered_candidates)}"
+            )
+
+            if max_articles and len(filtered_candidates) >= max_articles:
+                logger.info(f"max_articles={max_articles} doldu, pagination erken durduruldu")
+                break
 
             if page >= total_pages - 1:
                 break
@@ -678,10 +855,7 @@ class WileyScraper:
             self._random_wait()
 
         # Full Text filtresi ve mevcut DOI filtresi
-        filtered = [
-            a for a in all_stubs
-            if a.get('has_full_text') and a.get('doi', '') not in existing_article_dois
-        ]
+        filtered = filtered_candidates
 
         logger.info(f"Yeni Full Text makale: {len(filtered)}")
 
@@ -719,6 +893,8 @@ class WileyScraper:
             article_list_callback=None,  # zaten yukarıda çağrıldı
             issue_idx=1,
             total_issues=1,
+            reusable_drivers=reusable_drivers,
+            article_stubs_override=filtered,
         )
 
         if issue_complete_callback:
@@ -815,6 +991,9 @@ class WileyScraper:
             except Exception as e:
                 logger.warning(f"Journal adı çözümleme hatası: {e}")
 
+        # Journal-level worker pool (sadece issue-based akışta oluşturulur)
+        parallel_drivers: List[SeleniumDriver] = []
+
         try:
             self.check_stop_flag()
 
@@ -836,6 +1015,10 @@ class WileyScraper:
 
             # ── 3a. Issue-based ───────────────────────────────────────────────
             if journal_type != 'article_based':
+                # Oturum worker havuzu (bir kez açılır, tüm journal/issue'larda
+                # yeniden kullanılır; burada KAPATILMAZ)
+                parallel_drivers = self._ensure_worker_pool(max_tabs)
+
                 all_issues = self._extract_all_issues(
                     journal_id,
                     depth=depth,
@@ -848,10 +1031,12 @@ class WileyScraper:
                     # Fallback: article-based dene
                     if journal_type == 'unknown':
                         logger.info("Fallback: article-based deneniyor...")
+                        parallel_drivers = self._ensure_worker_pool(max_tabs)
                         return self._scrape_article_based_journal(
                             journal_id, max_articles, max_tabs, article_progress_callback,
                             article_list_callback, issue_start_callback,
                             issue_complete_callback, existing_article_dois,
+                            reusable_drivers=parallel_drivers,
                         )
                     return []
 
@@ -909,11 +1094,12 @@ class WileyScraper:
                     result = self._process_single_issue(
                         issue=issue,
                         max_articles=max_articles,
-                        max_tabs=max_tabs,
+                        max_tabs=max_tabs if parallel_drivers else 1,
                         article_progress_callback=article_progress_callback,
                         article_list_callback=article_list_callback,
                         issue_idx=idx,
                         total_issues=len(issues_to_process),
+                        reusable_drivers=parallel_drivers,
                     )
 
                     for art in result['articles']:
@@ -941,10 +1127,12 @@ class WileyScraper:
 
             # ── 3b. Article-based ─────────────────────────────────────────────
             else:
+                parallel_drivers = self._ensure_worker_pool(max_tabs)
                 return self._scrape_article_based_journal(
                     journal_id, max_articles, max_tabs, article_progress_callback,
                     article_list_callback, issue_start_callback,
                     issue_complete_callback, existing_article_dois,
+                    reusable_drivers=parallel_drivers,
                 )
 
         except ScraperStoppedException:

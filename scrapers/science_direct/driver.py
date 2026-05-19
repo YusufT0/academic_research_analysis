@@ -26,11 +26,23 @@ sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('science_direct')
 
-from .config import ProxyConfig
+from .config import ProxyConfig, ARTICLE_READY_SELECTOR
 
 
 # Farklı User Agent'lar utils altından import ediliyor
 from utils.user_agents import USER_AGENTS
+
+# Yavaş internet optimizasyonu — paylaşımlı yardımcılar
+from backend.core.config import settings
+from utils.chrome_tuning import (
+    apply_page_load_strategy,
+    perf_chrome_args,
+    enable_cdp_request_blocking,
+    blocked_url_patterns,
+    maybe_emulate_slow_network,
+)
+from utils.network_probe import NetworkProbe, effective_page_load_timeout
+from utils.resilient_fetch import resilient_get
 
 
 class SeleniumDriver:
@@ -55,6 +67,9 @@ class SeleniumDriver:
         self.driver = None
         self.current_user_agent = user_agent
         self._used_user_agents = []  # Kullanılan user agent'ları takip et
+        # Yavaş internet adaptasyonu için durum
+        self.network_class = "fast"
+        self.last_fetch = None
         
         if use_undetected and not UNDETECTED_AVAILABLE:
             logger.warning("undetected-chromedriver bulunamadı, normal Chrome kullanılacak")
@@ -233,7 +248,17 @@ class SeleniumDriver:
             chrome_options.add_experimental_option("prefs", prefs)
             chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
             chrome_options.add_experimental_option('useAutomationExtension', False)
-        
+
+        # ── Yavaş internet optimizasyonu (her iki driver yolu için) ──
+        # NOT: add_experimental_option('prefs',...) BURADA kullanılmaz — non-UC
+        # dalında zaten 'prefs' set ediliyor (üzerine yazıp notifications/password
+        # ayarlarını bozardık) ve UC ile uyumsuz. Görsel engelleme blink-settings
+        # arg'ı + start() içindeki CDP (garanti yol) ile yapılır.
+        apply_page_load_strategy(chrome_options, settings.page_load_strategy)
+        if settings.block_resources_for('sciencedirect'):
+            for _arg in perf_chrome_args(block_images=settings.block_images):
+                chrome_options.add_argument(_arg)
+
         return chrome_options
     
     def start(self):
@@ -348,8 +373,22 @@ class SeleniumDriver:
                 )
                 logger.success("selenium-wire aktif")
             
-            self.driver.implicitly_wait(10)
-            
+            # ── Adaptif timeout: ağ hızını ölç, timeout'u ölçekle ──
+            try:
+                self.network_class = NetworkProbe().measure_and_classify(self.driver)
+            except Exception:
+                self.network_class = "fast"
+            eff_timeout = effective_page_load_timeout(
+                settings.sd_timeout, self.network_class
+            )
+            self.driver.set_page_load_timeout(eff_timeout)
+            self.driver.implicitly_wait(settings.implicit_wait)
+            logger.info(
+                "page_load_timeout_set",
+                effective_timeout=eff_timeout,
+                network_class=self.network_class,
+            )
+
             # Pencere boyutu
             self.driver.set_window_size(1920, 1080)
             
@@ -366,7 +405,19 @@ class SeleniumDriver:
             # Bot tespitini zorlaştıran JavaScript injection
             if self.headless:
                 self._apply_stealth_scripts()
-            
+
+            # ── Kaynak engelleme (CDP — uc prefs'i strip etse de garanti yol) ──
+            if settings.block_resources_for('sciencedirect'):
+                enable_cdp_request_blocking(
+                    self.driver,
+                    patterns=blocked_url_patterns(settings.blocked_url_patterns_csv),
+                    block_images=settings.block_images,
+                    block_fonts=settings.block_fonts,
+                    block_media=settings.block_media,
+                )
+            # Yalnızca test/doğrulama: yavaş ağ emülasyonu (varsayılan kapalı)
+            maybe_emulate_slow_network(self.driver, settings)
+
             logger.success("Chrome WebDriver başarıyla başlatıldı")
             return self.driver
             
@@ -458,10 +509,31 @@ class SeleniumDriver:
             logger.error(f"Tarayıcı yeniden başlatma hatası: {e}")
             return None
     
+    def get(self, url: str, wait_after: int = 3) -> bool:
+        """
+        Dayanıklı sayfa getirme (resilient_get'e delege). Yavaş timeout'ta
+        kısmi sayfa kurtarılır, net::ERR_/session ölümünde driver restart edilir.
+        Geriye dönük bool döner; detay self.last_fetch içinde.
+        """
+        base_timeout = effective_page_load_timeout(
+            settings.sd_timeout,
+            getattr(self, "network_class", "fast"),
+        )
+        result = resilient_get(
+            self,
+            url,
+            expected_selector=ARTICLE_READY_SELECTOR,
+            wait_after=wait_after,
+            scraper_name="sciencedirect",
+            base_timeout=base_timeout,
+        )
+        self.last_fetch = result
+        return result.ok
+
     def take_screenshot(self, name: str = "screenshot") -> str:
         """
         Ekran görüntüsü al
-        
+
         Args:
             name: Screenshot dosya adı öneki
             

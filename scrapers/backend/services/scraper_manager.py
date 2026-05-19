@@ -15,6 +15,7 @@ asyncio event loop'unu bloklamaz.
 import asyncio
 import concurrent.futures
 import threading
+import traceback
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from enum import Enum
@@ -412,23 +413,23 @@ class ScraperManager:
             self.ieee_headless = _settings.scraper_headless
             self.ieee_max_articles = _settings.ieee_max_articles
             self.ieee_depth = _settings.ieee_depth
-            self.ieee_max_tabs = _settings.ieee_max_tabs if hasattr(_settings, 'ieee_max_tabs') else 3
+            self.ieee_max_tabs = _settings.ieee_max_tabs
             self.sciencedirect_headless = _settings.scraper_headless
             self.sciencedirect_max_articles = _settings.sciencedirect_max_articles
             self.sciencedirect_depth = 1  # ScienceDirect depth is set per start_sciencedirect call
-            self.sciencedirect_max_tabs = _settings.sciencedirect_max_tabs if hasattr(_settings, 'sciencedirect_max_tabs') else 3
+            self.sciencedirect_max_tabs = _settings.sciencedirect_max_tabs
             self.acm_headless = _settings.scraper_headless
             self.acm_max_articles = _settings.acm_max_articles
             self.acm_depth = 1
-            self.acm_max_tabs = _settings.acm_max_tabs if hasattr(_settings, 'acm_max_tabs') else 3
+            self.acm_max_tabs = _settings.acm_max_tabs
             self.wiley_headless = _settings.scraper_headless
             self.wiley_max_articles = getattr(_settings, 'wiley_max_articles', 100)
             self.wiley_depth = 1
-            self.wiley_max_tabs = _settings.wiley_max_tabs if hasattr(_settings, 'wiley_max_tabs') else 3
+            self.wiley_max_tabs = _settings.wiley_max_tabs
             self.springer_headless = _settings.scraper_headless
             self.springer_max_articles = getattr(_settings, 'springer_max_articles', 100)
             self.springer_depth = 1
-            self.springer_max_tabs = _settings.springer_max_tabs if hasattr(_settings, 'springer_max_tabs') else 3
+            self.springer_max_tabs = _settings.springer_max_tabs
         except Exception:
             self.ieee_headless = True
             self.ieee_max_articles = 100
@@ -589,6 +590,62 @@ class ScraperManager:
         logs.sort(key=lambda x: x["timestamp"], reverse=True)
 
         return logs[:limit] if limit else logs
+    
+    # ==================== Database Helper Methods ====================
+    
+    def _execute_db_query(
+        self,
+        coro,
+        timeout: int = 10,
+        max_retries: int = 2,
+        operation_name: str = "DB operation"
+    ) -> Optional[Any]:
+        """
+        Veritabanı sorgularını güvenli bir şekilde çalıştır
+        
+        Args:
+            coro: Çalıştırılacak coroutine
+            timeout: Zaman aşımı (saniye)
+            max_retries: Maksimum yeniden deneme sayısı
+            operation_name: İşlem adı (hata mesajları için)
+        
+        Returns:
+            Sorgu sonucu veya None (hata durumunda)
+        """
+        if not self._db_service or not self._loop:
+            logger.error(f"{operation_name}: DB service veya event loop hazır değil")
+            return None
+        
+        for attempt in range(max_retries):
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, self._loop)
+                result = future.result(timeout=timeout)
+                return result
+            except TimeoutError as te:
+                logger.warning(
+                    f"{operation_name}: Zaman aşımı (deneme {attempt + 1}/{max_retries})",
+                    timeout=timeout,
+                    attempt=attempt + 1
+                )
+                if attempt == max_retries - 1:
+                    logger.error(f"{operation_name}: {max_retries} denemeden sonra zaman aşımı")
+                    return None
+            except Exception as e:
+                error_context = {
+                    'error_type': type(e).__name__,
+                    'error_message': str(e),
+                    'attempt': attempt + 1,
+                    'max_retries': max_retries,
+                }
+                logger.error(f"{operation_name}: Hata oluştu", **error_context)
+                if attempt == max_retries - 1:
+                    logger.error(f"{operation_name}: Traceback:\\n{traceback.format_exc()}")
+                    return None
+                # Retry'dan önce kısa bir bekleme
+                import time
+                time.sleep(0.5 * (attempt + 1))
+        
+        return None
     
     # ==================== Single Journal Scraper ====================
 
@@ -1155,7 +1212,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Fatal error: {str(e)}")
             logger.error(f"[IEEE Thread] Fatal error: {e}")
-            import traceback
             traceback.print_exc()
         
         finally:
@@ -1647,7 +1703,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Fatal error: {str(e)}")
             logger.error(f"[SD Thread] Fatal error: {e}")
-            import traceback
             traceback.print_exc()
         
         finally:
@@ -2134,7 +2189,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Fatal error: {str(e)}")
             logger.error(f"[ACM Thread] Fatal error: {e}")
-            import traceback
             traceback.print_exc()
         
         finally:
@@ -2427,23 +2481,29 @@ class ScraperManager:
                                 self._db_service.get_journal(journal.get('name', ''), "wiley"),
                                 self._loop
                             )
-                            existing_journal = journal_future.result(timeout=10)
+                            existing_journal = journal_future.result(timeout=60)
                             if existing_journal:
                                 issues_future = asyncio.run_coroutine_threadsafe(
                                     self._db_service.get_issues_by_journal(existing_journal.id),
                                     self._loop
                                 )
-                                existing_issues = issues_future.result(timeout=10)
+                                existing_issues = issues_future.result(timeout=60)
                                 existing_issue_urls = {str(i.url) for i in existing_issues if getattr(i, 'url', None)}
 
                                 articles_future = asyncio.run_coroutine_threadsafe(
                                     self._db_service.get_articles_by_journal(existing_journal.id),
                                     self._loop
                                 )
-                                existing_articles = articles_future.result(timeout=10)
+                                existing_articles = articles_future.result(timeout=60)
                                 existing_article_dois = {str(a.doi) for a in existing_articles if getattr(a, 'doi', None)}
                         except Exception as db_e:
-                            logger.error(f"[Wiley Thread] DB sorgu hatası: {db_e}")
+                            error_context = {
+                                'journal_name': journal.get('name', 'Unknown'),
+                                'error_type': type(db_e).__name__,
+                                'error_message': str(db_e),
+                            }
+                            logger.error(f"[Wiley Thread] DB sorgu hatası", **error_context)
+                            logger.error(f"[Wiley Thread] Traceback:\n{traceback.format_exc()}")
 
                     # Scrape articles for this journal
                     issue_results = scraper.scrape_journal_articles(
@@ -2652,7 +2712,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Kritik hata: {str(e)}")
             logger.error(f"[Wiley Thread] Kritik hata: {str(e)}")
-            import traceback
             traceback.print_exc()
         finally:
             self._wiley_scraper = None
@@ -2946,23 +3005,29 @@ class ScraperManager:
                                 self._db_service.get_journal(journal.get('name', ''), "springer"),
                                 self._loop
                             )
-                            existing_journal = journal_future.result(timeout=10)
+                            existing_journal = journal_future.result(timeout=60)
                             if existing_journal:
                                 issues_future = asyncio.run_coroutine_threadsafe(
                                     self._db_service.get_issues_by_journal(existing_journal.id),
                                     self._loop
                                 )
-                                existing_issues = issues_future.result(timeout=10)
+                                existing_issues = issues_future.result(timeout=60)
                                 existing_issue_urls = {str(i.url) for i in existing_issues if getattr(i, 'url', None)}
 
                                 articles_future = asyncio.run_coroutine_threadsafe(
                                     self._db_service.get_articles_by_journal(existing_journal.id),
                                     self._loop
                                 )
-                                existing_articles = articles_future.result(timeout=10)
+                                existing_articles = articles_future.result(timeout=60)
                                 existing_article_dois = {str(a.doi) for a in existing_articles if getattr(a, 'doi', None)}
                         except Exception as db_e:
-                            logger.error(f"[Springer Thread] DB sorgu hatası: {db_e}")
+                            error_context = {
+                                'journal_name': journal.get('name', 'Unknown'),
+                                'error_type': type(db_e).__name__,
+                                'error_message': str(db_e),
+                            }
+                            logger.error(f"[Springer Thread] DB sorgu hatası", **error_context)
+                            logger.error(f"[Springer Thread] Traceback:\n{traceback.format_exc()}")
 
                     # Scrape articles for this journal
                     issue_results = scraper.scrape_journal_articles(
@@ -3171,7 +3236,6 @@ class ScraperManager:
             progress.last_error = str(e)
             progress.add_log("error", f"Kritik hata: {str(e)}")
             logger.error(f"[Springer Thread] Kritik hata: {str(e)}")
-            import traceback
             traceback.print_exc()
         finally:
             self._springer_scraper = None
@@ -3846,7 +3910,6 @@ class ScraperManager:
             
         except Exception as e:
             logger.error(f"[RoundRobin] Fatal error: {e}")
-            import traceback
             traceback.print_exc()
             
             # Tüm progress'leri error olarak işaretle

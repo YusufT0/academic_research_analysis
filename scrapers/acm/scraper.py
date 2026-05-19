@@ -19,6 +19,7 @@ logger = get_logger('acm')
 
 from .config import ProxyConfig, ACMConfig
 from .driver import SeleniumDriver
+from utils.adaptive_concurrency import controller as concurrency_controller
 from .utils import handle_cookie_consent, handle_open_access_modal, wait_for_page_load
 from .parsers import JournalParser, ArticleParser, ArticleDetailParser, IssueListParser
 from .navigation import PageNavigator
@@ -26,6 +27,10 @@ from .navigation import PageNavigator
 
 class ScraperStoppedException(Exception):
     """Scraper durdurulduğunda fırlatılır"""
+    pass
+
+class RateLimitException(Exception):
+    """Rate limit hatası olduğunda fırlatılır"""
     pass
 
 class CloudflareBlockedException(Exception):
@@ -79,7 +84,12 @@ class ACMScraper:
             page_load_timeout=self.config.page_load_timeout,
         )
         self.headless = headless
-        
+
+        # Oturum boyunca yaşayan paralel worker driver havuzu.
+        # Bir kez açılır; tüm journal/issue'larda yeniden kullanılır,
+        # geçişlerde KAPATILMAZ. Yalnızca close() ile kapanır.
+        self._worker_pool: List[SeleniumDriver] = []
+
         # Journal listesi
         self.all_journals = []
         
@@ -109,9 +119,79 @@ class ACMScraper:
         
         if not self.selenium_driver.start():
             raise Exception("WebDriver başlatılamadı!")
-        
+
         logger.success(f"Hedef URL: {self.config.base_url}")
-    
+
+    def _ensure_worker_pool(self, max_tabs: int) -> List[SeleniumDriver]:
+        """
+        Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
+
+        İlk ihtiyaçta bir kez açılır; tüm journal ve issue'larda yeniden
+        kullanılır. Journal/issue geçişlerinde KAPATILMAZ. Tekil driver
+        hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
+        kendi get()/restart() mantığıyla iyileşir; havuz korunur. 
+        
+        Eksik worker varsa ekler. Fazla worker varsa kapatmaz (israf olsa da).
+        Havuz yalnızca scraper.close() ile (oturum sonu) kapatılır.
+        Hata durumunda _reset_worker_pool_on_error() ile tamamen sıfırlanır.
+        """
+        if max_tabs <= 1:
+            return []
+        # Eksik worker varsa tamamla (ilk açılış ya da daha büyük max_tabs)
+        while len(self._worker_pool) < max_tabs:
+            worker_id = len(self._worker_pool) + 1
+            wd = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if wd.start():
+                self._worker_pool.append(wd)
+                logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+            else:
+                logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+                break
+        if self._worker_pool:
+            logger.info(
+                f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                f"(journal/issue boyunca yeniden kullanılır, sabit tutulur)"
+            )
+        return self._worker_pool
+
+    def _restart_single_worker(self, worker_id: int, pool_index: int, reason: str = "unknown"):
+        """
+        Hata durumunda tek bir worker'ı (tarayıcı) kapatıp yeniden açar.
+        Diğer worker'lar çalışmaya devam eder.
+        
+        Args:
+            worker_id: Worker'ın ID'si (loglama için)
+            pool_index: Worker pool'da index
+            reason: Restart nedeni (loglama için)
+        """
+        if pool_index < 0 or pool_index >= len(self._worker_pool):
+            logger.warning(f"Worker-{worker_id}: havuzda geçersiz index {pool_index}, atlanıyor")
+            return False
+        
+        old_driver = self._worker_pool[pool_index]
+        logger.warning(f"Worker-{worker_id}: yeniden başlatılıyor (neden: {reason})")
+        
+        try:
+            old_driver.close()
+            logger.info(f"Worker-{worker_id}: eski tarayıcı kapatıldı")
+        except Exception as e:
+            logger.warning(f"Worker-{worker_id}: eski tarayıcı kapatma hatası: {e}")
+        
+        try:
+            new_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if new_driver.start():
+                self._worker_pool[pool_index] = new_driver
+                logger.success(f"Worker-{worker_id}: yeni tarayıcı başlatıldı ve havuza kondu")
+                return True
+            else:
+                logger.error(f"Worker-{worker_id}: yeni tarayıcı başlatılamadı")
+                self._worker_pool[pool_index] = None  # slot'u null yap
+                return False
+        except Exception as e:
+            logger.error(f"Worker-{worker_id}: yeni tarayıcı oluşturma hatası: {e}")
+            self._worker_pool[pool_index] = None
+            return False
+
     def _close_modals(self):
         """Cookie ve Open Access modallarını kapat"""
         handle_cookie_consent(self.selenium_driver, timeout=5)
@@ -477,6 +557,7 @@ class ACMScraper:
         article_list_callback=None,
         issue_idx: int = 1,
         total_issues: int = 1,
+        reusable_drivers=None,
     ) -> dict:
         """
         Tek bir ACM issue sayfasına gidip makale detaylarını toplar.
@@ -542,6 +623,7 @@ class ACMScraper:
                 article_list=article_list,
                 max_tabs=max_tabs,
                 article_progress_callback=article_progress_callback,
+                reusable_drivers=reusable_drivers,
             )
             consecutive_failures = 0
         else:
@@ -647,10 +729,13 @@ class ACMScraper:
         article_list: List[Dict[str, Any]],
         max_tabs: int,
         article_progress_callback=None,
+        reusable_drivers=None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """Issue içindeki makaleleri worker havuzu ile paralel işler."""
         total = len(article_list)
-        worker_count = max(1, min(max_tabs, total))
+        # Adaptif eşzamanlılık: yavaş/dengesiz hatta worker havuzunu kısıtla
+        adaptive_tabs = concurrency_controller.effective_max_tabs('acm', max_tabs)
+        worker_count = max(1, min(adaptive_tabs, total))
         jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
         for idx, stub in enumerate(article_list, 1):
             jobs.put((idx, stub))
@@ -660,21 +745,40 @@ class ACMScraper:
         lock = threading.Lock()
         processed_count = 0
 
-        def _worker(worker_id: int):
-            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
-            if not local_driver.start():
-                logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
-                while not jobs.empty():
-                    try:
-                        _, stub = jobs.get_nowait()
-                    except queue.Empty:
-                        break
+        # Build worker slots: (worker_id, driver, owns_driver, pool_index)
+        # pool_index: eğer reusable_drivers'dan geliyorsa pool'daki index, yoksa -1
+        worker_slots = []
+        if reusable_drivers:
+            for pool_idx, driver in enumerate(reusable_drivers[:worker_count]):
+                worker_id = pool_idx + 1
+                worker_slots.append((worker_id, driver, False, pool_idx))
+        else:
+            for worker_id in range(1, worker_count + 1):
+                local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                if local_driver.start():
+                    worker_slots.append((worker_id, local_driver, True, -1))
+                else:
+                    logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+
+        if not worker_slots:
+            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
+            while not jobs.empty():
+                try:
+                    _, stub = jobs.get_nowait()
                     article_url = stub.get('url', '')
                     full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
-                    with lock:
-                        retry_urls.append(full_url)
-                return
+                    retry_urls.append(full_url)
+                except queue.Empty:
+                    break
+            return [], retry_urls
 
+        def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int = -1):
+            """
+            Worker thread: article'ları paralel işler.
+            Hata durumunda:
+              - Pool worker (owns_driver=False): _restart_single_worker() çağrılır
+              - Local worker (owns_driver=True): driver'ı restart etmeye çalışır
+            """
             try:
                 while True:
                     if self.stop_flag and self.stop_flag.is_set():
@@ -704,36 +808,91 @@ class ACMScraper:
                             article_data = ArticleDetailParser.extract_article_details(page_source, full_url)
                             if article_data and article_data.get('title'):
                                 break
+                        except RateLimitException:
+                            # Rate limit hatasında worker'ı restart et
+                            logger.warning(f"Worker-{worker_id}: Rate limit hatası, tarayıcı yeniden başlatılıyor")
+                            if not owns_driver and pool_index >= 0:
+                                # Pool worker: havuzda restart et
+                                self._restart_single_worker(worker_id, pool_index, "rate_limit")
+                                # Tarayıcı yenilendikten sonra retry
+                                if pool_index < len(self._worker_pool):
+                                    local_driver = self._worker_pool[pool_index]
+                            else:
+                                # Local worker: restart etmeye çalış
+                                try:
+                                    local_driver.restart()
+                                except Exception as restart_err:
+                                    logger.warning(f"Worker-{worker_id}: Restart hatası: {restart_err}")
+                            article_data = None
+                        except CloudflareBlockedException:
+                            # Cloudflare engelinde worker'ı restart et
+                            logger.warning(f"Worker-{worker_id}: Cloudflare engeli, tarayıcı yeniden başlatılıyor")
+                            if not owns_driver and pool_index >= 0:
+                                self._restart_single_worker(worker_id, pool_index, "cloudflare")
+                                if pool_index < len(self._worker_pool):
+                                    local_driver = self._worker_pool[pool_index]
+                            else:
+                                try:
+                                    local_driver.restart()
+                                except Exception as restart_err:
+                                    logger.warning(f"Worker-{worker_id}: Restart hatası: {restart_err}")
+                            article_data = None
                         except Exception:
                             article_data = None
+
+                    article_ok = bool(article_data and article_data.get('title'))
+                    callback_payload = None
 
                     with lock:
                         nonlocal processed_count
                         processed_count += 1
-                        if article_data and article_data.get('title'):
+                        if article_ok:
                             results_by_index[idx] = article_data
                         else:
                             retry_urls.append(full_url)
 
                         if article_progress_callback:
-                            try:
-                                article_progress_callback(
-                                    processed_count,
-                                    total,
-                                    article_data.get('title') if article_data else None,
-                                )
-                            except Exception:
-                                pass
-            finally:
-                local_driver.close()
+                            callback_payload = (
+                                processed_count,
+                                total,
+                                article_data.get('title') if article_data else None,
+                            )
 
-        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+                    if callback_payload:
+                        try:
+                            article_progress_callback(*callback_payload)
+                        except Exception:
+                            pass
+
+                    # Adaptif eşzamanlılık geri beslemesi (lock dışında — kendi lock'lı)
+                    _fetch = getattr(local_driver, 'last_fetch', None)
+                    concurrency_controller.record(
+                        'acm',
+                        ok=article_ok,
+                        duration_s=getattr(_fetch, 'duration_s', 0.0) if _fetch else 0.0,
+                        recovered=getattr(_fetch, 'recovered', False) if _fetch else False,
+                    )
+            finally:
+                if owns_driver:
+                    local_driver.close()
+
+        threads = [
+            threading.Thread(target=_worker, args=(wid, drv, owns, pidx), daemon=True)
+            for wid, drv, owns, pidx in worker_slots
+        ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
         ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        logger.info(
+            "issue_fetch_summary",
+            total=total,
+            ok=len(ordered_articles),
+            failed=len(retry_urls),
+            effective_tabs=worker_count,
+        )
         return ordered_articles, retry_urls
 
     def _extract_issue_info_from_url(self, url: str) -> dict:
@@ -877,7 +1036,11 @@ class ACMScraper:
                 f"(depth={depth})"
             )
 
-            # 4) Her issue'yu işle
+            # 4) Oturum worker havuzu (bir kez açılır, tüm journal/issue'larda
+            #    yeniden kullanılır; burada KAPATILMAZ)
+            parallel_drivers = self._ensure_worker_pool(max_tabs)
+
+            # 5) Her issue'yu işle
             issue_results = []
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
@@ -900,11 +1063,12 @@ class ACMScraper:
                 result = self._process_single_issue(
                     issue_stub=issue_stub,
                     max_articles=max_articles,
-                    max_tabs=max_tabs,
+                    max_tabs=max_tabs if parallel_drivers else 1,
                     article_progress_callback=article_progress_callback,
                     article_list_callback=article_list_callback,
                     issue_idx=issue_idx,
                     total_issues=len(issues_to_process),
+                    reusable_drivers=parallel_drivers,
                 )
 
                 for article in result['articles']:
@@ -1052,7 +1216,13 @@ class ACMScraper:
         return result
             
     def close(self):
-        """Tarayıcıyı kapat"""
+        """Tarayıcıyı kapat (oturum sonu — worker havuzu dahil)"""
+        for wd in self._worker_pool:
+            try:
+                wd.close()
+            except Exception as close_err:
+                logger.warning(f"Worker driver kapatma hatası: {close_err}")
+        self._worker_pool = []
         try:
             if self.selenium_driver:
                 self.selenium_driver.close()

@@ -14,6 +14,7 @@ from utils.logger import get_logger
 
 from .config import ProxyConfig, SpringerConfig
 from .driver import SeleniumDriver
+from utils.adaptive_concurrency import controller as concurrency_controller
 from .navigation import PageNavigator
 from .parsers import ArticleDetailParser, ArticleListParser, JournalDetailParser, JournalListParser, VolumesAndIssuesParser
 from .rate_limiter import SpringerRateLimiter
@@ -23,6 +24,14 @@ logger = get_logger("springer")
 
 
 class ScraperStoppedException(Exception):
+    pass
+
+class RateLimitException(Exception):
+    """Rate limit hatası olduğunda fırlatılır"""
+    pass
+
+class CloudflareBlockedException(Exception):
+    """Cloudflare engeli aşılamadığında fırlatılır"""
     pass
 
 
@@ -68,6 +77,11 @@ class SpringerScraper:
         self._cookie_attempts = 0
         self._max_cookie_attempts = 3
 
+        # Oturum boyunca yaşayan paralel worker driver havuzu.
+        # Bir kez açılır; tüm journal/issue'larda yeniden kullanılır,
+        # geçişlerde KAPATILMAZ. Yalnızca close() ile kapanır.
+        self._worker_pool: List[SeleniumDriver] = []
+
     def initialize(self):
         logger.header("Springer Scraper Baslatiliyor")
         logger.info(f"Headless: {self.headless}")
@@ -77,7 +91,46 @@ class SpringerScraper:
         self.navigator = PageNavigator(self.selenium_driver, self.BASE_URL)
         logger.success("Springer scraper initialize tamamlandi")
 
+    def _ensure_worker_pool(self, max_tabs: int) -> List[SeleniumDriver]:
+        """
+        Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
+
+        İlk ihtiyaçta bir kez açılır; tüm journal ve issue'larda yeniden
+        kullanılır. Journal/issue geçişlerinde KAPATILMAZ. Tekil driver
+        hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
+        kendi get()/restart() mantığıyla iyileşir; havuz korunur. Havuz
+        yalnızca scraper.close() ile (oturum sonu) kapatılır.
+        """
+        if max_tabs <= 1:
+            return []
+        # Eksik worker varsa tamamla (ilk açılış ya da daha büyük max_tabs)
+        while len(self._worker_pool) < max_tabs:
+            worker_id = len(self._worker_pool) + 1
+            wd = SeleniumDriver(
+                self.proxy_config,
+                headless=self.headless,
+                page_load_timeout=self.config.page_load_timeout,
+            )
+            if wd.start():
+                self._worker_pool.append(wd)
+                logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+            else:
+                logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+                break
+        if self._worker_pool:
+            logger.info(
+                f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                f"(journal/issue boyunca yeniden kullanılır)"
+            )
+        return self._worker_pool
+
     def close(self):
+        for wd in self._worker_pool:
+            try:
+                wd.close()
+            except Exception as close_err:
+                logger.warning(f"Worker driver kapatma hatası: {close_err}")
+        self._worker_pool = []
         self.selenium_driver.close()
         logger.info("Springer Scraper kapatildi")
 
@@ -100,6 +153,48 @@ class SpringerScraper:
         wait = random.uniform(self.config.min_wait, self.config.max_wait)
         logger.info(f"Rate limiting bekleme: {wait:.1f}s")
         self._interruptible_sleep(wait)
+
+    def _restart_single_worker(self, worker_id: int, pool_index: int, reason: str = "unknown"):
+        """
+        Hata durumunda tek bir worker'ı (tarayıcı) kapatıp yeniden açar.
+        Diğer worker'lar çalışmaya devam eder.
+        
+        Args:
+            worker_id: Worker'ın ID'si (loglama için)
+            pool_index: Worker pool'da index
+            reason: Restart nedeni (loglama için)
+        """
+        if pool_index < 0 or pool_index >= len(self._worker_pool):
+            logger.warning(f"Worker-{worker_id}: havuzda geçersiz index {pool_index}, atlanıyor")
+            return False
+        
+        old_driver = self._worker_pool[pool_index]
+        logger.warning(f"Worker-{worker_id}: yeniden başlatılıyor (neden: {reason})")
+        
+        try:
+            old_driver.close()
+            logger.info(f"Worker-{worker_id}: eski tarayıcı kapatıldı")
+        except Exception as e:
+            logger.warning(f"Worker-{worker_id}: eski tarayıcı kapatma hatası: {e}")
+        
+        try:
+            new_driver = SeleniumDriver(
+                self.proxy_config,
+                headless=self.headless,
+                page_load_timeout=self.config.page_load_timeout,
+            )
+            if new_driver.start():
+                self._worker_pool[pool_index] = new_driver
+                logger.success(f"Worker-{worker_id}: yeni tarayıcı başlatıldı ve havuza kondu")
+                return True
+            else:
+                logger.error(f"Worker-{worker_id}: yeni tarayıcı başlatılamadı")
+                self._worker_pool[pool_index] = None  # slot'u null yap
+                return False
+        except Exception as e:
+            logger.error(f"Worker-{worker_id}: yeni tarayıcı oluşturma hatası: {e}")
+            self._worker_pool[pool_index] = None
+            return False
 
     def _close_modals(self):
         if self._cookie_handled:
@@ -250,6 +345,7 @@ class SpringerScraper:
         max_tabs: int,
         article_progress_callback: Callable = None,
         existing_article_dois: set = None,
+        reusable_drivers=None,
     ) -> List[Dict[str, Any]]:
         """Issue icindeki makale detaylarini worker havuzu ile paralel toplar."""
         existing_article_dois = existing_article_dois or set()
@@ -262,7 +358,9 @@ class SpringerScraper:
             return []
 
         total = len(candidates)
-        worker_count = max(1, min(max_tabs, total))
+        # Adaptif eşzamanlılık: yavaş/dengesiz hatta worker havuzunu kısıtla
+        adaptive_tabs = concurrency_controller.effective_max_tabs('springer', max_tabs)
+        worker_count = max(1, min(adaptive_tabs, total))
         jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
         for idx, stub in enumerate(candidates, start=1):
             jobs.put((idx, stub))
@@ -271,16 +369,29 @@ class SpringerScraper:
         lock = threading.Lock()
         processed_count = 0
 
-        def _worker(worker_id: int):
-            local_driver = SeleniumDriver(
-                self.proxy_config,
-                headless=self.headless,
-                page_load_timeout=self.config.page_load_timeout,
-            )
-            if not local_driver.start():
-                logger.warning(f"Worker-{worker_id}: local driver baslatilamadi")
-                return
+        # Build worker slots: (worker_id, driver, owns_driver, pool_index)
+        worker_slots = []
+        if reusable_drivers:
+            for pool_index, driver in enumerate(reusable_drivers[:worker_count]):
+                worker_id = pool_index + 1
+                worker_slots.append((worker_id, driver, False, pool_index))
+        else:
+            for worker_id in range(1, worker_count + 1):
+                local_driver = SeleniumDriver(
+                    self.proxy_config,
+                    headless=self.headless,
+                    page_load_timeout=self.config.page_load_timeout,
+                )
+                if local_driver.start():
+                    worker_slots.append((worker_id, local_driver, True, -1))
+                else:
+                    logger.warning(f"Worker-{worker_id}: local driver baslatilamadi")
 
+        if not worker_slots:
+            logger.warning("Parallel mod için kullanılabilir worker yok, boş liste dönülüyor")
+            return []
+
+        def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int):
             try:
                 while True:
                     if self.stop_flag and self.stop_flag.is_set():
@@ -303,11 +414,30 @@ class SpringerScraper:
                             handle_cookie_consent(local_driver)
                             wait_for_page_load(local_driver)
                             detail_data = ArticleDetailParser.parse_article_detail(local_driver.page_source, article_url)
+                    except RateLimitException as e:
+                        logger.warning(f"Worker-{worker_id}: rate limit hatası")
+                        if pool_index >= 0:
+                            self._restart_single_worker(worker_id, pool_index, "rate_limit_error")
+                        else:
+                            local_driver.restart()
+                        jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                        continue
+                    except CloudflareBlockedException as e:
+                        logger.warning(f"Worker-{worker_id}: Cloudflare bloklama hatası")
+                        if pool_index >= 0:
+                            self._restart_single_worker(worker_id, pool_index, "cloudflare_blocked")
+                        else:
+                            local_driver.restart()
+                        jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                        continue
                     except Exception:
                         detail_data = {}
 
                     merged = {**stub, **detail_data}
                     merged["journal_name"] = journal_name
+                    # Gerçek makale detayı alındıysa başarı say (sadece stub değil)
+                    article_ok = bool(detail_data and detail_data.get("title"))
+                    callback_payload = None
 
                     with lock:
                         nonlocal processed_count
@@ -315,24 +445,46 @@ class SpringerScraper:
                         results_by_index[idx] = merged
 
                         if article_progress_callback:
-                            try:
-                                article_progress_callback(
-                                    processed_count,
-                                    total,
-                                    merged.get("title") or stub.get("title"),
-                                )
-                            except Exception:
-                                pass
-            finally:
-                local_driver.close()
+                            callback_payload = (
+                                processed_count,
+                                total,
+                                merged.get("title") or stub.get("title"),
+                            )
 
-        threads = [threading.Thread(target=_worker, args=(i + 1,), daemon=True) for i in range(worker_count)]
+                    if callback_payload:
+                        try:
+                            article_progress_callback(*callback_payload)
+                        except Exception:
+                            pass
+
+                    # Adaptif eşzamanlılık geri beslemesi (lock dışında — kendi lock'lı)
+                    _fetch = getattr(local_driver, 'last_fetch', None)
+                    concurrency_controller.record(
+                        'springer',
+                        ok=article_ok,
+                        duration_s=getattr(_fetch, 'duration_s', 0.0) if _fetch else 0.0,
+                        recovered=getattr(_fetch, 'recovered', False) if _fetch else False,
+                    )
+            finally:
+                if owns_driver:
+                    local_driver.close()
+
+        threads = [
+            threading.Thread(target=_worker, args=(wid, drv, owns, pool_idx), daemon=True)
+            for wid, drv, owns, pool_idx in worker_slots
+        ]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
         ordered = [results_by_index[i] for i in sorted(results_by_index.keys())]
+        logger.info(
+            "issue_fetch_summary",
+            total=total,
+            ok=len(ordered),
+            effective_tabs=worker_count,
+        )
         return ordered
 
     def scrape_journal_articles(
@@ -400,8 +552,13 @@ class SpringerScraper:
         )
 
         issue_results: List[Dict[str, Any]] = []
+        parallel_drivers: List[SeleniumDriver] = []
 
         try:
+            # Oturum worker havuzu (bir kez açılır, tüm journal/issue'larda
+            # yeniden kullanılır; burada KAPATILMAZ)
+            parallel_drivers = self._ensure_worker_pool(max_tabs)
+
             for idx, issue in enumerate(issues_to_process, start=1):
                 self.check_stop_flag()
                 logger.info(f"Issue basladi ({idx}/{len(issues_to_process)}): {issue.get('title', '')}")
@@ -425,9 +582,10 @@ class SpringerScraper:
                     issue_articles = self._scrape_issue_articles_parallel(
                         stubs=stubs,
                         journal_name=journal.get("name", ""),
-                        max_tabs=max_tabs,
+                        max_tabs=max_tabs if parallel_drivers else 1,
                         article_progress_callback=article_progress_callback,
                         existing_article_dois=existing_article_dois,
+                        reusable_drivers=parallel_drivers,
                     )
                 else:
                     issue_articles = []

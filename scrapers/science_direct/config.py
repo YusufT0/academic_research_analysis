@@ -15,6 +15,10 @@ from utils.logger import get_logger
 logger = get_logger('science_direct')
 
 
+# Makale sayfası "hazır" göstergesi — resilient_fetch kısmi sayfa kurtarmada kullanır
+ARTICLE_READY_SELECTOR = "main, article, #article-content, .article-content"
+
+
 class ProxyConfig:
     """Proxy yapılandırma sınıfı"""
     

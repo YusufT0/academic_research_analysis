@@ -114,6 +114,76 @@ class Settings(BaseSettings):
     springer_page_load_timeout: int = Field(default=60, alias="SPRINGER_PAGE_LOAD_TIMEOUT", description="Springer sayfa yükleme timeout (sn)")
     springer_max_articles: int = Field(default=100, alias="SPRINGER_MAX_ARTICLES", description="Springer scraper maksimum makale sayısı")
     
+    # ─────────────────────────────────────────────────────────────────────
+    # Slow-Network / Resilience Settings (yavaş internet optimizasyonu)
+    # ─────────────────────────────────────────────────────────────────────
+    # Sayfa yükleme stratejisi: "normal" (tüm subresource'lar) | "eager"
+    # (DOMContentLoaded'da devam, görseller beklenmez) | "none"
+    page_load_strategy: str = Field(default="eager", alias="PAGE_LOAD_STRATEGY", description="Chrome pageLoadStrategy: normal|eager|none")
+    implicit_wait: int = Field(default=5, alias="IMPLICIT_WAIT", description="Selenium implicit wait (sn) — düşük tut, explicit wait kullanılır")
+    max_page_load_timeout_cap: int = Field(default=240, alias="MAX_PAGE_LOAD_TIMEOUT_CAP", description="Adaptif timeout üst sınırı (sn)")
+
+    # Kaynak engelleme (görsel/font/medya inmesin → yavaş hatta bant tasarrufu)
+    block_resources_default: bool = Field(default=True, alias="BLOCK_RESOURCES", description="Varsayılan kaynak engelleme (görsel/font/medya)")
+    block_images: bool = Field(default=True, alias="BLOCK_IMAGES", description="Görselleri engelle")
+    block_fonts: bool = Field(default=True, alias="BLOCK_FONTS", description="Web fontlarını engelle")
+    block_media: bool = Field(default=True, alias="BLOCK_MEDIA", description="Video/ses medyasını engelle")
+    block_stylesheets: bool = Field(default=False, alias="BLOCK_STYLESHEETS", description="CSS engelle (RİSKLİ: anti-bot/JS görünürlük kontrolünü bozabilir)")
+    blocked_url_patterns_csv: str = Field(
+        default="*doubleclick.net*,*googlesyndication.com*,*google-analytics.com*,*googletagmanager.com*,*scorecardresearch.com*,*hotjar.com*,*segment.io*,*facebook.net*,*adservice.google.com*",
+        alias="BLOCKED_URL_PATTERNS",
+        description="CDP ile engellenecek reklam/tracker URL pattern'leri (virgülle ayrık)"
+    )
+
+    # Per-scraper kaynak engelleme override (None → block_resources_default)
+    ieee_block_resources: Optional[bool] = Field(default=None, alias="IEEE_BLOCK_RESOURCES", description="IEEE için kaynak engelleme override")
+    sciencedirect_block_resources: Optional[bool] = Field(default=None, alias="SCIENCEDIRECT_BLOCK_RESOURCES", description="ScienceDirect için kaynak engelleme override")
+    acm_block_resources: Optional[bool] = Field(default=None, alias="ACM_BLOCK_RESOURCES", description="ACM için kaynak engelleme override")
+    wiley_block_resources: Optional[bool] = Field(default=None, alias="WILEY_BLOCK_RESOURCES", description="Wiley için kaynak engelleme override")
+    springer_block_resources: Optional[bool] = Field(default=None, alias="SPRINGER_BLOCK_RESOURCES", description="Springer için kaynak engelleme override")
+
+    # Ağ hızı probe (driver/proxy üzerinden ölçülür, timeout'u ölçeklemek için)
+    net_probe_url: str = Field(default="https://www.google.com/generate_204", alias="NET_PROBE_URL", description="Ağ hızı ölçümü için hafif URL")
+    net_slow_latency_ms: int = Field(default=800, alias="NET_SLOW_LATENCY_MS", description="Bu gecikmenin üstü 'slow' sınıfı (ms)")
+    net_very_slow_latency_ms: int = Field(default=2500, alias="NET_VERY_SLOW_LATENCY_MS", description="Bu gecikmenin üstü 'very_slow' sınıfı (ms)")
+    net_slow_multiplier: float = Field(default=2.0, alias="NET_SLOW_MULTIPLIER", description="'slow' sınıfında timeout çarpanı")
+    net_very_slow_multiplier: float = Field(default=3.5, alias="NET_VERY_SLOW_MULTIPLIER", description="'very_slow' sınıfında timeout çarpanı")
+
+    # Adaptif eşzamanlılık (yavaş/dengesiz hatta worker havuzunu küçült)
+    adaptive_concurrency_enabled: bool = Field(default=True, alias="ADAPTIVE_CONCURRENCY_ENABLED", description="Adaptif max_tabs etkin mi")
+    adaptive_min_tabs: int = Field(default=1, alias="ADAPTIVE_MIN_TABS", description="Adaptif worker alt sınırı")
+    adaptive_max_tabs: int = Field(default=6, alias="ADAPTIVE_MAX_TABS", description="Adaptif worker üst sınırı")
+    adaptive_window: int = Field(default=12, alias="ADAPTIVE_WINDOW", description="Hata oranı kayar pencere boyutu (fetch)")
+    adaptive_error_hi: float = Field(default=0.35, alias="ADAPTIVE_ERROR_HI", description="Bu hata oranının üstünde worker azalt")
+    adaptive_error_lo: float = Field(default=0.10, alias="ADAPTIVE_ERROR_LO", description="Bu hata oranının altında worker artır")
+    adaptive_cooldown_fetches: int = Field(default=8, alias="ADAPTIVE_COOLDOWN_FETCHES", description="İki resize kararı arası min fetch sayısı")
+
+    # Retry / Circuit Breaker (resilient_fetch)
+    retry_max: int = Field(default=3, alias="RETRY_MAX", description="resilient_get maksimum deneme sayısı")
+    retry_backoff_base: float = Field(default=1.5, alias="RETRY_BACKOFF_BASE", description="Exponential backoff taban çarpanı")
+    retry_backoff_cap: float = Field(default=30.0, alias="RETRY_BACKOFF_CAP", description="Backoff bekleme üst sınırı (sn)")
+    partial_page_recovery_enabled: bool = Field(default=True, alias="PARTIAL_PAGE_RECOVERY_ENABLED", description="Timeout'ta window.stop() + kısmi sayfa kurtarma")
+    cb_failure_threshold: int = Field(default=8, alias="CB_FAILURE_THRESHOLD", description="Circuit breaker açılma eşiği (ardışık hata)")
+    cb_recovery_timeout: int = Field(default=180, alias="CB_RECOVERY_TIMEOUT", description="Circuit breaker HALF_OPEN'a geçiş süresi (sn)")
+
+    # Yavaş ağ simülasyonu (yalnızca doğrulama/test — CDP emulateNetworkConditions)
+    scraper_net_emulate: bool = Field(default=False, alias="SCRAPER_NET_EMULATE", description="TEST: CDP ile yavaş ağ emülasyonu aç")
+    scraper_net_emulate_latency_ms: int = Field(default=400, alias="SCRAPER_NET_EMULATE_LATENCY_MS", description="TEST: emüle gecikme (ms)")
+    scraper_net_emulate_download_bps: int = Field(default=51200, alias="SCRAPER_NET_EMULATE_DOWNLOAD_BPS", description="TEST: emüle indirme hızı (byte/sn)")
+    scraper_net_emulate_upload_bps: int = Field(default=20480, alias="SCRAPER_NET_EMULATE_UPLOAD_BPS", description="TEST: emüle yükleme hızı (byte/sn)")
+
+    # Per-scraper max_tabs (önceden scraper_manager'da hasattr fallback ile okunuyordu)
+    ieee_max_tabs: int = Field(default=3, alias="IEEE_MAX_TABS", description="IEEE paralel worker (tab) sayısı")
+    sciencedirect_max_tabs: int = Field(default=3, alias="SCIENCEDIRECT_MAX_TABS", description="ScienceDirect paralel worker sayısı")
+    acm_max_tabs: int = Field(default=3, alias="ACM_MAX_TABS", description="ACM paralel worker sayısı")
+    wiley_max_tabs: int = Field(default=3, alias="WILEY_MAX_TABS", description="Wiley paralel worker sayısı")
+    springer_max_tabs: int = Field(default=3, alias="SPRINGER_MAX_TABS", description="Springer paralel worker sayısı")
+
+    def block_resources_for(self, scraper: str) -> bool:
+        """Verilen scraper için kaynak engelleme etkin mi (override yoksa default)."""
+        override = getattr(self, f"{scraper}_block_resources", None)
+        return self.block_resources_default if override is None else override
+
     # PDF Settings
     pdf_download_timeout: int = Field(default=60, alias="PDF_DOWNLOAD_TIMEOUT", description="PDF indirme timeout süresi (sn)")
     pdf_download_chunk_size: int = Field(default=8192, alias="PDF_DOWNLOAD_CHUNK_SIZE", description="PDF dosya yazma parça boyutu (byte)")
