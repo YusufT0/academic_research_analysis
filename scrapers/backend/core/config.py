@@ -151,29 +151,29 @@ class Settings(BaseSettings):
         description="UMAP çıktı boyutu"
     )
     nlp_min_cluster_size_all: int = Field(
-    default=5,
+    default=10,
     alias="NLP_MIN_CLUSTER_SIZE_ALL",
     description="HDBSCAN min_cluster_size for all articles clustering"
     )
     nlp_min_samples_all: int = Field(
-        default=1,
+        default=3,
         alias="NLP_MIN_SAMPLES_ALL",
         description="HDBSCAN min_samples for all articles clustering"
     )
 
     nlp_min_cluster_size_publisher: int = Field(
-        default=3,
+        default=5,
         alias="NLP_MIN_CLUSTER_SIZE_PUBLISHER",
         description="HDBSCAN min_cluster_size for publisher clustering"
     )
     nlp_min_samples_publisher: int = Field(
-        default=1,
+        default=2,
         alias="NLP_MIN_SAMPLES_PUBLISHER",
         description="HDBSCAN min_samples for publisher clustering"
     )
 
     nlp_min_cluster_size_journal: int = Field(
-        default=2,
+        default=3,
         alias="NLP_MIN_CLUSTER_SIZE_JOURNAL",
         description="HDBSCAN min_cluster_size for journal clustering"
     )

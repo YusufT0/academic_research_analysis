@@ -1501,88 +1501,87 @@ class NLPService:
         self, keyword: str, model_version: str, top_n: int = None
     ) -> Dict[str, Any]:
         """
-        Bir keyword'e en uygun cluster'ı bulur, o cluster'daki makalelerin
-        keyword'lerini alt-gruplara ayırır ve her gruba bir topic adı verir.
-        Sonuç: yıllara/monthlara göre topic dağılımı.
-
-        Örnek: keyword="car" → alt konular: "traffic", "road", "autonomous"
-        → zaman serisi olarak döner.
+        Calculates cosine similarity between the query and all cluster centroids.
+        Selects clusters with similarity >= 0.75.
+        Returns a time series (graph_data) grouped by matched cluster labels and keyword_distribution.
         """
-        search_result = await self._search_similar_clusters(keyword, model_version)
-        best_cluster = search_result["best_cluster"]
-        model_version = search_result["model_version"]
+        _ensure_nlp_imports()
+        
+        if not model_version:
+            model_version = await self._resolve_model_db_first(auto_train=False)
 
-        articles = await ArticleEmbedding.find(
+        if self._cached_version != model_version:
+            await self._load_cache(model_version)
+
+        if self._cached_centroids is None or len(self._cached_centroids) == 0:
+            return {"graph_data": [], "keyword_distribution": {}}
+            
+        query_cleaned = self._clean_text(keyword)
+        query_embedding = self.embedder.encode([query_cleaned])
+
+        clusters = await self.cluster_repo.find_by_model_version_on_all(
+            model_version, include_noise=False
+        )
+        if not clusters:
+            return {"graph_data": [], "keyword_distribution": {}}
+            
+        centroid_list = [cluster.centroid_full for cluster in clusters]
+        centroid_matrix = np.vstack(centroid_list)
+        try:
+            similarities = cosine_similarity(query_embedding, centroid_matrix)[0]
+        except ValueError as e:
+            if "Incompatible dimension" in str(e):
+                logger.error(f"Dimension mismatch: query is {query_embedding.shape[1]}d, centroids are {centroid_matrix.shape[1]}d.")
+                raise ValueError("Dimension mismatch between the loaded embedder model and the database clusters. Please retrain the model for this version.")
+            raise
+
+        matched_clusters = []
+        for i, cluster in enumerate(clusters):
+            if similarities[i] >= 0.80:
+                matched_clusters.append((cluster, similarities[i]))
+                
+        if not matched_clusters:
+            return {"graph_data": [], "keyword_distribution": {}}
+            
+        # Sort by total article count descending
+        matched_clusters.sort(key=lambda x: x[0].article_count or 0, reverse=True)
+        if top_n is not None:
+            matched_clusters = matched_clusters[:top_n]
+            
+        all_matched_article_ids = []
+        for c, _ in matched_clusters:
+            all_matched_article_ids.extend(c.article_ids)
+            
+        embeddings = await ArticleEmbedding.find(
             {
-                "article_id": {"$in": best_cluster.article_ids},
+                "article_id": {"$in": all_matched_article_ids},
                 "model_version": model_version,
             }
         ).to_list()
-
-        if not articles:
-            return {"graph_data": []}
-
-        final_max_keywords = await self._extract_cluster_keywords(articles, keyword)
-
-        if not final_max_keywords:
-            return {"graph_data": []}
-
-        keyword_clusters = await self._take_keywords_and_transform(final_max_keywords)
-
-        word_to_topic: Dict[str, str] = {}
-        topic_counts: Dict[str, int] = defaultdict(int)
-        for cluster_label, cluster_words in keyword_clusters.items():
-            if cluster_label == -1:
-                topic = "Other"
-            else:
-                topic = await self._take_cluster_and_find_word(cluster_words)
-            for w in cluster_words:
-                word_to_topic[w] = topic
-            topic_counts[topic] += len(cluster_words)
-
+        
+        article_dates_map = {emb.article_id: emb.article_dates for emb in embeddings}
+        
         timeline: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-        for i, art in enumerate(articles):
-            if i < len(final_max_keywords):
-                best_kw = final_max_keywords[i][0]
-                if best_kw is None:
-                    continue
-                topic = word_to_topic.get(best_kw)
-                if topic is None:
-                    continue
-                raw_date = art.article_dates
+        keyword_counter: Counter = Counter()
+        
+        for cluster, sim in matched_clusters:
+            topic = self._resolve_cluster_topic_tag(cluster) or f"Cluster {cluster.cluster_id}"
+            
+            for article_id in cluster.article_ids:
+                raw_date = article_dates_map.get(article_id)
                 date_str = str(raw_date)[:7] if raw_date else None
-                if date_str is None:
+                if not date_str:
                     continue
                 timeline[date_str][topic] += 1
+                keyword_counter[topic] += 1
 
         graph_data = []
-        keyword_distribution = []
         for date_str, topics in timeline.items():
             entry = {"date": date_str}
             entry.update(topics)
             graph_data.append(entry)
 
         graph_data.sort(key=lambda x: x["date"])
-
-        if top_n is not None:
-            sorted_topics = sorted(
-                topic_counts.items(), key=lambda x: x[1], reverse=True
-            )
-            allowed_topics = {t for t, _ in sorted_topics[:top_n]}
-            filtered_graph_data = []
-            for entry in graph_data:
-                new_entry = {"date": entry["date"]}
-                for topic in allowed_topics:
-                    if topic in entry:
-                        new_entry[topic] = entry[topic]
-                filtered_graph_data.append(new_entry)
-            graph_data = filtered_graph_data
-
-        keyword_counter: Counter = Counter()
-        for entry in graph_data:
-            for key, value in entry.items():
-                if key != "date":
-                    keyword_counter[key] += value
 
         return {
             "graph_data": graph_data,
@@ -2235,7 +2234,13 @@ class NLPService:
 
         centroid_list = [cluster.centroid_full for cluster in clusters]
         centroid_matrix = np.vstack(centroid_list)
-        similarities = cosine_similarity(query_embedding, centroid_matrix)[0]
+        try:
+            similarities = cosine_similarity(query_embedding, centroid_matrix)[0]
+        except ValueError as e:
+            if "Incompatible dimension" in str(e):
+                logger.error(f"Dimension mismatch: query is {query_embedding.shape[1]}d, centroids are {centroid_matrix.shape[1]}d.")
+                raise ValueError("Dimension mismatch between the loaded embedder model and the database clusters. Please retrain the model for this version.")
+            raise
 
         best_index = np.argmax(similarities)
         max_similarity = similarities[best_index]
