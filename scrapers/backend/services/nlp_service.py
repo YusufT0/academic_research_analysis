@@ -305,9 +305,11 @@ class NLPService:
         try:
             # 1. Makaleleri getir
             logger.info("Fetching articles from database...")
-            articles = await Article.find(
-                {"abstract": {"$exists": True, "$ne": None}}
-            ).project(ArticleNLPProjection).to_list()
+            articles = (
+                await Article.find({"abstract": {"$exists": True, "$ne": None}})
+                .project(ArticleNLPProjection)
+                .to_list()
+            )
 
             # Abstract'ı olan ve yeterli uzunlukta olanları filtrele
             valid_articles = []
@@ -341,7 +343,7 @@ class NLPService:
                 results = []
                 batch_size = 32
                 vectorizer = KeyphraseCountVectorizer()
-                
+
                 # Process in chunks to provide a progress bar
                 for i in tqdm(
                     range(0, len(abstracts), batch_size), desc="Extracting keywords"
@@ -394,7 +396,7 @@ class NLPService:
             # Merge keywords with original text for richer embeddings
             texts_for_embedding = [
                 f"{article.abstract} Keywords: {', '.join(kws)}"
-                for article, kws in zip(valid_articles, article_keywords)
+                for article, kws in zip(article_objects, article_keywords)
             ]
 
             # Embedding
@@ -455,7 +457,9 @@ class NLPService:
 
             batch_size_db = 1000
             for i in range(0, len(embedding_docs), batch_size_db):
-                await self.embedding_repo.bulk_create(embedding_docs[i:i + batch_size_db])
+                await self.embedding_repo.bulk_create(
+                    embedding_docs[i : i + batch_size_db]
+                )
             logger.success(f"Saved {len(embedding_docs)} embeddings")
 
             # 4. HDBSCAN ile clustering
@@ -489,7 +493,8 @@ class NLPService:
             all_indices = list(range(len(article_ids)))
             hdbscan_all_path = str(models_dir / f"hdbscan_all_{model_version}.joblib")
             from database.connection import get_database
-            await get_database().client.admin.command('ping')
+
+            await get_database().client.admin.command("ping")
             all_labels = await asyncio.to_thread(
                 run_hdbscan,
                 all_indices,
@@ -556,7 +561,8 @@ class NLPService:
                 await asyncio.sleep(0)
                 if pub_idx % 3 == 0:
                     from database.connection import get_database
-                    await get_database().client.admin.command('ping')
+
+                    await get_database().client.admin.command("ping")
                 labels = await asyncio.to_thread(
                     run_hdbscan,
                     indices,
@@ -617,7 +623,8 @@ class NLPService:
                 await asyncio.sleep(0)
                 if jrn_idx % 3 == 0:
                     from database.connection import get_database
-                    await get_database().client.admin.command('ping')
+
+                    await get_database().client.admin.command("ping")
                 labels = await asyncio.to_thread(
                     run_hdbscan,
                     indices,
@@ -722,7 +729,9 @@ class NLPService:
         }
         if journal_ids:
             article_query["journal_id"] = {"$in": journal_ids}
-        new_articles = await Article.find(article_query).project(ArticleNLPProjection).to_list()
+        new_articles = (
+            await Article.find(article_query).project(ArticleNLPProjection).to_list()
+        )
 
         # Filter by abstract length
         valid_new = [
@@ -890,7 +899,7 @@ class NLPService:
 
         batch_size_db = 1000
         for i in range(0, len(embedding_docs), batch_size_db):
-            await self.embedding_repo.bulk_create(embedding_docs[i:i + batch_size_db])
+            await self.embedding_repo.bulk_create(embedding_docs[i : i + batch_size_db])
         logger.success(f"Saved {len(embedding_docs)} new embeddings.")
 
         # 9. Update existing "all" clusters with newly assigned article IDs
@@ -927,20 +936,26 @@ class NLPService:
         for cid in cluster_updates.keys():
             if cid == -1:
                 continue
-            doc = await Cluster.find_one({
-                "cluster_id": cid,
-                "model_version": model_version,
-                "cluster_type": "all",
-            })
+            doc = await Cluster.find_one(
+                {
+                    "cluster_id": cid,
+                    "model_version": model_version,
+                    "cluster_type": "all",
+                }
+            )
             if doc:
                 tag = self._resolve_cluster_topic_tag(doc) or (
-                    doc.top_keywords[0] if doc.top_keywords else f"Cluster {doc.cluster_id}"
+                    doc.top_keywords[0]
+                    if doc.top_keywords
+                    else f"Cluster {doc.cluster_id}"
                 )
-                affected_clusters.append({
-                    "cluster_id": doc.cluster_id,
-                    "topic_tag": tag,
-                    "article_count": doc.article_count,
-                })
+                affected_clusters.append(
+                    {
+                        "cluster_id": doc.cluster_id,
+                        "topic_tag": tag,
+                        "article_count": doc.article_count,
+                    }
+                )
 
         # Refresh cache
         await self._load_cache(model_version)
@@ -990,7 +1005,7 @@ class NLPService:
             top_keywords = []
             sample_titles = []
 
-            for idx in indices[:10]:  # İlk 10 makale
+            for idx in indices:  # İlk 10 makale
                 art_id = article_ids[idx]
                 article = id_to_article.get(art_id)
                 # Önce eğitim sırasında extract edilen keywords'ü dene
@@ -1003,7 +1018,7 @@ class NLPService:
 
             # En sık geçen keywords
             keyword_counts = Counter(top_keywords)
-            top_keywords = [kw for kw, _ in keyword_counts.most_common(10)]
+            top_keywords = [kw for kw, _ in keyword_counts.most_common()]
 
             # Cluster label: cross-encoder ile en temsili keyword'ü bul ve DB'ye kaydet
             label_text = None
@@ -1283,6 +1298,7 @@ class NLPService:
 
         logger.debug(f"Sample embedding: {article_embeddings[0]}")
         return 0
+
     async def _generate_trends_from_clusters(
         self,
         clusters: list,
@@ -1321,7 +1337,7 @@ class NLPService:
         embedding_map = {
             embd.article_id: {
                 "keywords": embd.article_keywords,
-                "date": embd.article_dates
+                "date": embd.article_dates,
             }
             for embd in embeddings_list
         }
@@ -1352,7 +1368,7 @@ class NLPService:
             if matched_article_count == 0:
                 continue
 
-            unique_keywords = list(set(raw_keywords))[:20]
+            unique_keywords = list(set(raw_keywords))
 
             if not unique_keywords and not cluster.label and not cluster.top_keywords:
                 continue
@@ -1365,11 +1381,13 @@ class NLPService:
             for year in cluster_dates:
                 timeline_data[year][topic_tag] += 1
 
-            cluster_summaries.append({
-                "cluster_id": cluster.cluster_id,
-                "topic_tag": topic_tag,
-                "article_count": matched_article_count
-            })
+            cluster_summaries.append(
+                {
+                    "cluster_id": cluster.cluster_id,
+                    "topic_tag": topic_tag,
+                    "article_count": matched_article_count,
+                }
+            )
 
         # 5. Format the data for the frontend graph (X/Y axis friendly)
         graph_data = []
@@ -1435,10 +1453,12 @@ class NLPService:
 
         # Incremental assignment only creates cluster_type="all" documents.
         # Derive journal trends by intersecting journal article IDs with all clusters.
-        journal_embeddings = await ArticleEmbedding.find({
-            "model_version": model_version,
-            "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
-        }).to_list()
+        journal_embeddings = await ArticleEmbedding.find(
+            {
+                "model_version": model_version,
+                "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
+            }
+        ).to_list()
 
         journal_article_ids = {emb.article_id for emb in journal_embeddings}
         if not journal_article_ids:
@@ -1447,25 +1467,31 @@ class NLPService:
             )
             return []
 
-        clusters = await Cluster.find({
-            "cluster_type": "all",
-            "model_version": model_version,
-            "cluster_id": {"$ne": -1},
-            "article_ids": {"$in": list(journal_article_ids)},
-        }).to_list()
+        clusters = await Cluster.find(
+            {
+                "cluster_type": "all",
+                "model_version": model_version,
+                "cluster_id": {"$ne": -1},
+                "article_ids": {"$in": list(journal_article_ids)},
+            }
+        ).to_list()
 
         return clusters
 
     # For Journals
-    async def get_journal_topic_trends(self, journal_name: str, model_version: str, top_n: int = None):
+    async def get_journal_topic_trends(
+        self, journal_name: str, model_version: str, top_n: int = None
+    ):
         journal_oid = await self._resolve_journal_group_id(journal_name)
         if not journal_oid:
             return {"graph_data": [], "clusters": []}
 
-        journal_embeddings = await ArticleEmbedding.find({
-            "model_version": model_version,
-            "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
-        }).to_list()
+        journal_embeddings = await ArticleEmbedding.find(
+            {
+                "model_version": model_version,
+                "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
+            }
+        ).to_list()
         journal_article_ids = {emb.article_id for emb in journal_embeddings}
         if not journal_article_ids:
             logger.warning(
@@ -1506,7 +1532,7 @@ class NLPService:
         Returns a time series (graph_data) grouped by matched cluster labels and keyword_distribution.
         """
         _ensure_nlp_imports()
-        
+
         if not model_version:
             model_version = await self._resolve_model_db_first(auto_train=False)
 
@@ -1515,7 +1541,7 @@ class NLPService:
 
         if self._cached_centroids is None or len(self._cached_centroids) == 0:
             return {"graph_data": [], "keyword_distribution": {}}
-            
+
         query_cleaned = self._clean_text(keyword)
         query_embedding = self.embedder.encode([query_cleaned])
 
@@ -1524,49 +1550,56 @@ class NLPService:
         )
         if not clusters:
             return {"graph_data": [], "keyword_distribution": {}}
-            
+
         centroid_list = [cluster.centroid_full for cluster in clusters]
         centroid_matrix = np.vstack(centroid_list)
         try:
             similarities = cosine_similarity(query_embedding, centroid_matrix)[0]
         except ValueError as e:
             if "Incompatible dimension" in str(e):
-                logger.error(f"Dimension mismatch: query is {query_embedding.shape[1]}d, centroids are {centroid_matrix.shape[1]}d.")
-                raise ValueError("Dimension mismatch between the loaded embedder model and the database clusters. Please retrain the model for this version.")
+                logger.error(
+                    f"Dimension mismatch: query is {query_embedding.shape[1]}d, centroids are {centroid_matrix.shape[1]}d."
+                )
+                raise ValueError(
+                    "Dimension mismatch between the loaded embedder model and the database clusters. Please retrain the model for this version."
+                )
             raise
 
         matched_clusters = []
         for i, cluster in enumerate(clusters):
             if similarities[i] >= 0.80:
                 matched_clusters.append((cluster, similarities[i]))
-                
+
         if not matched_clusters:
             return {"graph_data": [], "keyword_distribution": {}}
-            
+
         # Sort by total article count descending
         matched_clusters.sort(key=lambda x: x[0].article_count or 0, reverse=True)
         if top_n is not None:
             matched_clusters = matched_clusters[:top_n]
-            
+
         all_matched_article_ids = []
         for c, _ in matched_clusters:
             all_matched_article_ids.extend(c.article_ids)
-            
+
         embeddings = await ArticleEmbedding.find(
             {
                 "article_id": {"$in": all_matched_article_ids},
                 "model_version": model_version,
             }
         ).to_list()
-        
+
         article_dates_map = {emb.article_id: emb.article_dates for emb in embeddings}
-        
+
         timeline: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
         keyword_counter: Counter = Counter()
-        
+
         for cluster, sim in matched_clusters:
-            topic = self._resolve_cluster_topic_tag(cluster) or f"Cluster {cluster.cluster_id}"
-            
+            topic = (
+                self._resolve_cluster_topic_tag(cluster)
+                or f"Cluster {cluster.cluster_id}"
+            )
+
             for article_id in cluster.article_ids:
                 raw_date = article_dates_map.get(article_id)
                 date_str = str(raw_date)[:7] if raw_date else None
@@ -1607,25 +1640,34 @@ class NLPService:
             journal_oid = await self._resolve_journal_group_id(group_id)
             if not journal_oid:
                 return {"clusters": []}
-            journal_embeddings = await ArticleEmbedding.find({
-                "model_version": model_version,
-                "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
-            }).to_list()
+            journal_embeddings = await ArticleEmbedding.find(
+                {
+                    "model_version": model_version,
+                    "article_journal_id": {"$in": [journal_oid, str(journal_oid)]},
+                }
+            ).to_list()
             journal_article_ids = {emb.article_id for emb in journal_embeddings}
 
             result = []
             for cluster in clusters:
                 if cluster.cluster_id == -1:
                     continue
-                matched = sum(1 for aid in cluster.article_ids if aid in journal_article_ids)
+                matched = sum(
+                    1 for aid in cluster.article_ids if aid in journal_article_ids
+                )
                 if matched == 0:
                     continue
-                topic_tag = self._resolve_cluster_topic_tag(cluster) or f"Cluster {cluster.cluster_id}"
-                result.append({
-                    "cluster_id": cluster.cluster_id,
-                    "topic_tag": topic_tag,
-                    "article_count": matched,
-                })
+                topic_tag = (
+                    self._resolve_cluster_topic_tag(cluster)
+                    or f"Cluster {cluster.cluster_id}"
+                )
+                result.append(
+                    {
+                        "cluster_id": cluster.cluster_id,
+                        "topic_tag": topic_tag,
+                        "article_count": matched,
+                    }
+                )
             result.sort(key=lambda x: x["article_count"], reverse=True)
             return {"clusters": result}
 
@@ -1709,7 +1751,9 @@ class NLPService:
         series = [{"date": d, "count": c} for d, c in sorted(date_counts.items())]
         return {"topic_tag": topic_tag, "cluster_id": cluster_id, "series": series}
 
-    async def patch_cluster_labels(self, model_version: str, force_recompute: bool = False) -> Dict[str, Any]:
+    async def patch_cluster_labels(
+        self, model_version: str, force_recompute: bool = False
+    ) -> Dict[str, Any]:
         """
         Mevcut bir model versiyonundaki label=null veya top_keywords=[] olan
         cluster'ları yeniden hesaplayıp DB'ye yazar. Train gerektirmez.
@@ -1764,7 +1808,7 @@ class NLPService:
                 raw_keywords.extend(kws)
 
             keyword_counts = Counter(raw_keywords)
-            top_keywords = [kw for kw, _ in keyword_counts.most_common(10)]
+            top_keywords = [kw for kw, _ in keyword_counts.most_common()]
 
             if not top_keywords:
                 skipped += 1
@@ -1974,7 +2018,7 @@ class NLPService:
                 if art_id in embedding_map:
                     raw_keywords.extend(embedding_map[art_id])
 
-            unique_keywords = list(set(raw_keywords))[:20]
+            unique_keywords = list(set(raw_keywords))
 
             if not unique_keywords:
                 continue
@@ -2054,6 +2098,64 @@ class NLPService:
             return cluster.top_keywords[0]
         return None
 
+    import re
+
+    def clean_extracted_keywords(self, keywords):
+        cleaned = []
+
+        # Custom stop-words specific to academic paper abstracts
+        academic_fluff = {
+            "problem",
+            "learning",
+            "accuracy",
+            "requirements",
+            "memory",
+            "performance",
+            "method",
+            "approach",
+            "results",
+            "study",
+            "paper",
+            "works",
+            "challenges",
+            "optimization",
+            "formulation",
+            "network",
+            "image",
+            "hardware",
+            "system",
+            "framework",
+            "novel framework",
+            "systems application",
+            "generalization capability",
+        }
+        units = {"ghz", "mhz", "khz", "hz", "db", "mw", "kw", "hz"}
+        for kw in keywords:
+            kw_lower = kw.lower()
+
+            # 1. Kill anything containing numbers (drops "80.3db", "syst.44")
+            if re.search(r"\d", kw_lower):
+                continue
+
+            # 2. Kill broken punctuation (drops "poly(n")
+            if "(" in kw_lower and ")" not in kw_lower:
+                continue
+            if kw_lower.startswith(".") or kw_lower.endswith("."):
+                continue
+            if any(char in kw_lower for char in ["\\", "{", "}", "_", "^", "="]):
+                continue
+            # 3. Kill meaningless academic fluff
+            if kw_lower in academic_fluff:
+                continue
+
+            # 4. Drop single-character junk
+            if len(kw_lower) <= 2:
+                continue
+
+            cleaned.append(kw)
+
+        return cleaned
+
     async def _take_cluster_and_find_word(self, cluster_list):
         n = len(cluster_list)
         if n == 1:
@@ -2061,58 +2163,76 @@ class NLPService:
 
         def _compute_best_word():
             import torch
-            
+            import numpy as np
+            from sklearn.metrics.pairwise import cosine_similarity
+
             # 1. Generate embeddings for all candidate words
             embeddings = self.embedder.encode(cluster_list, show_progress_bar=False)
-            
-            # 2. Outlier rejection (if we have enough words to confidently reject)
+
+            # 2. Dynamic Outlier Rejection
             if n >= 3:
-                # Calculate full pair-wise cosine similarity matrix
                 sim_matrix = cosine_similarity(embeddings)
-                
-                # Calculate the average similarity of each word to the rest of the group
                 avg_similarities = (np.sum(sim_matrix, axis=1) - 1) / (n - 1)
-                
-                # Drop bottom 20% of words (the outliers), but keep at least 2 words
-                keep_count = max(2, int(n * 0.8))
-                
-                # Get indices of the highly-relevant "core" words
-                core_indices = np.argsort(avg_similarities)[-keep_count:]
-                
-                # Calculate the centroid using ONLY the core words
+
+                # Keep words that are within 1 standard deviation of the mean similarity
+                threshold = np.mean(avg_similarities) - np.std(avg_similarities)
+                core_indices = np.where(avg_similarities >= threshold)[0]
+
+                # Fallback if threshold is too aggressive
+                if len(core_indices) < 2:
+                    core_indices = np.argsort(avg_similarities)[-2:]
+
                 core_embeddings = embeddings[core_indices]
                 centroid = np.mean(core_embeddings, axis=0)
             else:
                 centroid = np.mean(embeddings, axis=0)
-                
-            # 3. Find the exact word from the list closest to this pure centroid
+
+            # 3. Find the exact word with a Length Penalty
             centroid_similarities = cosine_similarity([centroid], embeddings)[0]
-            best_idx = np.argmax(centroid_similarities)
-            
+
+            # Count words by splitting on spaces
+            word_counts = np.array([len(w.split()) for w in cluster_list])
+
+            # Penalty factor alpha. 0.05 means a 4-word phrase needs to be 0.15
+            # more similar to the centroid than a 1-word phrase to beat it.
+            alpha = 0.05
+            length_penalty = alpha * (word_counts - 1)
+
+            adjusted_scores = centroid_similarities - length_penalty
+            best_idx = np.argmax(adjusted_scores)
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                
+
+            # Assuming logger is defined in your class/module
+            logger.info(
+                f"Selected '{cluster_list[best_idx]}' from the kwords '{cluster_list}'"
+            )
+
             return cluster_list[best_idx]
 
         return await asyncio.to_thread(_compute_best_word)
 
     async def _extract_abstarct_keywords(self, text):
         def _extract():
-            # Use KeyphraseCountVectorizer to extract grammatically correct noun phrases 
+            # Use KeyphraseCountVectorizer to extract grammatically correct noun phrases
             # instead of blindly crushing non-stop-words together into Frankenstein bigrams.
             from keyphrase_vectorizers import KeyphraseCountVectorizer
+
             vectorizer = KeyphraseCountVectorizer()
-            
+
             return self.kw_model.extract_keywords(
                 text,
                 vectorizer=vectorizer,
-                use_mmr=False,
+                use_mmr=True,
+                diversity=0.3,
                 top_n=5,  # Extract top 5 candidates to evaluate
             )
 
         extracted = await asyncio.to_thread(_extract)
 
         kws = [item[0] for item in extracted]
+        kws = self.clean_extracted_keywords(kws)
         return kws
 
     async def _extract_cluster_keywords(
@@ -2238,8 +2358,12 @@ class NLPService:
             similarities = cosine_similarity(query_embedding, centroid_matrix)[0]
         except ValueError as e:
             if "Incompatible dimension" in str(e):
-                logger.error(f"Dimension mismatch: query is {query_embedding.shape[1]}d, centroids are {centroid_matrix.shape[1]}d.")
-                raise ValueError("Dimension mismatch between the loaded embedder model and the database clusters. Please retrain the model for this version.")
+                logger.error(
+                    f"Dimension mismatch: query is {query_embedding.shape[1]}d, centroids are {centroid_matrix.shape[1]}d."
+                )
+                raise ValueError(
+                    "Dimension mismatch between the loaded embedder model and the database clusters. Please retrain the model for this version."
+                )
             raise
 
         best_index = np.argmax(similarities)
@@ -2323,16 +2447,24 @@ class NLPService:
             "articles": [
                 {
                     "id": str(ae.article_id),
-                    "title": article_map[str(ae.article_id)].title if str(ae.article_id) in article_map else None,
-                    "abstract": article_map[str(ae.article_id)].abstract if str(ae.article_id) in article_map else None,
-                    "doi": article_map[str(ae.article_id)].doi if str(ae.article_id) in article_map else None,
-                    "url": article_map[str(ae.article_id)].url if str(ae.article_id) in article_map else None,
+                    "title": article_map[str(ae.article_id)].title
+                    if str(ae.article_id) in article_map
+                    else None,
+                    "abstract": article_map[str(ae.article_id)].abstract
+                    if str(ae.article_id) in article_map
+                    else None,
+                    "doi": article_map[str(ae.article_id)].doi
+                    if str(ae.article_id) in article_map
+                    else None,
+                    "url": article_map[str(ae.article_id)].url
+                    if str(ae.article_id) in article_map
+                    else None,
                     "keywords": ae.article_keywords,
                     "cluster_id": best_cluster.cluster_id,
                     "similarity_score": float(max_similarity),
                 }
                 for ae in top_embeddings
-            ]
+            ],
         }
 
     async def get_status(self) -> Dict[str, Any]:
