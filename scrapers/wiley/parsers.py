@@ -624,13 +624,20 @@ class ArticleParser:
         """
         Yazar listesini parse et.
 
-        Selector: div.loa-wrapper div.accordion-tabbed a.author-name
+        Selector: div.article-citation a.author-name (popup ve Related bölümü hariç)
         Her yazar için: name, email, affiliation, is_corresponding
         """
         authors = []
         seen = set()
 
-        for author_el in soup.select('a.author-name, span.author-style a, .loa span a'):
+        # Yalnızca makale başlık/alıntı bölümünde ara — Related/sidebar paneli hariç tutar
+        search_root = soup.select_one('div.article-citation') or soup
+
+        for author_el in search_root.select('a.author-name'):
+            # author-info popup'ı içindeki linkleri atla (email, orcid, moreInfoLink)
+            if author_el.find_parent(class_='author-info'):
+                continue
+
             name = _clean(author_el.get_text())
             if not name or name in seen:
                 continue
@@ -638,22 +645,34 @@ class ArticleParser:
 
             author = {'name': name, 'email': '', 'affiliation': '', 'is_corresponding': False}
 
-            # Corresponding flag
-            parent = author_el.find_parent(['li', 'span', 'div'])
-            if parent:
-                cls = ' '.join(parent.get('class', []))
-                if 'corresponding' in cls.lower():
-                    author['is_corresponding'] = True
+            # Yazara ait accordion container'ı bul
+            container = (
+                author_el.find_parent(class_='accordion-tabbed__tab-mobile')
+                or author_el.find_parent(class_='accordion-tabbed')
+            )
+            if container:
+                info_div = container.select_one('div.author-info')
+                if info_div:
+                    # Corresponding flag
+                    author_type_el = info_div.select_one('p.author-type')
+                    if author_type_el and 'corresponding' in author_type_el.get_text().lower():
+                        author['is_corresponding'] = True
 
-                # Email
-                email_el = parent.select_one('a[href^="mailto:"]')
-                if email_el:
-                    author['email'] = email_el.get('href', '').replace('mailto:', '')
+                    # Email
+                    email_el = info_div.select_one('a[href^="mailto:"]')
+                    if email_el:
+                        author['email'] = email_el.get('href', '').replace('mailto:', '')
 
-                # Affiliation
-                aff_el = parent.select_one('p, .author-info__aff')
-                if aff_el:
-                    author['affiliation'] = _clean(aff_el.get_text())
+                    # Kurum bilgisi (author-type/author-name paragrafları ve yazışma/email satırları hariç)
+                    aff_parts = []
+                    for p in info_div.select('p'):
+                        if any(c in p.get('class', []) for c in ['author-type', 'author-name']):
+                            continue
+                        text = _clean(p.get_text())
+                        if text and not text.startswith('Correspondence') and '@' not in text:
+                            aff_parts.append(text)
+                    if aff_parts:
+                        author['affiliation'] = '; '.join(aff_parts)
 
             authors.append(author)
 
