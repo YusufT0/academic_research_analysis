@@ -2608,6 +2608,7 @@ class ScraperManager:
                                             'sections': art.get('sections', []),
                                             'references': refs_list,
                                             'is_open_access': db_journal.open_access,
+                                            'publisher': 'Wiley',
                                         })
 
                                     created, updated = await self._db_service.add_articles_bulk(db_issue, prepared)
@@ -3132,6 +3133,7 @@ class ScraperManager:
                                             'sections': art.get('sections', []),
                                             'references': refs_list,
                                             'is_open_access': db_journal.open_access,
+                                            'publisher': 'Springer',
                                         })
 
                                     created, updated = await self._db_service.add_articles_bulk(db_issue, prepared)
