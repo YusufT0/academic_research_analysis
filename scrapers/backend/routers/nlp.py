@@ -721,6 +721,8 @@ async def get_keyword_topic_trends(
             keyword=keyword, model_version=model_version, top_n=top_n
         )
         return topic_trends
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Get Keyword Topic Trends error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

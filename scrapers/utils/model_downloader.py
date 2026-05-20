@@ -58,12 +58,25 @@ def download_nlp_models(
     logger.info(f"Model: {embedder_name}")
     logger.info(f"Target: {embedder_path}")
 
-    if (embedder_path / "config.json").exists():
-        logger.success("Embedder model already cached on disk")
+    model_name_file = embedder_path / "model_name.txt"
+    cached_model_name = None
+    if model_name_file.exists():
+        try:
+            with open(model_name_file, "r") as f:
+                cached_model_name = f.read().strip()
+        except Exception:
+            pass
+
+    if (embedder_path / "config.json").exists() and cached_model_name == embedder_name:
+        logger.success("Embedder model already cached on disk and matches requested model")
         results.append(("cached", "embedder"))
         cached += 1
     else:
-        logger.info("Model not found locally, downloading...")
+        logger.info("Model not found locally or model name changed, downloading...")
+        import shutil
+        if embedder_path.exists():
+            shutil.rmtree(embedder_path)
+            
         start = time.time()
         try:
             from sentence_transformers import SentenceTransformer
@@ -72,6 +85,10 @@ def download_nlp_models(
             model = SentenceTransformer(embedder_name)
             logger.info("Saving to local disk...")
             model.save(str(embedder_path))
+            
+            with open(model_name_file, "w") as f:
+                f.write(embedder_name)
+                
             elapsed = time.time() - start
             total_time += elapsed
             logger.success(f"Embedder model downloaded and saved ({elapsed:.1f}s)")
@@ -89,12 +106,25 @@ def download_nlp_models(
     logger.info(f"Model: {cross_encoder_name}")
     logger.info(f"Target: {cross_encoder_path}")
 
-    if (cross_encoder_path / "config.json").exists():
-        logger.success("Cross-encoder model already cached on disk")
+    ce_model_name_file = cross_encoder_path / "model_name.txt"
+    ce_cached_model_name = None
+    if ce_model_name_file.exists():
+        try:
+            with open(ce_model_name_file, "r") as f:
+                ce_cached_model_name = f.read().strip()
+        except Exception:
+            pass
+
+    if (cross_encoder_path / "config.json").exists() and ce_cached_model_name == cross_encoder_name:
+        logger.success("Cross-encoder model already cached on disk and matches requested model")
         results.append(("cached", "cross_encoder"))
         cached += 1
     else:
-        logger.info("Model not found locally, downloading...")
+        logger.info("Model not found locally or model name changed, downloading...")
+        import shutil
+        if cross_encoder_path.exists():
+            shutil.rmtree(cross_encoder_path)
+            
         start = time.time()
         try:
             from sentence_transformers import CrossEncoder
@@ -103,6 +133,10 @@ def download_nlp_models(
             model = CrossEncoder(cross_encoder_name)
             logger.info("Saving to local disk...")
             model.save(str(cross_encoder_path))
+            
+            with open(ce_model_name_file, "w") as f:
+                f.write(cross_encoder_name)
+                
             elapsed = time.time() - start
             total_time += elapsed
             logger.success(f"Cross-encoder model downloaded and saved ({elapsed:.1f}s)")
