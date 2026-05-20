@@ -152,6 +152,7 @@ function KeywordCloud({ keywords }: { keywords: Array<{ _id: string; count: numb
 function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
   const sources = Object.entries(data);
   const total = sources.reduce((sum, [, s]) => sum + s.count, 0);
+  const [hoveredSource, setHoveredSource] = useState<string | null>(null);
 
   const colors: Record<string, string> = {
     ieeexplore: 'bg-blue-500',
@@ -170,22 +171,62 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex h-4 rounded-full overflow-hidden">
-        {sources.map(([source, info]) => (
-          <div key={source} className={`${colors[source] || 'bg-slate-400'} transition-all duration-500`} style={{ width: `${(info.count / total) * 100}%` }} />
-        ))}
+      <div className="relative">
+        <div
+          className="flex h-4 rounded-full overflow-hidden"
+          onMouseLeave={() => setHoveredSource(null)}
+        >
+          {sources.map(([source, info]) => {
+            const percent = total > 0 ? (info.count / total) * 100 : 0;
+            const isHovered = hoveredSource === source;
+
+            return (
+              <div
+                key={source}
+                className={`${colors[source] || 'bg-slate-400'} transition-all duration-200 ${isHovered ? 'brightness-110' : 'opacity-90 hover:opacity-100'} cursor-pointer`}
+                style={{ width: `${percent}%` }}
+                onMouseEnter={() => setHoveredSource(source)}
+                title={`${labels[source] || source}: ${percent.toFixed(1)}% (${info.count.toLocaleString()} makale)`}
+                aria-label={`${labels[source] || source} ${percent.toFixed(1)}%`}
+              />
+            );
+          })}
+        </div>
+        {hoveredSource && (() => {
+          const hoveredInfo = data[hoveredSource];
+          const hoveredPercent = total > 0 ? (hoveredInfo.count / total) * 100 : 0;
+
+          return (
+            <div className="absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm">
+              <span className="text-slate-900">{labels[hoveredSource] || hoveredSource}</span>
+              <span className="mx-1 text-slate-400">•</span>
+              <span>{hoveredPercent.toFixed(1)}%</span>
+              <span className="mx-1 text-slate-400">•</span>
+              <span>{hoveredInfo.count.toLocaleString()} makale</span>
+            </div>
+          );
+        })()}
       </div>
       <div className="flex flex-wrap gap-4">
-        {sources.map(([source, info]) => (
-          <div key={source} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg flex-1 min-w-[calc(50%-0.5rem)]">
-            <div className={`w-4 h-4 rounded ${colors[source] || 'bg-slate-400'}`} />
-            <div className="flex-1">
-              <p className="font-medium text-slate-900">{labels[source] || source}</p>
-              <p className="text-sm text-slate-500">{info.count.toLocaleString()} makale</p>
+        {sources.map(([source, info]) => {
+          const percent = total > 0 ? (info.count / total) * 100 : 0;
+          const isHovered = hoveredSource === source;
+          const isDimmed = hoveredSource !== null && hoveredSource !== source;
+
+          return (
+            <div
+              key={source}
+              className={`flex items-center gap-3 p-3 rounded-lg flex-1 min-w-[calc(50%-0.5rem)] border transition-all duration-200 ${isHovered ? 'bg-indigo-50 border-indigo-200 shadow-sm ring-1 ring-indigo-100' : 'bg-slate-50 border-transparent'} ${isDimmed ? 'opacity-60' : ''}`}
+            >
+              <div className={`w-4 h-4 rounded ${colors[source] || 'bg-slate-400'}`} />
+              <div className="flex-1">
+                <p className="font-medium text-slate-900">{labels[source] || source}</p>
+                <p className="text-sm text-slate-500">{info.count.toLocaleString()} makale</p>
+              </div>
+              <p className={`text-lg font-bold ${isHovered ? 'text-indigo-700' : 'text-slate-900'}`}>{percent.toFixed(1)}%</p>
             </div>
-            <p className="text-lg font-bold text-slate-900">{((info.count / total) * 100).toFixed(1)}%</p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
