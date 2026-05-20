@@ -202,8 +202,6 @@ export function TopicTrendChart({
     return map;
   }, [clusters, allClusters]);
 
-  const pieSource = keywordDistribution ?? data.keyword_distribution;
-
   const mergedGraphData = useMemo(() => {
     if (!data?.graph_data) return [];
     const dateMap = new Map<string, Record<string, string | number>>();
@@ -247,6 +245,27 @@ export function TopicTrendChart({
   }, [mergedGraphData, zoomStart, zoomEnd]);
 
   const isZoomed = zoomStart > 0 || (zoomEnd !== null && zoomEnd < mergedGraphData.length);
+
+  // ── Pie source from zoomed range ──
+  const pieSource = useMemo(() => {
+    // If zoom is applied and we have visible chart data, compute pie from zoomed range
+    if (isZoomed && visibleChartData.length > 0) {
+      const topicTotals: Record<string, number> = {};
+      for (const entry of visibleChartData) {
+        for (const [key, value] of Object.entries(entry)) {
+          if (key !== 'date' && typeof value === 'number' && value > 0) {
+            topicTotals[key] = (topicTotals[key] ?? 0) + value;
+          }
+        }
+      }
+      // If we got data from zoomed range, use it; otherwise fallback
+      if (Object.keys(topicTotals).length > 0) {
+        return topicTotals;
+      }
+    }
+    // Default: use keyword distribution or full distribution
+    return keywordDistribution ?? data.keyword_distribution;
+  }, [isZoomed, visibleChartData, keywordDistribution, data.keyword_distribution]);
 
   function resetZoom() {
     isZoomingRef.current = true;
