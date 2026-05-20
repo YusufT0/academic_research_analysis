@@ -141,3 +141,42 @@ class ClusterRepository(BaseRepository[Cluster]):
         return await Cluster.find(
             {"model_version": model_version, "cluster_id": {"$ne": -1}}
         ).sort("-article_count").limit(limit).to_list()
+
+    async def remove_articles_from_clusters(self, article_ids: List[PydanticObjectId]) -> int:
+        """
+        Verilen makale ID'lerini tüm cluster'lardan çıkar.
+        Boşalan cluster'ları siler. Etkilenen cluster'ların article_count'unu günceller.
+        Silinen boş cluster sayısını döndürür.
+        """
+        if not article_ids:
+            return 0
+
+        motor_col = Cluster.get_motor_collection()
+
+        # Etkilenen cluster'ları bulmadan önce ID listesini tut
+        affected = await Cluster.find({"article_ids": {"$in": article_ids}}).to_list()
+        if not affected:
+            return 0
+
+        affected_ids = [c.id for c in affected]
+
+        # Tüm eşleşen cluster'lardan verilen makale ID'lerini çıkar
+        await motor_col.update_many(
+            {"article_ids": {"$in": article_ids}},
+            {"$pull": {"article_ids": {"$in": article_ids}}}
+        )
+
+        # Etkilenen cluster'ları yeniden yükle, sayıları güncelle, boşalanları sil
+        deleted_count = 0
+        for cid in affected_ids:
+            c = await Cluster.get(cid)
+            if c is None:
+                continue
+            if len(c.article_ids) == 0:
+                await c.delete()
+                deleted_count += 1
+            else:
+                c.article_count = len(c.article_ids)
+                await c.save()
+
+        return deleted_count

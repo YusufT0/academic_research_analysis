@@ -477,17 +477,29 @@ class RoundRobinRequest(BaseModel):
     """Round Robin kontrol request"""
     headless: bool = Field(default=True, description="Headless mod")
     journals_per_switch: int = Field(default=3, ge=1, le=10, description="Kaç journal'da bir site değiştirilecek")
+    max_articles: Optional[int] = Field(None, description="Maksimum makale sayısı")
+    depth: Optional[int] = Field(None, ge=1, description="Kaç issue işlenecek")
+    max_tabs: int = Field(default=3, ge=1, le=10, description="Issue içindeki makale detayları için aynı anda çalışacak tab sayısı")
+    issues_order: str = Field(default="newest_first", description="Issue işleme sırası: 'newest_first' veya 'oldest_first'")
+    continuous: bool = Field(default=False, description="Sürekli mod: tüm siteler bitince döngü baştan başlar")
 
 
 @router.post("/start-all", summary="Tüm scraper'ları başlat (paralel mod)")
 async def start_all(request: ScraperControlRequest = None):
     """Tüm scraper'ları paralel modda başlat"""
     manager = get_scraper_manager()
-    
+
     headless = request.headless if request else True
-    
-    results = await manager.start_all(headless=headless)
-    
+
+    results = await manager.start_all(
+        headless=headless,
+        max_articles=request.max_articles if request else None,
+        depth=request.depth if request else None,
+        max_tabs=request.max_tabs if request else None,
+        issues_order=request.issues_order if request else None,
+        continuous=request.continuous if request else None,
+    )
+
     return {
         "success": True,
         "message": "All scrapers started (parallel mode)",
@@ -501,11 +513,18 @@ async def start_all(request: ScraperControlRequest = None):
 async def start_all_sequential(request: ScraperControlRequest = None):
     """Tüm scraper'ları sıralı modda başlat (IEEE bitince ScienceDirect başlar)"""
     manager = get_scraper_manager()
-    
+
     headless = request.headless if request else True
-    
-    results = await manager.start_all_sequential(headless=headless)
-    
+
+    results = await manager.start_all_sequential(
+        headless=headless,
+        max_articles=request.max_articles if request else None,
+        depth=request.depth if request else None,
+        max_tabs=request.max_tabs if request else None,
+        issues_order=request.issues_order if request else None,
+        continuous=request.continuous if request else None,
+    )
+
     return {
         "success": True,
         "message": "All scrapers started (sequential mode)",
@@ -530,10 +549,15 @@ async def start_all_round_robin(request: RoundRobinRequest = None):
     
     headless = request.headless if request else True
     journals_per_switch = request.journals_per_switch if request else 3
-    
+
     results = await manager.start_all_round_robin(
-        headless=headless, 
-        journals_per_switch=journals_per_switch
+        headless=headless,
+        journals_per_switch=journals_per_switch,
+        max_articles=request.max_articles if request else None,
+        depth=request.depth if request else None,
+        max_tabs=request.max_tabs if request else None,
+        issues_order=request.issues_order if request else None,
+        continuous=request.continuous if request else None,
     )
     
     return {

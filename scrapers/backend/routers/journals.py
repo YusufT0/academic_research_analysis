@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from database.models import Journal
-from database.repositories import JournalRepository
+from database.models import Journal, Article, Issue, ArticleEmbedding, Cluster
+from database.repositories import JournalRepository, EmbeddingRepository, ClusterRepository
 from backend.services.cache_service import cache_service
 from backend.core.config import settings
 from backend.schemas.journal import JournalListResponse, JournalResponse, JournalCitationMetricsResponse
@@ -389,6 +389,72 @@ async def get_journal_issues(
         "total_pages": total_pages,
         "has_next": page < total_pages,
         "has_prev": page > 1,
+    }
+
+
+@router.delete("/{journal_id}", summary="Dergi ve tüm ilişkili verileri sil")
+async def delete_journal(journal_id: str):
+    """
+    Bir dergiyi ve ona ait tüm verileri kalıcı olarak siler:
+    - Tüm issue'lar
+    - Tüm makaleler
+    - Makale embedding'leri (NLP vektörleri)
+    - Cluster üyelikleri (boşalan cluster'lar da silinir)
+    - Cache invalidasyonu
+    """
+    try:
+        obj_id = PydanticObjectId(journal_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Geçersiz journal ID")
+
+    journal = await Journal.get(obj_id)
+    if not journal:
+        raise HTTPException(status_code=404, detail="Dergi bulunamadı")
+
+    journal_name = journal.name
+    deleted: dict = {"articles": 0, "issues": 0, "embeddings": 0, "clusters_cleaned": 0}
+
+    # 1. Silinecek makale ID'lerini topla
+    motor_articles = Article.get_motor_collection()
+    cursor = motor_articles.find({"journal_id": obj_id}, {"_id": 1})
+    article_ids = [doc["_id"] async for doc in cursor]
+
+    # 2. Embedding'leri sil
+    if article_ids:
+        emb_repo = EmbeddingRepository()
+        deleted["embeddings"] = await emb_repo.delete_by_article_ids(article_ids)
+
+    # 3. Cluster üyeliklerini temizle
+    if article_ids:
+        cluster_repo = ClusterRepository()
+        deleted["clusters_cleaned"] = await cluster_repo.remove_articles_from_clusters(article_ids)
+
+    # 4. Makaleleri sil
+    result = await Article.find({"journal_id": obj_id}).delete()
+    deleted["articles"] = result.deleted_count if result else 0
+
+    # 5. Issue'ları sil
+    result = await Issue.find({"journal_id": obj_id}).delete()
+    deleted["issues"] = result.deleted_count if result else 0
+
+    # 6. Dergiyi sil
+    await journal.delete()
+
+    # 7. Cache temizle
+    await cache_service.invalidate_journal(journal_id)
+    await cache_service.invalidate_pattern("search:journals_list*")
+
+    logger.info(
+        f"Dergi silindi: '{journal_name}' ({journal_id}) — "
+        f"{deleted['articles']} makale, {deleted['issues']} sayı, "
+        f"{deleted['embeddings']} embedding, {deleted['clusters_cleaned']} boş cluster"
+    )
+
+    return {
+        "success": True,
+        "journal_id": journal_id,
+        "journal_name": journal_name,
+        "deleted": deleted,
     }
 
 

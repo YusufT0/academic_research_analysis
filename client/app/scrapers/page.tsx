@@ -1252,12 +1252,20 @@ function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefre
   const [loading, setLoading] = useState(false);
   const [stopLoading, setStopLoading] = useState(false);
 
+  // Tüm scraperlara uygulanacak ortak ayarlar
+  const [maxArticles, setMaxArticles] = useState<number>(10);
+  const [depth, setDepth] = useState<number>(1);
+  const [maxTabs, setMaxTabs] = useState<number>(3);
+  const [issueOrder, setIssueOrder] = useState<string>('newest_first');
+  const [headless, setHeadless] = useState<boolean>(false);
+  const [continuous, setContinuous] = useState<boolean>(false);
+
   const handleStartAll = async () => {
     setLoading(true);
     try {
-      if (mode === 'parallel') await startAllScrapers(false);
-      else if (mode === 'sequential') await startAllScrapersSequential(false);
-      else await startAllScrapersRoundRobin(false);
+      if (mode === 'parallel') await startAllScrapers(headless, maxArticles, depth, issueOrder, continuous, maxTabs);
+      else if (mode === 'sequential') await startAllScrapersSequential(headless, maxArticles, depth, issueOrder, continuous, maxTabs);
+      else await startAllScrapersRoundRobin(headless, maxArticles, depth, issueOrder, continuous, maxTabs);
       await onRefresh();
     } catch (err) {
       console.error(err);
@@ -1303,6 +1311,104 @@ function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefre
               <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Ortak Ayarlar (tüm scraperlara uygulanır) */}
+      <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <p className="text-sm font-medium text-slate-700">Ortak Ayarlar (tüm scraperlara uygulanır)</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="all-limit" className="text-xs text-slate-600 whitespace-nowrap">Makale Limiti:</label>
+            <input
+              id="all-limit"
+              type="number"
+              min="1"
+              max="5000"
+              value={maxArticles}
+              onChange={(e) => setMaxArticles(parseInt(e.target.value) || 10)}
+              className="w-16 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="all-depth" className="text-xs text-slate-600 whitespace-nowrap">Issue Derinliği:</label>
+            <input
+              id="all-depth"
+              type="number"
+              min="1"
+              max="50"
+              value={depth}
+              onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+              title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="all-max-tabs" className="text-xs text-slate-600 whitespace-nowrap">Max Tab:</label>
+            <input
+              id="all-max-tabs"
+              type="number"
+              min="1"
+              max="10"
+              value={maxTabs}
+              onChange={(e) => setMaxTabs(parseInt(e.target.value) || 3)}
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+              title="Issue içindeki makaleler için aynı anda açılacak tab sayısı"
+            />
+          </div>
+        </div>
+
+        {/* Issue Sırası */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-600 whitespace-nowrap">Issue Sırası:</span>
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setIssueOrder('newest_first')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                issueOrder === 'newest_first' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+              title="Issue'ları en yeniden en eskiye işle"
+            >
+              Yeniden Eskiye
+            </button>
+            <button
+              type="button"
+              onClick={() => setIssueOrder('oldest_first')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-slate-200 ${
+                issueOrder === 'oldest_first' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+              title="Issue'ları en eskiden en yeniye işle"
+            >
+              Eskiden Yeniye
+            </button>
+          </div>
+        </div>
+
+        {/* Headless & Sürekli Mod */}
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => setHeadless((v) => !v)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+              headless ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            title={headless ? 'Browser gizli çalışıyor' : 'Browser görünür çalışıyor'}
+          >
+            <span className={`w-2 h-2 rounded-full ${headless ? 'bg-emerald-400' : 'bg-slate-400'}`} />
+            Headless {headless ? 'Açık' : 'Kapalı'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setContinuous((v) => !v)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+              continuous ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            title={continuous ? 'Tüm scraperlar tamamlandıktan sonra otomatik yeniden başlar' : 'Sürekli mod kapalı'}
+          >
+            <span className={`w-2 h-2 rounded-full ${continuous ? 'bg-indigo-300 animate-pulse' : 'bg-slate-400'}`} />
+            Sürekli Mod {continuous ? 'Açık' : 'Kapalı'}
+          </button>
         </div>
       </div>
 

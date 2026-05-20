@@ -3330,26 +3330,47 @@ class ScraperManager:
 
     # ==================== All Scrapers ====================
     
-    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True) -> Dict[str, bool]:
+    def _all_scraper_cfg(self, site: str, headless: bool, max_articles, depth, max_tabs, issues_order, continuous) -> dict:
+        """
+        "Tümünü başlat" için tek bir scraper'a geçilecek parametreleri üretir.
+        İstekte değer verilmişse onu, verilmemişse ayarlardan okunan
+        self.<site>_* değerini kullanır (issues_order/continuous için fonksiyon
+        default'u). Böylece UI'daki Makale Limiti / Issue Derinliği / Max Tab /
+        Issue Sırası / Sürekli Mod alanları tüm modlarda geçerli olur.
+        """
+        return dict(
+            headless=headless,
+            max_articles=max_articles if max_articles else getattr(self, f"{site}_max_articles"),
+            depth=depth if depth else getattr(self, f"{site}_depth"),
+            max_tabs=max_tabs if max_tabs else getattr(self, f"{site}_max_tabs"),
+            issues_order=issues_order or "newest_first",
+            continuous=bool(continuous),
+        )
+
+    async def start_all(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True,
+                        max_articles: Optional[int] = None, depth: Optional[int] = None, max_tabs: Optional[int] = None, issues_order: Optional[str] = None, continuous: Optional[bool] = None) -> Dict[str, bool]:
         """
         Tüm scraper'ları PARALEL modda başlat.
         Scraper'lar 5 saniye arayla başlar ve aynı anda çalışır.
-        
+
         Args:
             headless: Browser headless mod
             ieee_enabled: IEEE scraper etkin mi
             sd_enabled: ScienceDirect scraper etkin mi
+            max_articles/depth/max_tabs/issues_order/continuous: UI/istek değerleri
+                (None ise ayarlardan/default'tan alınır)
         """
         import asyncio
-        
+
         results = {}
-        
+
         logger.info("PARALEL mod: Etkin scraper'lar aynı anda çalışacak")
         logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}, Wiley enabled: {wiley_enabled}, Springer enabled: {springer_enabled}")
-        
+        logger.info(f"  Ayarlar: max_articles={max_articles}, depth={depth}, max_tabs={max_tabs}, issues_order={issues_order}, continuous={continuous}")
+
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
-            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles, depth=self.ieee_depth)
+            results['ieee'] = await self.start_ieee(**self._all_scraper_cfg('ieee', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['ieee'] = False
             logger.info("IEEE scraper devre dışı, atlanıyor...")
@@ -3361,18 +3382,18 @@ class ScraperManager:
         
         # ScienceDirect'i başlat (etkinse)
         if sd_enabled:
-            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles, depth=self.sciencedirect_depth)
+            results['sciencedirect'] = await self.start_sciencedirect(**self._all_scraper_cfg('sciencedirect', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['sciencedirect'] = False
             logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
-        
+
 
         # ACM'i başlat (etkinse)
         if acm_enabled:
             # 5 saniye bekle
             if ieee_enabled or sd_enabled:
                 await asyncio.sleep(5)
-            results['acm'] = await self.start_acm(headless=headless, max_articles=self.acm_max_articles)
+            results['acm'] = await self.start_acm(**self._all_scraper_cfg('acm', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['acm'] = False
             logger.info("ACM scraper devre dışı, atlanıyor...")
@@ -3382,7 +3403,7 @@ class ScraperManager:
             # 5 saniye bekle
             if ieee_enabled or sd_enabled or acm_enabled:
                 await asyncio.sleep(5)
-            results['wiley'] = await self.start_wiley(headless=headless, max_articles=self.wiley_max_articles)
+            results['wiley'] = await self.start_wiley(**self._all_scraper_cfg('wiley', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['wiley'] = False
             logger.info("Wiley scraper devre dışı, atlanıyor...")
@@ -3390,34 +3411,38 @@ class ScraperManager:
         if springer_enabled:
             if ieee_enabled or sd_enabled or acm_enabled or wiley_enabled:
                 await asyncio.sleep(5)
-            results['springer'] = await self.start_springer(headless=headless, max_articles=self.springer_max_articles)
+            results['springer'] = await self.start_springer(**self._all_scraper_cfg('springer', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['springer'] = False
             logger.info("Springer scraper devre dışı, atlanıyor...")
 
         return results
-    
-    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True) -> Dict[str, bool]:
+
+    async def start_all_sequential(self, headless: bool = True, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True,
+                                   max_articles: Optional[int] = None, depth: Optional[int] = None, max_tabs: Optional[int] = None, issues_order: Optional[str] = None, continuous: Optional[bool] = None) -> Dict[str, bool]:
         """
         Tüm scraper'ları SIRALI modda başlat.
         Önce IEEE tamamlanır, sonra ScienceDirect başlar.
-        
+
         Args:
             headless: Browser headless mod
             ieee_enabled: IEEE scraper etkin mi
             sd_enabled: ScienceDirect scraper etkin mi
             wiley_enabled: Wiley scraper etkin mi
+            max_articles/depth/max_tabs/issues_order/continuous: UI/istek değerleri
+                (None ise ayarlardan/default'tan alınır)
         """
         import asyncio
-        
+
         results = {}
-        
+
         logger.info("SIRALI mod: Etkin scraper'lar sırayla çalışacak")
         logger.info(f"  IEEE enabled: {ieee_enabled}, ScienceDirect enabled: {sd_enabled}, ACM enabled: {acm_enabled}, Wiley enabled: {wiley_enabled}, Springer enabled: {springer_enabled}")
-        
+        logger.info(f"  Ayarlar: max_articles={max_articles}, depth={depth}, max_tabs={max_tabs}, issues_order={issues_order}, continuous={continuous}")
+
         # IEEE'yi başlat (etkinse)
         if ieee_enabled:
-            results['ieee'] = await self.start_ieee(headless=headless, max_articles=self.ieee_max_articles, depth=self.ieee_depth)
+            results['ieee'] = await self.start_ieee(**self._all_scraper_cfg('ieee', headless, max_articles, depth, max_tabs, issues_order, continuous))
             
             # IEEE'nin bitmesini bekle
             logger.info("IEEE scraper'ın bitmesi bekleniyor...")
@@ -3435,7 +3460,7 @@ class ScraperManager:
         # ScienceDirect'i başlat (etkinse)
         if sd_enabled:
             logger.info("ScienceDirect scraper başlatılıyor...")
-            results['sciencedirect'] = await self.start_sciencedirect(headless=headless, max_articles=self.sciencedirect_max_articles, depth=self.sciencedirect_depth)
+            results['sciencedirect'] = await self.start_sciencedirect(**self._all_scraper_cfg('sciencedirect', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['sciencedirect'] = False
             logger.info("ScienceDirect scraper devre dışı, atlanıyor...")
@@ -3451,7 +3476,7 @@ class ScraperManager:
                 await asyncio.sleep(3)
                 
             logger.info("ACM scraper başlatılıyor...")
-            results['acm'] = await self.start_acm(headless=headless, max_articles=self.acm_max_articles)
+            results['acm'] = await self.start_acm(**self._all_scraper_cfg('acm', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['acm'] = False
             logger.info("ACM scraper devre dışı, atlanıyor...")
@@ -3466,7 +3491,7 @@ class ScraperManager:
                 await asyncio.sleep(3)
                 
             logger.info("Wiley scraper başlatılıyor...")
-            results['wiley'] = await self.start_wiley(headless=headless, max_articles=self.wiley_max_articles)
+            results['wiley'] = await self.start_wiley(**self._all_scraper_cfg('wiley', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['wiley'] = False
             logger.info("Wiley scraper devre dışı, atlanıyor...")
@@ -3479,30 +3504,34 @@ class ScraperManager:
                 await asyncio.sleep(3)
 
             logger.info("Springer scraper başlatılıyor...")
-            results['springer'] = await self.start_springer(headless=headless, max_articles=self.springer_max_articles)
+            results['springer'] = await self.start_springer(**self._all_scraper_cfg('springer', headless, max_articles, depth, max_tabs, issues_order, continuous))
         else:
             results['springer'] = False
             logger.info("Springer scraper devre dışı, atlanıyor...")
 
         return results
     
-    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True) -> Dict[str, bool]:
+    async def start_all_round_robin(self, headless: bool = True, journals_per_switch: int = 3, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True,
+                                    max_articles: Optional[int] = None, depth: Optional[int] = None, max_tabs: Optional[int] = None, issues_order: Optional[str] = None, continuous: Optional[bool] = None) -> Dict[str, bool]:
         """
         Tüm scraper'ları ROUND ROBIN modda başlat.
         Her X journal'da bir driver kapatılıp diğer siteye geçilir.
         Döngü: IEEE -> ScienceDirect -> IEEE -> ...
-        
+
         Args:
             headless: Browser headless mod
             journals_per_switch: Kaç journal'da bir site değiştirilecek
             ieee_enabled: IEEE scraper etkin mi
             sd_enabled: ScienceDirect scraper etkin mi
+            max_articles/depth/max_tabs/issues_order/continuous: UI/istek değerleri
+                (None ise ayarlardan/default'tan alınır)
         """
         # Sadece bir scraper etkinse, sequential modda çalıştır
         active_count = sum([ieee_enabled, sd_enabled, acm_enabled, wiley_enabled, springer_enabled])
         if active_count == 1:
             logger.info("Sadece 1 scraper etkin, sequential modda çalışacak")
-            return await self.start_all_sequential(headless=headless, ieee_enabled=ieee_enabled, sd_enabled=sd_enabled, acm_enabled=acm_enabled, wiley_enabled=wiley_enabled, springer_enabled=springer_enabled)
+            return await self.start_all_sequential(headless=headless, ieee_enabled=ieee_enabled, sd_enabled=sd_enabled, acm_enabled=acm_enabled, wiley_enabled=wiley_enabled, springer_enabled=springer_enabled,
+                                                   max_articles=max_articles, depth=depth, max_tabs=max_tabs, issues_order=issues_order, continuous=continuous)
             
         if active_count == 0:
             logger.warning("Hiçbir scraper etkin değil!")
@@ -3516,21 +3545,31 @@ class ScraperManager:
         
         # Thread'de başlat
         self._round_robin_future = self._executor.submit(
-            self._run_round_robin_sync, 
+            self._run_round_robin_sync,
             headless,
             ieee_enabled,
             sd_enabled,
             acm_enabled,
             wiley_enabled,
-            springer_enabled
+            springer_enabled,
+            max_articles,
+            depth,
+            max_tabs,
+            issues_order,
+            continuous,
         )
         
         return {'ieee': ieee_enabled, 'sciencedirect': sd_enabled, 'acm': acm_enabled, 'wiley': wiley_enabled, 'springer': springer_enabled}
     
-    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True):
+    def _run_round_robin_sync(self, headless: bool, ieee_enabled: bool = True, sd_enabled: bool = True, acm_enabled: bool = True, wiley_enabled: bool = True, springer_enabled: bool = True,
+                              req_max_articles: Optional[int] = None, req_depth: Optional[int] = None, req_max_tabs: Optional[int] = None, req_issues_order: Optional[str] = None, req_continuous: Optional[bool] = None):
         """
         Round Robin modda scraper'ları çalıştır (ayrı thread'de).
         Her X journal'da bir site değiştirir.
+
+        req_* parametreleri "Tümünü başlat" isteğinden gelir; None ise
+        ayarlardan/default'tan okunur. req_continuous=True ise tüm siteler
+        bitince döngü baştan başlar (sürekli mod).
         """
         import time
         
@@ -3791,7 +3830,21 @@ class ScraperManager:
                         site_journals.get(s) is not None and site_indices.get(s, 0) >= len(site_journals.get(s, []))
                         for s in sites
                     )
-                    
+
+                    if all_completed and req_continuous and not self._round_robin_stop_flag.is_set():
+                        # Sürekli mod: tüm siteler bitti → state sıfırla, döngü baştan
+                        logger.info("[RoundRobin] Sürekli mod: tüm siteler tamamlandı, döngü yeniden başlıyor...")
+                        for _s in site_journals:
+                            site_journals[_s] = None
+                        for _s in site_indices:
+                            site_indices[_s] = 0
+                        for _s in site_priority_info:
+                            site_priority_info[_s] = None
+                        current_site_idx = 0
+                        all_completed = False
+                        time.sleep(2)
+                        continue
+
                     if not all_completed:
                         # Sonraki siteye geç
                         current_site_idx = (current_site_idx + 1) % len(sites)
@@ -3805,8 +3858,20 @@ class ScraperManager:
                 progress.add_log("info", f"{len(journals_to_process)} journal işlenecek ({start_idx+1}-{end_idx})")
                 
                 scraper = scrapers[current_site]
-                max_articles = self.ieee_max_articles if current_site == 'ieee' else self.sciencedirect_max_articles if current_site == 'sciencedirect' else self.acm_max_articles if current_site == 'acm' else self.wiley_max_articles if current_site == 'wiley' else self.springer_max_articles
-                
+                # İstekte değer verilmişse onu, yoksa site bazlı ayarı kullan
+                max_articles = req_max_articles if req_max_articles else (self.ieee_max_articles if current_site == 'ieee' else self.sciencedirect_max_articles if current_site == 'sciencedirect' else self.acm_max_articles if current_site == 'acm' else self.wiley_max_articles if current_site == 'wiley' else self.springer_max_articles)
+                # Paralel/sıralı modlarla aynı: site bazlı max_tabs (ayarlardan) →
+                # worker havuzu + adaptif eşzamanlılık (ConcurrencyController) devreye girer
+                max_tabs = req_max_tabs if req_max_tabs else (
+                    self.ieee_max_tabs if current_site == 'ieee'
+                    else self.sciencedirect_max_tabs if current_site == 'sciencedirect'
+                    else self.acm_max_tabs if current_site == 'acm'
+                    else self.wiley_max_tabs if current_site == 'wiley'
+                    else self.springer_max_tabs
+                )
+                depth_eff = req_depth if req_depth else 1
+                issues_order_eff = req_issues_order or "newest_first"
+
                 # Bu turdaki journal'ları işle
                 for i, journal in enumerate(journals_to_process):
                     # Stop kontrolü
@@ -3828,7 +3893,7 @@ class ScraperManager:
                     
                     try:
                         # Makale topla
-                        articles = scraper.scrape_journal_articles(journal, max_articles=max_articles)
+                        articles = scraper.scrape_journal_articles(journal, max_articles=max_articles, max_tabs=max_tabs, depth=depth_eff, issues_order=issues_order_eff)
                         
                         # Makale olsun olmasın journal'ı veritabanına kaydet
                         # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez

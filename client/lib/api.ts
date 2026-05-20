@@ -119,6 +119,22 @@ export async function getJournalCitationMetrics(journalId: string): Promise<Jour
   return fetchApi<JournalCitationMetrics>(`/journals/${journalId}/citation-metrics`);
 }
 
+export interface DeleteJournalResult {
+  success: boolean;
+  journal_id: string;
+  journal_name: string;
+  deleted: {
+    articles: number;
+    issues: number;
+    embeddings: number;
+    clusters_cleaned: number;
+  };
+}
+
+export async function deleteJournal(journalId: string): Promise<DeleteJournalResult> {
+  return fetchApi<DeleteJournalResult>(`/journals/${journalId}`, { method: 'DELETE' });
+}
+
 // ==================== Articles ====================
 
 export interface ArticleFilters {
@@ -332,10 +348,10 @@ export async function resumeSpringerScraper() {
   return fetchApi('/scrapers/springer/resume', { method: 'POST' });
 }
 
-export async function startAllScrapers(headless = true) {
+export async function startAllScrapers(headless = false, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/start-all', {
     method: 'POST',
-    body: JSON.stringify({ headless }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -673,17 +689,17 @@ export async function getJournalStats() {
   return fetchApi<any>('/stats/journals');
 }
 
-export async function startAllScrapersSequential(headless = true) {
+export async function startAllScrapersSequential(headless = false, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/start-all-sequential', {
     method: 'POST',
-    body: JSON.stringify({ headless }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
-export async function startAllScrapersRoundRobin(headless = true) {
+export async function startAllScrapersRoundRobin(headless = false, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/start-all-round-robin', {
     method: 'POST',
-    body: JSON.stringify({ headless }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 

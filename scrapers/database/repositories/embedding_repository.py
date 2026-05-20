@@ -86,7 +86,7 @@ class EmbeddingRepository(BaseRepository[ArticleEmbedding]):
         return [e.article_id for e in embeddings]
     
     async def exists_for_article(
-        self, 
+        self,
         article_id: PydanticObjectId,
         model_version: Optional[str] = None
     ) -> bool:
@@ -95,3 +95,10 @@ class EmbeddingRepository(BaseRepository[ArticleEmbedding]):
         if model_version:
             query["model_version"] = model_version
         return await ArticleEmbedding.find_one(query) is not None
+
+    async def delete_by_article_ids(self, article_ids: List[PydanticObjectId]) -> int:
+        """Verilen makale ID'lerine ait tüm embedding'leri sil"""
+        if not article_ids:
+            return 0
+        result = await ArticleEmbedding.find({"article_id": {"$in": article_ids}}).delete()
+        return result.deleted_count if result else 0

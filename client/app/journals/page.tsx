@@ -46,6 +46,17 @@ function JournalsContent() {
 
   const [data, setData] = useState<PaginatedResponse<Journal> | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const handleJournalDeleted = (journalId: string) => {
+    setData(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: prev.items.filter(j => j.id !== journalId),
+        total: prev.total - 1,
+      };
+    });
+  };
   const [searchTerm, setSearchTerm] = useState(searchNameParam ?? '');
   const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
   const initializedUrlParam = useRef(false);
@@ -206,12 +217,13 @@ function JournalsContent() {
           </div>
         ) : (
           data?.items.map((journal) => (
-            <JournalCard 
-              key={journal.id} 
-              journal={journal} 
-              getFullUrl={getFullUrl} 
+            <JournalCard
+              key={journal.id}
+              journal={journal}
+              getFullUrl={getFullUrl}
               defaultExpandedIssueId={journal.id === journalIdParam ? issueIdParam : null}
               highlightArticleId={journal.id === journalIdParam ? articleIdParam : null}
+              onDelete={handleJournalDeleted}
             />
           ))
         )}
