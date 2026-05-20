@@ -27,7 +27,7 @@ function PieLabel({
   const x = cx + radius * Math.cos(-midAngle * RADIAN);
   const y = cy + radius * Math.sin(-midAngle * RADIAN);
   const anchor = x > cx ? 'start' : 'end';
-  const MAX = 15;
+  const MAX = 40;
   const display = name.length > MAX ? name.slice(0, MAX) + '…' : name;
   return (
     <g>

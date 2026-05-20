@@ -467,7 +467,7 @@ export function TopicTrendChart({
       {pieSource && Object.keys(pieSource).length > 0 && (
         <div className="border border-slate-200 rounded-xl p-4 mt-4">
           <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">
-            Konu dağılımı (toplam makale sayısı)
+            Konu dağılımı
           </p>
           <TopicDistributionPie data={pieSource} colorMap={topicColorMap} />
         </div>
