@@ -1,6 +1,7 @@
 # Yapay Zeka Destekli Bilimsel Dergilerin Trend Analiz Sistemi
 
 **BM495-BM496 Bilgisayar Muhendisligi Projesi I-II - 2025-2026 Guz-Bahar**
+**Gazi Üniversitesi - Mühendislik Fakültesi - Bilgisayar Mühendisliği Bölümü**
 
 IEEE Xplore, ScienceDirect ve ACM Digital Library platformlarindan bilimsel makale meta-verilerini toplayan, NLP/AI ile konu kumeleme ve benzerlik analizi yapan ve sonuclari interaktif grafiklerle gorselestiren bir sistemdir.
 
