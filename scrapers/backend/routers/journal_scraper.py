@@ -41,7 +41,7 @@ _ACM_PATTERNS = [
 ]
 
 _WILEY_PATTERNS = [
-    re.compile(r"https?://(?:www\.)?onlinelibrary\.wiley\.com/(?:journal|toc)/[a-zA-Z0-9\-\.]+", re.IGNORECASE),
+    re.compile(r"https?://(?:[\w\-]+\.)?onlinelibrary\.wiley\.com/(?:journal|toc)/[a-zA-Z0-9\-\.]+", re.IGNORECASE),
 ]
 
 _SPRINGER_PATTERNS = [
@@ -358,6 +358,7 @@ async def start_single_journal(request: StartSingleJournalRequest):
         depth=request.depth,
         max_tabs=request.max_tabs,
         headless=request.headless,
+        force=request.force,
     )
 
     if not success:

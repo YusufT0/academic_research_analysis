@@ -186,8 +186,8 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
                 className={`${colors[source] || 'bg-slate-400'} transition-all duration-200 ${isHovered ? 'brightness-110' : 'opacity-90 hover:opacity-100'} cursor-pointer`}
                 style={{ width: `${percent}%` }}
                 onMouseEnter={() => setHoveredSource(source)}
-                title={`${labels[source] || source}: ${percent.toFixed(1)}% (${info.count.toLocaleString()} makale)`}
-                aria-label={`${labels[source] || source} ${percent.toFixed(1)}%`}
+                title={`${labels[source] || source}: %${percent.toFixed(1)} (${info.count.toLocaleString()} makale)`}
+                aria-label={`${labels[source] || source} %${percent.toFixed(1)}`}
               />
             );
           })}
@@ -200,7 +200,7 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
             <div className="absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm">
               <span className="text-slate-900">{labels[hoveredSource] || hoveredSource}</span>
               <span className="mx-1 text-slate-400">•</span>
-              <span>{hoveredPercent.toFixed(1)}%</span>
+              <span>%{hoveredPercent.toFixed(1)}</span>
               <span className="mx-1 text-slate-400">•</span>
               <span>{hoveredInfo.count.toLocaleString()} makale</span>
             </div>
@@ -223,7 +223,7 @@ function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
                 <p className="font-medium text-slate-900">{labels[source] || source}</p>
                 <p className="text-sm text-slate-500">{info.count.toLocaleString()} makale</p>
               </div>
-              <p className={`text-lg font-bold ${isHovered ? 'text-indigo-700' : 'text-slate-900'}`}>{percent.toFixed(1)}%</p>
+              <p className={`text-lg font-bold ${isHovered ? 'text-indigo-700' : 'text-slate-900'}`}>%{percent.toFixed(1)}</p>
             </div>
           );
         })}

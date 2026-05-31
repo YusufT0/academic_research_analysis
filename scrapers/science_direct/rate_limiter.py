@@ -46,23 +46,153 @@ class RateLimiter:
         logger.info(f"  ⏳ Random bekleme: {wait_time:.2f} saniye")
         time.sleep(wait_time)
     
+    # Cloudflare JS challenge başlık anahtar kelimeleri (çok dilli)
+    CLOUDFLARE_TITLE_KEYWORDS = [
+        "just a moment",        # İngilizce
+        "bir dakika lütfen",    # Türkçe
+        "lütfen bekleyin",      # Türkçe alternatif
+        "checking your browser",
+        "please wait",
+        "attention required",
+        "bitte warten",         # Almanca
+        "un moment",            # Fransızca
+    ]
+
+    def check_cloudflare(self) -> bool:
+        """
+        Cloudflare JS challenge sayfasını kontrol eder ('Bir dakika lütfen...' vb.)
+
+        Returns:
+            bool: Cloudflare challenge tespit edildiyse True
+        """
+        try:
+            title = ""
+            try:
+                title = (self.driver.execute_script("return document.title") or "").lower()
+            except Exception:
+                pass
+
+            if any(kw in title for kw in self.CLOUDFLARE_TITLE_KEYWORDS):
+                logger.warning(f"CLOUDFLARE CHALLENGE TESPİT EDİLDİ! (başlık: '{title[:40]}')")
+                return True
+
+            # CF'ye özgü DOM elementleri
+            cf_js = (
+                "return !!(document.getElementById('cf-challenge-running') || "
+                "document.querySelector('.cf-browser-verification') || "
+                "document.querySelector('[data-cf-challenge]') || "
+                "document.querySelector('div.cf-challenge-container'))"
+            )
+            try:
+                if self.driver.execute_script(cf_js):
+                    logger.warning("CLOUDFLARE CHALLENGE TESPİT EDİLDİ! (DOM elementi)")
+                    return True
+            except Exception:
+                pass
+
+            return False
+        except Exception as e:
+            logger.warning(f"  Cloudflare kontrolü hatası: {e}")
+            return False
+
+    def wait_for_cloudflare(self, timeout: int = 20) -> bool:
+        """
+        Cloudflare JS challenge'ın otomatik geçmesini bekler.
+        undetected-chromedriver genellikle bunu otomatik çözer.
+
+        Args:
+            timeout: Maksimum bekleme süresi (saniye)
+
+        Returns:
+            bool: Challenge geçildiyse True, timeout olduysa False
+        """
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.common.exceptions import TimeoutException
+
+        logger.warning(f"Cloudflare challenge bekleniyor (max {timeout}s)...")
+        try:
+            WebDriverWait(self.driver, timeout, poll_frequency=0.5).until(
+                lambda d: not self.check_cloudflare()
+            )
+            logger.success("Cloudflare challenge geçildi!")
+            return True
+        except (TimeoutException, Exception):
+            logger.warning(f"Cloudflare challenge {timeout}s içinde geçilemedi")
+            return False
+
+    def check_captcha(self) -> bool:
+        """
+        ScienceDirect captcha / robot doğrulama sayfasını kontrol eder.
+
+        Returns:
+            bool: Captcha sayfası tespit edildiyse True
+        """
+        try:
+            title = (self.driver.title or "").lower()
+            if any(kw in title for kw in ["robot", "captcha", "human verification"]):
+                logger.warning("CAPTCHA SAYFASI TESPİT EDİLDİ! (başlık)")
+                return True
+
+            page_text = (self.driver.page_source or "").lower()
+            captcha_keywords = [
+                "are you a robot",
+                "please confirm you are a human",
+                "completing the captcha challenge",
+                "captcha challenge",
+                "verify you are human",
+            ]
+            matched = [kw for kw in captcha_keywords if kw in page_text]
+            if matched:
+                logger.warning(f"CAPTCHA SAYFASI TESPİT EDİLDİ! ({matched[0]})")
+                return True
+
+            return False
+        except Exception as e:
+            logger.warning(f"  Captcha kontrolü hatası: {e}")
+            return False
+
+    def handle_captcha(self, url: str, wait_time: int = 30) -> bool:
+        """
+        Captcha sayfası tespit edildiğinde tarayıcıyı yeni user agent ile yeniden
+        başlatır. undetected-chromedriver kullandığı için SeleniumBase yok;
+        yeniden başlatma en güvenilir çözümdür.
+
+        Args:
+            url: Yeniden denecek URL
+            wait_time: Yeniden başlatmadan önce kısa bekleme (saniye)
+
+        Returns:
+            bool: Başarılı ise True
+        """
+        logger.warning("=" * 60)
+        logger.warning("CAPTCHA SAYFASI - YENİ USER AGENT İLE YENİDEN BAŞLATILIYOR")
+        logger.warning("=" * 60)
+
+        logger.info(f"  {wait_time} saniye bekleniyor...")
+        time.sleep(wait_time)
+
+        if self.selenium_driver:
+            return self._restart_browser_and_retry(url)
+
+        return False
+
     def check_rate_limiting(self) -> bool:
         """
         Sayfa rate limiting'e takılmış mı kontrol eder
-        
+
         Returns:
             bool: Rate limiting varsa True, yoksa False
         """
         try:
             page_title = self.driver.title
-            
+
             if "Request Temporarily Blocked" in page_title or "ScienceDirect Request Temporarily Blocked" in page_title:
                 logger.warning("RATE LIMITING TESPİT EDİLDİ!")
                 logger.info(f"  Sayfa başlığı: {page_title}")
                 return True
-            
+
             return False
-            
+
         except Exception as e:
             logger.warning(f"  Rate limiting kontrolü hatası: {e}")
             return False
@@ -240,10 +370,14 @@ class RateLimiter:
     def check_all_errors(self) -> str:
         """
         Tüm hata türlerini kontrol eder
-        
+
         Returns:
-            str: Hata türü ('rate_limit', 'content_error', 'none')
+            str: Hata türü ('cloudflare', 'captcha', 'rate_limit', 'content_error', 'none')
         """
+        if self.check_cloudflare():
+            return 'cloudflare'
+        if self.check_captcha():
+            return 'captcha'
         if self.check_rate_limiting():
             return 'rate_limit'
         if self.check_content_error():

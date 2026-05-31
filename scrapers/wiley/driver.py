@@ -376,6 +376,11 @@ class SeleniumDriver:
                     finally:
                         executor.shutdown(wait=False)
                     time.sleep(1.5)
+                    # Yeniden yükleme Cloudflare sayfasına düştüyse render döngüsünü kır
+                    _cf_title = self._get_title()
+                    if any(kw in _cf_title.lower() for kw in ["just a moment", "checking", "lütfen", "moment"]):
+                        logger.warning("Yeniden yükleme Cloudflare'e düştü, render kontrol durduruluyor")
+                        break
 
             except Exception as e:
                 logger.warning(f"Render kontrol hatası: {e}")
@@ -455,7 +460,19 @@ class SeleniumDriver:
 
                 time.sleep(0.5)
                 self.wait_for_page_load(timeout=max(wait_after * 5, 15))
-                self._solve_cloudflare()
+
+                if not self._solve_cloudflare():
+                    if attempt < max_attempts - 1:
+                        wait = min(backoff_base ** (attempt + 1), backoff_cap)
+                        logger.warning(
+                            f"Cloudflare geçilemedi, {wait:.1f}s sonra yeniden deneniyor..."
+                        )
+                        time.sleep(wait)
+                        continue
+                    else:
+                        logger.error("Cloudflare tüm denemelerde geçilemedi")
+                        break
+
                 self._wait_for_render(url)
 
                 logger.success("Sayfa yüklendi")

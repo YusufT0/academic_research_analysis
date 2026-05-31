@@ -134,12 +134,12 @@ class PageNavigator:
                 const active = document.querySelector('div.pagination-bar ul button.active');
                 const currentPage = parseInt((active?.textContent || '1').trim(), 10) || 1;
 
+                // Only check content-area spinners; AI-search and generic spinners
+                // can remain active in the background after content has loaded.
                 const spinner = document.querySelector(
                     'xpl-browse-results-list .List-results-message i.fa-spinner.fa-spin, ' +
                     '.progress-spinner-container-normal .fa-spinner.fa-spin, ' +
-                    '.progress-spinner-container-small .fa-spinner.fa-spin, ' +
-                    '.progress-spinner-container-ai-search .fa-spinner.fa-spin, ' +
-                    'i.fa-spinner.fa-spin'
+                    '.progress-spinner-container-small .fa-spinner.fa-spin'
                 );
                 const spinnerVisible = !!(spinner && spinner.offsetParent !== null);
 
@@ -164,8 +164,12 @@ class PageNavigator:
 
             if previous_first_key and expected_page is None:
                 first_changed = str(state.get('firstKey', '')) and str(state.get('firstKey', '')) != previous_first_key
-                return spinner_ok and results_ok and first_changed
+                return results_ok and first_changed
 
+            # Content is ready when we're on the correct page and results are present.
+            # Don't block on background spinners that persist after content loads.
+            if page_ok and results_ok:
+                return True
             return page_ok and spinner_ok and results_ok
 
         try:

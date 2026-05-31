@@ -968,6 +968,15 @@ class WileyScraper:
             logger.warning(f"{journal_name}: journal_id bulunamadı, atlanıyor")
             return []
 
+        # Derive base URL from journal URL so subdomains like advanced.onlinelibrary.wiley.com
+        # are correctly used for all navigation (loi, toc, hub, index, article URLs).
+        _jurl = journal.get('url', '')
+        if _jurl:
+            from urllib.parse import urlparse as _urlparse
+            _p = _urlparse(_jurl)
+            if _p.netloc and _p.netloc.endswith('onlinelibrary.wiley.com'):
+                self.WILEY_BASE = f"{_p.scheme}://{_p.netloc}"
+
         logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_name}")
 
         # ── 0. Resolve name from URL ──────────────────────────────────────────

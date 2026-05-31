@@ -1567,7 +1567,7 @@ class NLPService:
 
         matched_clusters = []
         for i, cluster in enumerate(clusters):
-            if similarities[i] >= 0.80:
+            if similarities[i] >= 0.40:
                 matched_clusters.append((cluster, similarities[i]))
 
         if not matched_clusters:

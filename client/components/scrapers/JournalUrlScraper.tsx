@@ -70,7 +70,7 @@ const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'def
   wiley: {
     label: 'Wiley Online Library',
     variant: 'default',
-    regex: /https?:\/\/onlinelibrary\.wiley\.com\/(journal|toc)\/[a-zA-Z0-9\-]+/i,
+    regex: /https?:\/\/(?:[\w\-]+\.)?onlinelibrary\.wiley\.com\/(journal|toc)\/[a-zA-Z0-9\-]+/i,
   },
   springer: {
     label: 'Springer Link',
@@ -689,6 +689,9 @@ export function JournalUrlScraper() {
               const s = (event.data as Record<string, unknown>).status as string;
               if (['completed', 'stopped', 'error'].includes(s)) {
                 setFlowState(s === 'error' ? 'error' : 'done');
+              } else if (['running', 'starting', 'paused', 'stopping'].includes(s)) {
+                // New scrape has started — reset to scraping even if UI was stuck on 'done'.
+                setFlowState('scraping');
               }
             }
           }
@@ -710,6 +713,8 @@ export function JournalUrlScraper() {
         setScraperStatus(s);
         if (['completed', 'stopped', 'error'].includes(s.status)) {
           setFlowState(s.status === 'error' ? 'error' : 'done');
+        } else if (['running', 'starting', 'paused', 'stopping'].includes(s.status)) {
+          setFlowState('scraping');
         }
       } catch { /* ignore */ }
     }, 3000);
@@ -829,9 +834,12 @@ export function JournalUrlScraper() {
 
     setFlowState('scraping');
     setScraperStatus(null);
+    setResolvedJournal(null);
+    setDetailError(null);
 
     try {
-      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs);
+      const force = existsInfo?.exists ?? false;
+      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs, force);
       startTracking(scraperType);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Scraper başlatılamadı';

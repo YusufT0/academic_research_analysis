@@ -489,7 +489,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Time Info */}
         <div className="flex items-center justify-between text-sm text-slate-500">
           {effectiveScraper.started_at && (
-            <span>Başlangıç: {new Date(effectiveScraper.started_at).toLocaleTimeString('tr-TR')}</span>
+            <span>Başlangıç: {new Date(effectiveScraper.started_at.endsWith('Z') ? effectiveScraper.started_at : effectiveScraper.started_at + 'Z').toLocaleTimeString('tr-TR')}</span>
           )}
           {localElapsed > 0 && (
             <span>Geçen süre: {Math.floor(localElapsed / 60)} dk {Math.floor(localElapsed % 60)} sn</span>

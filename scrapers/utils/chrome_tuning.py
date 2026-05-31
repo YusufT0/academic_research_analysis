@@ -94,14 +94,20 @@ def enable_cdp_request_blocking(
     bu **garanti yol**. Hiçbir koşulda fatal değildir (best-effort, try/except).
 
     - Network.setBlockedURLs: bilinen reklam/tracker domainleri
-    - Fetch.enable + RequestPattern: Image/Font/Media resource type'larını engelle
+    - Görsel engelleme: blink-settings=imagesEnabled=false (perf_chrome_args) ile yapılır.
+
+    NOT: Fetch.enable / requestPaused yaklaşımı Selenium'da kullanılmaz.
+    Selenium'un senkron modeli Fetch.requestPaused event'lerine yanıt vermeyi
+    desteklemediğinden, yakalanan istekler sonsuza asılı kalır ve readyState
+    hiç 'complete' olmaz — her fetch 15+ sn timeout'a düşer.
     """
     if driver is None:
         return
 
     patterns = patterns or []
 
-    # 1) Reklam/tracker URL pattern engelleme
+    # Reklam/tracker URL pattern engelleme — Network.setBlockedURLs hemen
+    # net::ERR_BLOCKED_BY_CLIENT döndürür, istekler asılı kalmaz.
     try:
         driver.execute_cdp_cmd("Network.enable", {})
         if patterns:
@@ -113,36 +119,6 @@ def enable_cdp_request_blocking(
             )
     except Exception as e:
         logger.warning("CDP Network.setBlockedURLs başarısız", error=str(e))
-
-    # 2) Resource-type bazlı engelleme (görsel/font/medya)
-    resource_types = []
-    if block_images:
-        resource_types.append("Image")
-    if block_fonts:
-        resource_types.append("Font")
-    if block_media:
-        resource_types += ["Media"]
-
-    if not resource_types:
-        return
-
-    try:
-        request_patterns = [
-            {"urlPattern": "*", "resourceType": rt, "requestStage": "Request"}
-            for rt in resource_types
-        ]
-        driver.execute_cdp_cmd("Fetch.enable", {"patterns": request_patterns})
-
-        # Engellenen istekleri otomatik abort etmek için event handler gerekir;
-        # selenium senkron olduğu için Fetch.failRequest'i pasif moda alırız:
-        # patterns sadece Request stage'i yakalar, devamı blink-settings/prefs ile.
-        logger.info(
-            "resource_blocking_enabled",
-            method="Fetch.enable",
-            resource_types=resource_types,
-        )
-    except Exception as e:
-        logger.warning("CDP Fetch.enable başarısız", error=str(e))
 
 
 def maybe_emulate_slow_network(driver, settings) -> None:

@@ -416,6 +416,7 @@ export async function startSingleJournalScraper(
   depth = 1,
   headless = false,
   maxTabs = 3,
+  force = false,
 ) {
   return fetchApi('/scrapers/journal/start', {
     method: 'POST',
@@ -426,6 +427,7 @@ export async function startSingleJournalScraper(
       depth,
       headless,
       max_tabs: maxTabs,
+      force,
     }),
   });
 }

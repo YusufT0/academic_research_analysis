@@ -186,6 +186,13 @@ def resilient_get(
                             attempt=attempt + 1, timeout=per_attempt_timeout)
             wd.get(url)
             _wait_ready(wd, max(wait_after * 5, 15))
+            # Safety net: stop any leftover resource loads so the browser tab
+            # doesn't spin indefinitely. No-op when readyState is already complete.
+            # Called AFTER _wait_ready so async redirect scripts have time to run.
+            try:
+                wd.execute_script("window.stop();")
+            except Exception:
+                pass
             time.sleep(0.3)  # kısa DOM render buffer
 
             result.ok = True

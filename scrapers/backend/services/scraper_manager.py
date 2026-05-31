@@ -657,6 +657,7 @@ class ScraperManager:
         depth: int = 1,
         max_tabs: int = 3,
         headless: bool = True,
+        force: bool = False,
     ) -> bool:
         """
         Tek bir journal URL'sini scrape eder.
@@ -703,6 +704,7 @@ class ScraperManager:
                 "max_articles": max_articles,
                 "depth": depth,
                 "max_tabs": max_tabs,
+                "force": force,
             }
             return await self.start_ieee(
                 headless=headless,
@@ -728,6 +730,7 @@ class ScraperManager:
                 "max_articles": max_articles,
                 "depth": depth,
                 "max_tabs": max_tabs,
+                "force": force,
             }
             return await self.start_sciencedirect(
                 headless=headless,
@@ -753,6 +756,7 @@ class ScraperManager:
                 "max_articles": max_articles,
                 "depth": depth,
                 "max_tabs": max_tabs,
+                "force": force,
             }
             return await self.start_acm(
                 headless=headless,
@@ -778,6 +782,7 @@ class ScraperManager:
                 "max_articles": max_articles,
                 "depth": depth,
                 "max_tabs": max_tabs,
+                "force": force,
             }
             return await self.start_wiley(
                 headless=headless,
@@ -803,6 +808,7 @@ class ScraperManager:
                 "max_articles": max_articles,
                 "depth": depth,
                 "max_tabs": max_tabs,
+                "force": force,
             }
             return await self.start_springer(
                 headless=headless,
@@ -1020,7 +1026,13 @@ class ScraperManager:
 
                     # DB'deki mevcut issue URL'lerini al (depth sayımı için)
                     existing_issue_urls: set = set()
-                    if self._db_service and self._loop:
+                    _force = (
+                        progress.is_single_journal_mode
+                        and bool(self._ieee_single_journal_context and self._ieee_single_journal_context.get("force"))
+                    )
+                    if _force:
+                        logger.info(f"[IEEE Thread] force=True — mevcut issue listesi atlanıyor, tümü yeniden işlenecek")
+                    elif self._db_service and self._loop:
                         async def _get_ieee_existing_issue_urls():
                             journal_doc = await self._db_service.get_journal(
                                 journal.get('name', ''), 'ieeexplore'
@@ -1511,7 +1523,13 @@ class ScraperManager:
                     # DB'de bu journal için mevcut issue URL'lerini çek
                     # (daha önce işlenmiş issue'lar depth sayımına dahil edilmez)
                     existing_issue_urls: set = set()
-                    if self._db_service and self._loop:
+                    _force = (
+                        progress.is_single_journal_mode
+                        and bool(self._sd_single_journal_context and self._sd_single_journal_context.get("force"))
+                    )
+                    if _force:
+                        logger.info(f"[SD Thread] force=True — mevcut issue listesi atlanıyor, tümü yeniden işlenecek")
+                    elif self._db_service and self._loop:
                         async def _get_existing_issue_urls():
                             journal_doc = await self._db_service.get_journal(
                                 journal.get('name', ''), 'sciencedirect'
@@ -1999,7 +2017,13 @@ class ScraperManager:
 
                     # DB'deki mevcut issue URL'lerini al (depth sayımı için)
                     existing_issue_urls: set = set()
-                    if self._db_service and self._loop:
+                    _force = (
+                        progress.is_single_journal_mode
+                        and bool(self._acm_single_journal_context and self._acm_single_journal_context.get("force"))
+                    )
+                    if _force:
+                        logger.info(f"[ACM Thread] force=True — mevcut issue listesi atlanıyor, tümü yeniden işlenecek")
+                    elif self._db_service and self._loop:
                         async def _get_acm_existing_issue_urls():
                             journal_doc = await self._db_service.get_journal(
                                 journal.get('name', ''), 'acm'
@@ -2474,7 +2498,13 @@ class ScraperManager:
                 try:
                     existing_issue_urls = set()
                     existing_article_dois = set()
-                    if self._db_service and self._loop:
+                    _force = (
+                        progress.is_single_journal_mode
+                        and bool(self._wiley_single_journal_context and self._wiley_single_journal_context.get("force"))
+                    )
+                    if _force:
+                        logger.info(f"[Wiley Thread] force=True — mevcut issue/makale listesi atlanıyor, tümü yeniden işlenecek")
+                    elif self._db_service and self._loop:
                         try:
                             # async DB servisine threadsafe çağrı yap
                             journal_future = asyncio.run_coroutine_threadsafe(

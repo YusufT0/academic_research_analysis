@@ -52,7 +52,7 @@ class ScienceDirectScraper:
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
-            use_undetected: undetected-chromedriver kullan (Cloudflare bypass)
+            use_undetected: (yoksayılır) Geriye dönük uyumluluk — SeleniumBase kullanılır
             stop_flag: threading.Event - durdurma sinyali için
             pause_flag: threading.Event - duraklatma sinyali için
         """
@@ -126,9 +126,12 @@ class ScienceDirectScraper:
                 use_undetected=getattr(self.selenium_driver, 'use_undetected', True),
             )
             try:
-                wd.start()
-                self._worker_pool.append(wd)
-                logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                if wd.start():  # start() → self (truthy) başarıda, None başarısızlıkta
+                    self._worker_pool.append(wd)
+                    logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                else:
+                    logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+                    break
             except Exception:
                 logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
                 break
@@ -228,36 +231,24 @@ class ScienceDirectScraper:
                     logger.info(f"Yeniden deneniyor ({attempt}/{max_retries})...")
                 
                 logger.step(1, 3, f"Sayfa açılıyor: {self.config.base_url}")
-                self.driver.get(self.config.base_url)
-                
-                # Sayfanın ilk yüklenmesini bekle (sabit sleep yerine)
-                logger.loading("Cloudflare kontrolü bekleniyor")
-                WebDriverWait(self.driver, self.config.timeout).until(
-                    lambda d: d.execute_script("return document.readyState") in ("interactive", "complete")
-                )
-                
-                # Cloudflare challenge görünüyorsa kısa, adaptif bekleme yap
                 try:
-                    challenge_detected = self.driver.execute_script("""
-                        const url = (window.location.href || '').toLowerCase();
-                        const body = (document.body?.innerText || '').toLowerCase();
-                        return url.includes('challenge') || body.includes('captcha') || body.includes('checking your browser');
-                    """)
+                    self.driver.get(self.config.base_url)
+                except TimeoutException:
+                    pass  # eager/none stratejisinde timeout normal, devam et
+
+                # readyState'in interactive/complete olmasını bekle — 30s'de kes
+                logger.loading("Cloudflare kontrolü bekleniyor")
+                try:
+                    WebDriverWait(self.driver, 30, poll_frequency=0.5).until(
+                        lambda d: d.execute_script("return document.readyState") in ("interactive", "complete")
+                    )
                 except Exception:
-                    challenge_detected = False
-                
-                if challenge_detected:
-                    logger.warning("Cloudflare challenge algılandı, geçiş bekleniyor...")
-                    try:
-                        WebDriverWait(self.driver, 8, poll_frequency=0.25).until(
-                            lambda d: not d.execute_script("""
-                                const url = (window.location.href || '').toLowerCase();
-                                const body = (document.body?.innerText || '').toLowerCase();
-                                return url.includes('challenge') || body.includes('captcha') || body.includes('checking your browser');
-                            """)
-                        )
-                    except TimeoutException:
-                        pass
+                    # execute_script timeout veya readyState hiç gelmedi — yine de devam et
+                    pass
+
+                # Cloudflare challenge görünüyorsa max 20s bekle (Türkçe dahil çok dilli)
+                if self.rate_limiter and self.rate_limiter.check_cloudflare():
+                    self.rate_limiter.wait_for_cloudflare(timeout=20)
                 
                 logger.success("Sayfa başarıyla yüklendi")
                 logger.info(f"  - Sayfa başlığı: {self.driver.title}")
@@ -625,35 +616,84 @@ class ScienceDirectScraper:
                         if depth and _count_new(all_issues) + _count_new(current_page_issues) >= depth:
                             break
 
+                        panel_id = None
+                        btn_text = ""
                         try:
                             panel_id = btn.get_attribute('aria-controls')
-                            # Butonu görünür alana kaydır, JS click ile tıkla
-                            # (sticky header/overlay nedeniyle normal click çalışmıyor)
+                            btn_text = btn.text or ""
                             self.driver.execute_script(
                                 "arguments[0].scrollIntoView({block:'center'});", btn
                             )
                             time.sleep(0.3)
                             self.driver.execute_script("arguments[0].click();", btn)
 
-                            # Önce butonun aria-expanded=true olmasını bekle (hızlı),
-                            # ardından panel içeriğinin yüklenmesini bekle
                             WebDriverWait(self.driver, 10).until(
                                 lambda d: btn.get_attribute("aria-expanded") == "true"
                             )
+
                             if panel_id:
-                                WebDriverWait(self.driver, 30).until(
-                                    EC.presence_of_element_located((
-                                        By.CSS_SELECTOR,
-                                        f"[id='{panel_id}'] section.js-issue-list-content"
-                                    ))
+                                # Esnek selector: issue link, item veya herhangi bir section içeriği
+                                flexible_sel = (
+                                    f"[id='{panel_id}'] a.js-issue-item-link, "
+                                    f"[id='{panel_id}'] .issue-item, "
+                                    f"[id='{panel_id}'] section"
                                 )
+                                try:
+                                    WebDriverWait(self.driver, 15).until(
+                                        EC.presence_of_element_located((By.CSS_SELECTOR, flexible_sel))
+                                    )
+                                except TimeoutException:
+                                    # AJAX başarısız — button metninden yılı çıkar, ?year= fallback
+                                    import re as _re
+                                    year_match = _re.search(r'\b(20\d{2})\b', btn_text)
+                                    if year_match:
+                                        year = year_match.group(1)
+                                        year_url = f"{issues_url}?year={year}"
+                                        logger.warning(
+                                            f"Accordion AJAX başarısız ({btn_text.strip()[:40]}), "
+                                            f"fallback: {year_url}"
+                                        )
+                                        try:
+                                            self.driver.get(year_url)
+                                            WebDriverWait(self.driver, 15).until(
+                                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues"))
+                                            )
+                                            time.sleep(0.5)
+                                            handle_cookie_consent(self.driver)
+                                            # Year sayfasındaki issue'ları al ve toplam listeye ekle
+                                            year_issues = JournalParser.parse_issues_from_issues_page(
+                                                self.driver.page_source
+                                            )
+                                            if year_issues:
+                                                logger.info(f"  Fallback ile {len(year_issues)} issue alındı ({year})")
+                                                all_issues.extend(year_issues)
+                                            # Ana /issues sayfasına dön
+                                            self.driver.get(issues_url)
+                                            WebDriverWait(self.driver, 10).until(
+                                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues"))
+                                            )
+                                            time.sleep(0.5)
+                                            handle_cookie_consent(self.driver)
+                                            # Yeniden açık olan accordion'ları bul
+                                            closed_buttons = self.driver.find_elements(
+                                                By.CSS_SELECTOR,
+                                                "#all-issues li.accordion-panel button.accordion-panel-title[aria-expanded='false']"
+                                            )
+                                            if issues_order == "oldest_first":
+                                                closed_buttons = list(reversed(closed_buttons))
+                                        except Exception as fe:
+                                            logger.warning(f"Fallback yıl sayfası hatası ({year}): {fe}")
+                                    else:
+                                        logger.warning(
+                                            f"Accordion içeriği yüklenemedi (AJAX timeout), "
+                                            f"yıl tespit edilemedi: {btn_text.strip()[:40]}"
+                                        )
                             else:
                                 self._interruptible_sleep(2)
 
                         except TimeoutException:
                             logger.warning(
-                                f"Accordion içeriği yüklenemedi: "
-                                f"{btn.get_attribute('id') or '?'}, atlanıyor"
+                                f"Accordion genişletilemedi: {btn.get_attribute('id') or '?'}"
                             )
                         except Exception as e:
                             logger.warning(f"Accordion açma hatası: {e}")
@@ -750,6 +790,8 @@ class ScienceDirectScraper:
         logger.info(f"  Issue URL: {full_issue_url}")
 
         self.driver.get(full_issue_url)
+        if self.rate_limiter.check_cloudflare():
+            self.rate_limiter.wait_for_cloudflare(timeout=20)
         try:
             WebDriverWait(self.driver, 15).until(
                 EC.presence_of_element_located((By.TAG_NAME, "main"))
@@ -937,18 +979,47 @@ class ScienceDirectScraper:
                     article_data = None
 
                     try:
-                        if local_driver.get(full_url, wait_after=2):
-                            try:
-                                WebDriverWait(local_driver.driver, 8).until(
-                                    EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
-                                )
-                            except Exception:
-                                pass
+                        local_driver.get(full_url, wait_after=2)
 
-                            article_data = ArticleParser.extract_article_details(
-                                local_driver.driver.page_source,
-                                article_url,
+                        # Cloudflare JS challenge kontrolü ("Bir dakika lütfen...")
+                        try:
+                            title = (local_driver.driver.execute_script("return document.title") or "").lower()
+                            cf_title_kws = ["just a moment", "bir dakika lütfen", "lütfen bekleyin",
+                                            "checking your browser", "please wait", "attention required"]
+                            if any(kw in title for kw in cf_title_kws):
+                                logger.warning(f"Worker-{worker_id}: Cloudflare challenge tespit edildi, 20s bekleniyor...")
+                                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                                from selenium.common.exceptions import TimeoutException as _TE
+                                try:
+                                    _WDW(local_driver.driver, 20, poll_frequency=0.5).until(
+                                        lambda d: not any(
+                                            kw in (d.execute_script("return document.title") or "").lower()
+                                            for kw in cf_title_kws
+                                        )
+                                    )
+                                    logger.success(f"Worker-{worker_id}: Cloudflare geçildi")
+                                except (_TE, Exception):
+                                    logger.warning(f"Worker-{worker_id}: Cloudflare 20s'de geçilemedi, restart")
+                                    if pool_index >= 0:
+                                        self._restart_single_worker(worker_id, pool_index, "cloudflare_challenge")
+                                    else:
+                                        local_driver.restart()
+                                    jobs.put((idx, article_stub))
+                                    continue
+                        except Exception:
+                            pass
+
+                        try:
+                            WebDriverWait(local_driver.driver, 8).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
                             )
+                        except Exception:
+                            pass
+
+                        article_data = ArticleParser.extract_article_details(
+                            local_driver.driver.page_source,
+                            article_url,
+                        )
                     except RateLimitException as e:
                         logger.warning(f"Worker-{worker_id}: rate limit hatası")
                         if pool_index >= 0:
@@ -1048,12 +1119,53 @@ class ScienceDirectScraper:
             except TimeoutException:
                 # Timeout aştıktan sonra DOM içeriği erişilebilir, devam et
                 pass
+            # Cloudflare JS challenge bekleme ("Bir dakika lütfen..." / "Just a moment...")
+            if self.rate_limiter.check_cloudflare():
+                resolved = self.rate_limiter.wait_for_cloudflare(timeout=20)
+                if not resolved:
+                    # Otomatik geçemedi — captcha'ya dönüşmüş olabilir, restart dene
+                    logger.warning("Cloudflare otomatik geçilemedi, tarayıcı yeniden başlatılıyor...")
+                    if self.rate_limiter.handle_captcha(full_url, wait_time=5):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        self.rate_limiter.add_to_retry_queue(article_url)
+                        return None
+
             try:
                 WebDriverWait(self.driver, 8).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
                 )
             except Exception:
                 pass
+
+            # Captcha kontrolü ("Are you a robot?")
+            if self.rate_limiter.check_captcha():
+                if retry_attempt == 0:
+                    logger.info("İlk captcha - Yeni User Agent ile tarayıcı yeniden başlatılıyor (30 saniye bekleme)...")
+                    if self.rate_limiter.handle_captcha(full_url, wait_time=30):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        logger.warning(f"  Makale retry listesine eklendi: {article_url}")
+                        self.rate_limiter.add_to_retry_queue(article_url)
+                        return None
+                elif retry_attempt == 1:
+                    logger.info("İkinci captcha - Yeni User Agent ile yeniden başlatılıyor (60 saniye bekleme)...")
+                    if self.rate_limiter.handle_captcha(full_url, wait_time=60):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        logger.error(f"  Makale failed listesine eklendi: {article_url}")
+                        self.rate_limiter.add_to_failed(article_url)
+                        return None
+                else:
+                    logger.error(f"  Kalıcı captcha: {article_url}")
+                    self.rate_limiter.add_to_failed(article_url)
+                    return None
 
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
