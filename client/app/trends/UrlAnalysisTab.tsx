@@ -792,6 +792,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
   // stopTracking() gibi "bilerek kapatma" durumlarında reconnect'i engellemek için
   const shouldReconnectRef = useRef(false);
   const scrapeDoneRef    = useRef(false);
+  const seenActiveRef    = useRef(false);
   const stopRequestedRef = useRef(false);
   const displayedProgressRef = useRef(0);
   /** Kontrol Et sonrası URL; kullanıcı metni düzenlemedikçe sarı/yeşil paneller sıfırlanmaz */
@@ -824,6 +825,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     stopTracking();
     if (analysisPollRef.current) { clearInterval(analysisPollRef.current); analysisPollRef.current = null; }
     scrapeDoneRef.current = false;
+    seenActiveRef.current = false;
     stopRequestedRef.current = false;
     displayedProgressRef.current = 0;
     setFlowState('idle');
@@ -864,11 +866,15 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       ws.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
+          if (event._replayed) return;
           if ((event.type === 'status_update' || event.type === 'progress') && event.scraper_type === scraperType) {
             if (event.data) {
               setScraperStatus(prev => prev ? { ...prev, ...event.data } : event.data as ScraperStatus);
               const s = (event.data as Record<string, unknown>).status as string;
-              if (s === 'completed' && !scrapeDoneRef.current) {
+              if (['starting', 'running', 'paused'].includes(s)) {
+                seenActiveRef.current = true;
+              }
+              if (s === 'completed' && !scrapeDoneRef.current && seenActiveRef.current) {
                 scrapeDoneRef.current = true;
                 setFlowState('scrape_done');
               } else if (s === 'stopped') {
@@ -899,7 +905,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       try {
         const s = await getSingleJournalScraperStatus(scraperType) as ScraperStatus;
         setScraperStatus(s);
-        if (s.status === 'completed' && !scrapeDoneRef.current) {
+        if (['starting', 'running', 'paused'].includes(s.status)) {
+          seenActiveRef.current = true;
+        }
+        if (s.status === 'completed' && !scrapeDoneRef.current && seenActiveRef.current) {
           scrapeDoneRef.current = true;
           setFlowState('scrape_done');
         } else if (s.status === 'stopped') {
@@ -940,6 +949,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       return;
     }
     setFlowState('analyzing');
+    setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
     setAnalysisSteps({
       cluster_update: { status: 'pending', message: 'Bekliyor...' },
       openalex:       { status: 'pending', message: 'Bekliyor...' },
@@ -1034,6 +1047,16 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     setErrorMsg(null);
     setBackendValidation(null);
     setExistsInfo(null);
+    setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
+    setAnalysisSteps({
+      cluster_update: { status: 'pending', message: 'Bekliyor...' },
+      openalex:       { status: 'pending', message: 'Bekliyor...' },
+      elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
+    });
+    displayedProgressRef.current = 0;
     lastValidatedUrlRef.current = null;
     try {
       const validation = await validateJournalUrl(trimmedUrl);
@@ -1057,10 +1080,21 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     const scraperType = backendValidation?.scraper_type;
     if (!scraperType) return;
     scrapeDoneRef.current = false;
+    seenActiveRef.current = false;
     stopRequestedRef.current = false;
+    displayedProgressRef.current = 0;
     setFlowState('scraping');
     setScraperStatus(null);
     setIsStopping(false);
+    setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
+    setAnalysisSteps({
+      cluster_update: { status: 'pending', message: 'Bekliyor...' },
+      openalex:       { status: 'pending', message: 'Bekliyor...' },
+      elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
+    });
     try {
       await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs, force);
       startTracking(scraperType);

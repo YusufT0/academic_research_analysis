@@ -111,7 +111,7 @@ class WileyScraper:
         self.navigator = PageNavigator(self.selenium_driver, self.WILEY_BASE)
         logger.success(f"Hedef URL: {self.config.base_url}")
 
-    def _ensure_worker_pool(self, max_tabs: int) -> List[SeleniumDriver]:
+    def _ensure_worker_pool(self, max_tabs: int, on_ready=None) -> List[SeleniumDriver]:
         """
         Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
 
@@ -120,19 +120,50 @@ class WileyScraper:
         hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
         kendi get()/restart() mantığıyla iyileşir; havuz korunur. Havuz
         yalnızca scraper.close() ile (oturum sonu) kapatılır.
+
+        on_ready: Her driver açıldığında çağrılan callback (ör. pool_container.append).
         """
         if max_tabs <= 1:
             return []
-        # Eksik worker varsa tamamla (ilk açılış ya da daha büyük max_tabs)
-        while len(self._worker_pool) < max_tabs:
-            worker_id = len(self._worker_pool) + 1
-            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
-            if local_driver.start():
-                self._worker_pool.append(local_driver)
-                logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
-            else:
+        needed = max_tabs - len(self._worker_pool)
+        if needed <= 0:
+            if self._worker_pool:
+                logger.info(
+                    f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                    f"(journal/issue boyunca yeniden kullanılır)"
+                )
+            return self._worker_pool
+
+        start_index = len(self._worker_pool)
+        _new: list = [None] * needed
+
+        def _open_one(slot_i: int):
+            worker_id = start_index + slot_i + 1
+            wd = SeleniumDriver(self.proxy_config, headless=self.headless)
+            try:
+                if wd.start():
+                    _new[slot_i] = wd
+                    logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                    if on_ready:
+                        on_ready(wd)
+                else:
+                    logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+            except Exception:
                 logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
-                break
+
+        open_threads = [
+            threading.Thread(target=_open_one, args=(i,), daemon=True)
+            for i in range(needed)
+        ]
+        for t in open_threads:
+            t.start()
+        for t in open_threads:
+            t.join()
+
+        for wd in _new:
+            if wd is not None:
+                self._worker_pool.append(wd)
+
         if self._worker_pool:
             logger.info(
                 f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
@@ -650,6 +681,7 @@ class WileyScraper:
         max_tabs: int,
         article_progress_callback: Callable = None,
         reusable_drivers=None,
+        pool_bg: Optional[threading.Thread] = None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """Issue içindeki makaleleri worker havuzu ile paralel işler."""
         total = len(full_text_stubs)
@@ -673,32 +705,8 @@ class WileyScraper:
                 return doi_url
             return f"{self.WILEY_BASE}/doi/full/{doi_url}"
 
-        # Build worker slots: (worker_id, driver, owns_driver, pool_index)
-        # If reusable_drivers provided, use them (don't close on exit).
-        # Otherwise create new drivers (close on exit).
-        worker_slots = []
-        if reusable_drivers:
-            for pool_index, driver in enumerate(reusable_drivers[:worker_count]):
-                worker_id = pool_index + 1
-                worker_slots.append((worker_id, driver, False, pool_index))
-        else:
-            for worker_id in range(1, worker_count + 1):
-                local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
-                if local_driver.start():
-                    worker_slots.append((worker_id, local_driver, True, -1))
-                else:
-                    logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
-                    # Jobs for this worker will be handled by remaining workers or retry
-
-        if not worker_slots:
-            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
-            while not jobs.empty():
-                try:
-                    _, stub = jobs.get_nowait()
-                    retry_urls.append(_to_article_url(stub))
-                except queue.Empty:
-                    break
-            return [], retry_urls
+        # Worker'ları havuzdan al; havuz yükleniyorsa supervisor ile dinamik başlat
+        # (Aşağıdaki _worker tanımlandıktan sonra supervisor bloğunda kullanılır)
 
         def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int):
             try:
@@ -788,13 +796,45 @@ class WileyScraper:
                 if owns_driver:
                     local_driver.close()
 
-        threads = [
-            threading.Thread(target=_worker, args=(wid, drv, owns, pool_idx), daemon=True)
-            for wid, drv, owns, pool_idx in worker_slots
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
+        _started: set = set()
+        _all_threads: list = []
+
+        def _spawn_ready():
+            if reusable_drivers is not None:
+                for i, drv in enumerate(reusable_drivers[:worker_count]):
+                    if i not in _started:
+                        _started.add(i)
+                        t = threading.Thread(target=_worker, args=(i + 1, drv, False, i), daemon=True)
+                        t.start()
+                        _all_threads.append(t)
+            else:
+                if not _started:
+                    _started.add(0)
+                    for worker_id in range(1, worker_count + 1):
+                        local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                        if local_driver.start():
+                            t = threading.Thread(target=_worker, args=(worker_id, local_driver, True, -1), daemon=True)
+                            t.start()
+                            _all_threads.append(t)
+                        else:
+                            logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+
+        while pool_bg is not None and pool_bg.is_alive():
+            _spawn_ready()
+            time.sleep(0.05)
+        _spawn_ready()
+
+        if not _all_threads:
+            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
+            while not jobs.empty():
+                try:
+                    _, stub = jobs.get_nowait()
+                    retry_urls.append(_to_article_url(stub))
+                except queue.Empty:
+                    break
+            return [], retry_urls
+
+        for t in _all_threads:
             t.join()
 
         ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
@@ -1071,7 +1111,7 @@ class WileyScraper:
                 _pool_bg: Optional[threading.Thread] = None
                 if max_tabs > 1:
                     _pool_bg = threading.Thread(
-                        target=lambda: _pool_container.extend(self._ensure_worker_pool(max_tabs)),
+                        target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
                         daemon=True,
                     )
                     _pool_bg.start()
@@ -1237,22 +1277,16 @@ class WileyScraper:
                                 _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
                                 _pf_thread.start()
 
-                            # Havuz hazır değilse bekle (issue fetch ile örtüşmesi beklenir)
-                            if _pool_bg and _pool_bg.is_alive():
-                                logger.info(
-                                    "Worker tarayıcıları hazırlanmayı bekleniyor "
-                                    "(issue fetch ile örtüşmesi beklenir)..."
-                                )
-                                _pool_bg.join()
-                                _pool_bg = None
-
                             # Makaleleri worker tablarla işle
+                            # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
                             articles, retry_queue = self._process_issue_articles_parallel(
                                 full_text_stubs=full_text_stubs,
                                 max_tabs=max_tabs,
                                 article_progress_callback=article_progress_callback,
                                 reusable_drivers=parallel_drivers,
+                                pool_bg=_pool_bg,
                             )
+                            _pool_bg = None  # join zaten içeride yapıldı
 
                             # Retry öncesi prefetch thread'ini bekle (self.selenium_driver çakışmasını önle)
                             if _pf_thread and _pf_thread.is_alive():
