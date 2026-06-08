@@ -1053,7 +1053,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     }
   }, [url]);
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(async (force = false) => {
     const scraperType = backendValidation?.scraper_type;
     if (!scraperType) return;
     scrapeDoneRef.current = false;
@@ -1062,7 +1062,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     setScraperStatus(null);
     setIsStopping(false);
     try {
-      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs);
+      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs, force);
       startTracking(scraperType);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Scraper başlatılamadı.');
@@ -1447,7 +1447,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
 
       {/* Existing journal prompt */}
       {flowState === 'exists_prompt' && existsInfo?.journal && (
-        <ExistingJournalBanner info={existsInfo.journal} onContinue={handleStart} onCancel={resetFlow} />
+        <ExistingJournalBanner info={existsInfo.journal} onContinue={() => handleStart(true)} onCancel={resetFlow} />
       )}
 
       {/* Confirmed — ready to start */}

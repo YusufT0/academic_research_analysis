@@ -649,6 +649,66 @@ class ScraperManager:
     
     # ==================== Single Journal Scraper ====================
 
+    async def _purge_journal_data_by_url(self, url: str, scraper_type: str) -> None:
+        """
+        Yeniden scrape öncesi dergiye ait tüm DB verisini (issues, articles,
+        embeddings) siler. Journal kaydı korunur, sadece içerik temizlenir.
+        """
+        import re as _re
+        from database.models import Journal
+
+        candidates: list[str] = [url, url.rstrip("/") if url.endswith("/") else url + "/"]
+
+        # Platform-spesifik ek kandidatlar
+        if scraper_type == "acm":
+            m = _re.search(r"/(journal|loi)/([a-zA-Z0-9\-]+)", url, _re.IGNORECASE)
+            if m:
+                candidates += [f"/journal/{m.group(2)}", f"/loi/{m.group(2)}"]
+        elif scraper_type == "sciencedirect":
+            m = _re.search(r"sciencedirect\.com/journal/([a-zA-Z0-9\-]+)", url, _re.IGNORECASE)
+            if m:
+                slug = m.group(1)
+                candidates += [
+                    f"https://www.sciencedirect.com/journal/{slug}",
+                    f"https://www.sciencedirect.com/journal/{slug}/issues",
+                ]
+
+        journal = None
+
+        # Birebir URL eşleşmesi dene
+        seen: set = set()
+        for candidate in candidates:
+            if candidate in seen:
+                continue
+            seen.add(candidate)
+            journal = await Journal.find_one({"url": candidate})
+            if journal:
+                break
+
+        # IEEE punumber bazlı regex eşleşmesi
+        if not journal and scraper_type == "ieee":
+            m = _re.search(r"punumber=(\d+)", url, _re.IGNORECASE)
+            if m:
+                journal = await Journal.find_one(
+                    {"url": {"$regex": f"punumber={m.group(1)}", "$options": "i"}}
+                )
+
+        if not journal:
+            logger.info(f"[Purge] DB'de kayıt bulunamadı, temizlik atlandı: {url}")
+            return
+
+        logger.warning(
+            f"[Purge] Yeniden scrape — eski veriler siliniyor: "
+            f"{journal.name} (id={journal.id})"
+        )
+        result = await self._db_service.delete_journal_data(journal.id)
+        logger.success(
+            f"[Purge] Temizlik tamamlandı — "
+            f"{result['articles_deleted']} makale, "
+            f"{result['issues_deleted']} sayı, "
+            f"{result['embeddings_deleted']} embedding silindi"
+        )
+
     async def start_single_journal(
         self,
         url: str,
@@ -683,6 +743,10 @@ class ScraperManager:
             progress.single_journal_max_articles = max_articles
             progress.single_journal_depth = depth
             progress.single_journal_max_tabs = max_tabs
+
+        # force=True ise DB'deki eski verileri temizle
+        if force and self._db_service:
+            await self._purge_journal_data_by_url(url, scraper_type)
 
         # Platforma göre tek-elemanlı journal dicts oluştur
         if scraper_type == "ieee":
