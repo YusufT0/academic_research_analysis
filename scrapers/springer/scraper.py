@@ -559,6 +559,13 @@ class SpringerScraper:
             # yeniden kullanılır; burada KAPATILMAZ)
             parallel_drivers = self._ensure_worker_pool(max_tabs)
 
+            # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
+            # _scrape_issue_articles_parallel içinde main-browser retry olmadığından
+            # join sadece bir sonraki iterasyon başında yapılır — maksimum örtüşme sağlanır.
+            _pf_thread: Optional[threading.Thread] = None
+            _pf_next_idx: int = -1
+            _pf_holder: dict = {}
+
             for idx, issue in enumerate(issues_to_process, start=1):
                 self.check_stop_flag()
                 logger.info(f"Issue basladi ({idx}/{len(issues_to_process)}): {issue.get('title', '')}")
@@ -570,24 +577,83 @@ class SpringerScraper:
                     except Exception:
                         pass
 
-                stubs = self._scrape_issue_articles(issue.get("url", ""), max_articles=max_articles)
-                logger.info(f"Issue stub makale sayisi: {len(stubs)}")
-                if article_list_callback:
-                    try:
-                        article_list_callback([a.get("title", "") for a in stubs])
-                    except Exception:
-                        pass
+                if parallel_drivers and max_tabs > 1:
+                    # ── Pipeline modu ──────────────────────────────────────────────
 
-                if max_tabs > 1:
+                    # Stub'ları al: önceden yüklendiyse hazır, yoksa şimdi çek
+                    if _pf_next_idx == idx:
+                        if _pf_thread and _pf_thread.is_alive():
+                            _pf_thread.join()
+                        if _pf_holder.get('data') is not None:
+                            stubs = _pf_holder['data']
+                            logger.info(f"Issue {idx}: önceden yüklenmiş {len(stubs)} stub kullanılıyor")
+                        else:
+                            logger.warning(f"Issue {idx}: prefetch başarısız, şimdi yükleniyor")
+                            stubs = self._scrape_issue_articles(issue.get("url", ""), max_articles=max_articles)
+                    else:
+                        stubs = self._scrape_issue_articles(issue.get("url", ""), max_articles=max_articles)
+
+                    _pf_thread = None
+                    _pf_next_idx = -1
+                    _pf_holder = {}
+
+                    logger.info(f"Issue stub makale sayisi: {len(stubs)}")
+                    if article_list_callback:
+                        try:
+                            article_list_callback([a.get("title", "") for a in stubs])
+                        except Exception:
+                            pass
+
+                    # Worker'lar bu issue'yu işlerken sonraki issue'nun stub'larını önceden yükle
+                    next_idx = idx + 1
+                    if next_idx <= len(issues_to_process):
+                        next_issue = issues_to_process[next_idx - 1]
+                        holder_ref: dict = {}
+                        _pf_holder = holder_ref
+                        _pf_next_idx = next_idx
+                        _ma = max_articles
+
+                        def _do_prefetch(
+                            iss=next_issue, i=next_idx,
+                            h=holder_ref, ma=_ma,
+                        ):
+                            try:
+                                self.check_stop_flag()
+                                ns = self._scrape_issue_articles(iss.get("url", ""), max_articles=ma)
+                                h['data'] = ns
+                                logger.info(
+                                    f"Issue {i} prefetch tamamlandı "
+                                    f"({len(ns)} stub worker'lar için hazır)"
+                                )
+                            except ScraperStoppedException:
+                                pass
+                            except Exception as e:
+                                logger.warning(f"Issue {i} prefetch hatası: {e}")
+
+                        _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
+                        _pf_thread.start()
+
+                    # Makaleleri worker tablarla işle
+                    # (_scrape_issue_articles_parallel self.selenium_driver kullanmaz → prefetch ile çakışmaz)
                     issue_articles = self._scrape_issue_articles_parallel(
                         stubs=stubs,
                         journal_name=journal.get("name", ""),
-                        max_tabs=max_tabs if parallel_drivers else 1,
+                        max_tabs=max_tabs,
                         article_progress_callback=article_progress_callback,
                         existing_article_dois=existing_article_dois,
                         reusable_drivers=parallel_drivers,
                     )
+
                 else:
+                    # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
+                    stubs = self._scrape_issue_articles(issue.get("url", ""), max_articles=max_articles)
+                    logger.info(f"Issue stub makale sayisi: {len(stubs)}")
+                    if article_list_callback:
+                        try:
+                            article_list_callback([a.get("title", "") for a in stubs])
+                        except Exception:
+                            pass
+
                     issue_articles = []
                     for art_idx, stub in enumerate(stubs, start=1):
                         self.check_stop_flag()

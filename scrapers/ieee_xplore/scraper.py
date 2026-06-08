@@ -523,6 +523,69 @@ class IEEEXploreScraper:
 
         return False
 
+    def _fetch_issue_page(
+        self,
+        issue_stub: Dict[str, Any],
+        issue_idx: int = 0,
+        total_issues: int = 0,
+    ) -> tuple:
+        """
+        Ana tab ile issue sayfasına gider, issue bilgilerini ve makale stub listesini döndürür.
+
+        Paralel pipeline'da worker'lar mevcut issue'yu işlerken bu metot ayrı bir thread'den
+        çağrılarak bir sonraki issue önceden yüklenir; worker'lar biter bitmez makalelere
+        anında başlayabilirler.
+
+        Returns:
+            (issue_info: dict, article_stubs: list)  —  hata durumunda exception fırlatır
+        """
+        issue_url = issue_stub['url']
+        full_issue_url = (
+            f"https://ieeexplore.ieee.org{issue_url}"
+            if issue_url.startswith('/') else issue_url
+        )
+        if issue_idx and total_issues:
+            logger.section(
+                f"Issue {issue_idx}/{total_issues} yükleniyor: "
+                f"{issue_stub.get('title', issue_url)}"
+            )
+        logger.info(f"  Issue URL: {full_issue_url}")
+
+        if not self.selenium_driver.get(full_issue_url, wait_after=3):
+            raise Exception(f"Issue sayfası yüklenemedi: {full_issue_url}")
+
+        wait_for_page_load(self.driver)
+        self.rate_limiter.check_and_handle_rate_limit()
+
+        try:
+            WebDriverWait(self.driver, 12).until(
+                lambda d: d.execute_script(
+                    """
+                    return !!document.querySelector(
+                        'xpl-issue-results-items, section.issue-container, a[href*="/document/"]'
+                    );
+                    """
+                )
+            )
+        except TimeoutException:
+            pass
+
+        page_source = self.driver.page_source
+        issue_info = ArticleParser.extract_issue_info(page_source) or {}
+        issue_info['url'] = self.driver.current_url
+
+        stub_title = issue_stub.get('title', '').strip()
+        if stub_title:
+            issue_info['issue_number'] = stub_title
+
+        logger.success(
+            f"  Issue bilgisi alındı: "
+            f"{issue_info.get('issue_number')} | {issue_info.get('date')}"
+        )
+        article_stubs = ArticleParser.extract_article_urls(page_source)
+        logger.info(f"  {len(article_stubs)} makale linki bulundu")
+        return issue_info, article_stubs
+
     def _process_single_issue(
         self,
         issue_stub: Dict[str, Any],
@@ -990,7 +1053,13 @@ class IEEEXploreScraper:
             )
 
             # 3. Her issue'yu işle
+            # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
             issue_results = []
+
+            _pf_thread: Optional[threading.Thread] = None
+            _pf_next_idx: int = -1
+            _pf_holder: dict = {}
+
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
@@ -1009,16 +1078,156 @@ class IEEEXploreScraper:
                     except Exception:
                         pass
 
-                result = self._process_single_issue(
-                    issue_stub=issue_stub,
-                    max_articles=max_articles,
-                    max_tabs=max_tabs if parallel_drivers else 1,
-                    parallel_drivers=parallel_drivers,
-                    article_progress_callback=article_progress_callback,
-                    article_list_callback=article_list_callback,
-                    issue_idx=issue_idx,
-                    total_issues=len(issues_to_process),
-                )
+                if parallel_drivers and max_tabs > 1:
+                    # ── Pipeline modu ──────────────────────────────────────────────
+
+                    # Issue verilerini al: önceden yüklendiyse hazır, yoksa şimdi çek
+                    if _pf_next_idx == issue_idx:
+                        if _pf_thread and _pf_thread.is_alive():
+                            _pf_thread.join()
+                        if _pf_holder.get('data'):
+                            issue_info, article_stubs = _pf_holder['data']
+                            logger.info(f"Issue {issue_idx}: önceden yüklenmiş veri kullanılıyor")
+                        else:
+                            logger.warning(f"Issue {issue_idx}: prefetch başarısız, şimdi yükleniyor")
+                            try:
+                                issue_info, article_stubs = self._fetch_issue_page(
+                                    issue_stub, issue_idx, len(issues_to_process)
+                                )
+                            except Exception as fe:
+                                logger.warning(f"Issue {issue_idx} yüklenemedi: {fe}")
+                                result = {'issue_info': {'url': issue_stub['url']}, 'articles': []}
+                                issue_results.append(result)
+                                continue
+                    else:
+                        try:
+                            issue_info, article_stubs = self._fetch_issue_page(
+                                issue_stub, issue_idx, len(issues_to_process)
+                            )
+                        except Exception as fe:
+                            logger.warning(f"Issue {issue_idx} yüklenemedi: {fe}")
+                            result = {'issue_info': {'url': issue_stub['url']}, 'articles': []}
+                            issue_results.append(result)
+                            continue
+
+                    _pf_thread = None
+                    _pf_next_idx = -1
+                    _pf_holder = {}
+
+                    if not article_stubs:
+                        logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
+                        result = {'issue_info': issue_info, 'articles': []}
+                    else:
+                        if max_articles:
+                            article_stubs = article_stubs[:max_articles]
+
+                        if article_list_callback:
+                            try:
+                                article_list_callback([a.get('title', '') for a in article_stubs])
+                            except Exception:
+                                pass
+
+                        # Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                        next_idx = issue_idx + 1
+                        if next_idx <= len(issues_to_process):
+                            next_stub = issues_to_process[next_idx - 1]
+                            holder_ref: dict = {}
+                            _pf_holder = holder_ref
+                            _pf_next_idx = next_idx
+                            total_count = len(issues_to_process)
+
+                            def _do_prefetch(
+                                stub=next_stub, idx=next_idx,
+                                h=holder_ref, total=total_count,
+                            ):
+                                try:
+                                    self.check_stop_flag()
+                                    ni, ns = self._fetch_issue_page(stub, idx, total)
+                                    h['data'] = (ni, ns)
+                                    logger.info(
+                                        f"Issue {idx} prefetch tamamlandı "
+                                        f"({len(ns)} makale linki worker'lar için hazır)"
+                                    )
+                                except ScraperStoppedException:
+                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Issue {idx} prefetch hatası: {e}")
+
+                            _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
+                            _pf_thread.start()
+
+                        # Makaleleri worker tablarla işle
+                        articles, failed_stubs = self._process_issue_articles_parallel(
+                            article_stubs=article_stubs,
+                            max_tabs=max_tabs,
+                            reusable_drivers=parallel_drivers,
+                            article_progress_callback=article_progress_callback,
+                        )
+
+                        # Retry öncesi prefetch thread'ini bekle (self.driver çakışmasını önle)
+                        if _pf_thread and _pf_thread.is_alive():
+                            logger.info(
+                                f"Issue {issue_idx + 1} prefetch bitmesini bekleniyor "
+                                f"(retry için ana tab gerekiyor)..."
+                            )
+                            _pf_thread.join()
+                            _pf_thread = None
+
+                        # Başarısız makaleleri retry (ana tab)
+                        if failed_stubs:
+                            logger.info(
+                                f"{len(failed_stubs)} makale yüklenemedi, "
+                                f"{min(len(failed_stubs) * 2, 30)} saniye bekleniyor..."
+                            )
+                            self._interruptible_sleep(min(len(failed_stubs) * 2, 30))
+                            logger.info(f"Retry başlıyor ({len(failed_stubs)} makale)...")
+                            for retry_idx, article_stub in enumerate(failed_stubs, 1):
+                                article_url = article_stub['url']
+                                self.check_stop_flag()
+                                try:
+                                    full_url = (
+                                        f"https://ieeexplore.ieee.org{article_url}"
+                                        if article_url.startswith('/') else article_url
+                                    )
+                                    logger.info(f"[Retry {retry_idx}/{len(failed_stubs)}] {article_url}")
+                                    if not self.selenium_driver.get(full_url, wait_after=4):
+                                        logger.warning(f"Retry başarısız, makale atlanıyor: {article_url}")
+                                        continue
+                                    wait_for_page_load(self.driver)
+                                    self.rate_limiter.check_and_handle_rate_limit()
+                                    article_data = ArticleParser.extract_article_details(
+                                        self.driver.page_source, full_url
+                                    )
+                                    if article_data and article_data.get('title'):
+                                        articles.append(article_data)
+                                        logger.success(f"Retry başarılı: {article_data['title'][:50]}...")
+                                    else:
+                                        logger.warning(f"Retry: makale detayları alınamadı ({article_url})")
+                                    self._interruptible_sleep(2)
+                                except RateLimitException:
+                                    raise
+                                except ScraperStoppedException:
+                                    raise
+                                except Exception as e:
+                                    logger.warning(f"Retry hatası ({article_url}): {e}")
+                                    continue
+
+                        logger.found(len(articles), f"makale (issue {issue_idx})")
+                        result = {'issue_info': issue_info, 'articles': articles}
+
+                else:
+                    # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
+                    result = self._process_single_issue(
+                        issue_stub=issue_stub,
+                        max_articles=max_articles,
+                        max_tabs=1,
+                        parallel_drivers=None,
+                        article_progress_callback=article_progress_callback,
+                        article_list_callback=article_list_callback,
+                        issue_idx=issue_idx,
+                        total_issues=len(issues_to_process),
+                    )
+
                 for article in result['articles']:
                     article['journal_name'] = journal_name
                 issue_results.append(result)
