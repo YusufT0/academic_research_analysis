@@ -20,7 +20,7 @@ IEEE Xplore, ScienceDirect ve ACM Digital Library platformlarindan bilimsel maka
 ### Backend
 - **Python 3.11+** - Ana programlama dili
 - **FastAPI** - REST API framework
-- **MongoDB + Beanie** - NoSQL veritabani ve ODM
+- **MongoDB + Beanie** - NoSQL veri tabani ve ODM
 - **Redis** - Cache, WebSocket Pub/Sub, Streams
 - **Elasticsearch 8** - Full-text arama ve autocomplete
 - **Selenium / SeleniumBase** - Web scraping
@@ -79,7 +79,7 @@ Bu komut asagidaki 7 servisi baslatir:
 
 | Servis | Port | Aciklama |
 |--------|------|----------|
-| MongoDB | 27017 | Veritabani |
+| MongoDB | 27017 | Veri tabani |
 | Redis | 6440 | Cache & Streams |
 | Elasticsearch | 9200 | Full-text arama motoru |
 | Prometheus | 9090 | Metrik toplama |
@@ -220,7 +220,7 @@ Frontend adresi: http://localhost:3000
 
 ### Veri Toplama (Scraper)
 
-Sistem bos veritabani ile baslar. Makale toplamak icin:
+Sistem bos veri tabani ile baslar. Makale toplamak icin:
 
 1. Frontend'de **Scraper** sayfasina gidin
 2. IEEE, ScienceDirect veya ACM scraperlarindan birini baslatin
@@ -236,7 +236,7 @@ NLP modulu **ilk kullanim sirasinda otomatik egitilir**:
 4. Eger model daha once egitilmemisse, otomatik egitim baslar (30sn - 5dk)
 5. Egitim bittiginde cluster bilgisi, 3 grafik ve eslesen makaleler gorunur
 
-> **Not:** Egitim icin veritabaninda en az ~20 abstract'li makale bulunmalidir. Yeterli makale yoksa once scraper calistirin.
+> **Not:** Egitim icin veri tabaninda en az ~20 abstract'li makale bulunmalidir. Yeterli makale yoksa once scraper calistirin.
 
 ### Atif Haritasi
 

@@ -273,7 +273,7 @@ function ArticleCard({ article }: { article: Article }) {
                     const isDisabled = isNotIndexed || hasNoCitations;
                     
                     const tooltip = isNotIndexed 
-                      ? "Bu makale OpenAlex veritabanında bulunamadı" 
+                      ? "Bu makale OpenAlex veri tabanında bulunamadı" 
                       : hasNoCitations 
                       ? "Bu makalenin henüz atıfı bulunmamaktadır" 
                       : "";

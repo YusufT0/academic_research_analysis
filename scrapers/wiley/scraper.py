@@ -1066,9 +1066,17 @@ class WileyScraper:
 
             # ── 3a. Issue-based ───────────────────────────────────────────────
             if journal_type != 'article_based':
-                # Oturum worker havuzu (bir kez açılır, tüm journal/issue'larda
-                # yeniden kullanılır; burada KAPATILMAZ)
-                parallel_drivers = self._ensure_worker_pool(max_tabs)
+                # Worker havuzunu arka planda başlat; issue listesi yüklenirken tarayıcılar açılır
+                _pool_container: list = []
+                _pool_bg: Optional[threading.Thread] = None
+                if max_tabs > 1:
+                    _pool_bg = threading.Thread(
+                        target=lambda: _pool_container.extend(self._ensure_worker_pool(max_tabs)),
+                        daemon=True,
+                    )
+                    _pool_bg.start()
+                    logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
+                parallel_drivers = _pool_container
 
                 all_issues = self._extract_all_issues(
                     journal_id,
@@ -1148,7 +1156,7 @@ class WileyScraper:
                         except Exception:
                             pass
 
-                    if parallel_drivers and max_tabs > 1:
+                    if (parallel_drivers or _pool_bg) and max_tabs > 1:
                         # ── Pipeline modu ──────────────────────────────────────────────
 
                         # Issue verilerini al: önceden yüklendiyse hazır, yoksa şimdi çek
@@ -1228,6 +1236,15 @@ class WileyScraper:
 
                                 _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
                                 _pf_thread.start()
+
+                            # Havuz hazır değilse bekle (issue fetch ile örtüşmesi beklenir)
+                            if _pool_bg and _pool_bg.is_alive():
+                                logger.info(
+                                    "Worker tarayıcıları hazırlanmayı bekleniyor "
+                                    "(issue fetch ile örtüşmesi beklenir)..."
+                                )
+                                _pool_bg.join()
+                                _pool_bg = None
 
                             # Makaleleri worker tablarla işle
                             articles, retry_queue = self._process_issue_articles_parallel(

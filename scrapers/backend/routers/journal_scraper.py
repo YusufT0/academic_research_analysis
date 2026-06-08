@@ -201,7 +201,7 @@ async def validate_journal_url(request: ValidateUrlRequest):
 )
 async def check_journal_exists(url: str = Query(..., description="Kontrol edilecek journal URL'si")):
     """
-    Verilen URL'ye (veya normalize edilmiş hâline) göre veritabanında
+    Verilen URL'ye (veya normalize edilmiş hâline) göre veri tabanında
     journal kaydı bulunup bulunmadığını kontrol eder.
     Bulunursa journal bilgilerini döner.
 
@@ -298,7 +298,7 @@ async def check_journal_exists(url: str = Query(..., description="Kontrol edilec
 
     except Exception as e:
         logger.error(f"Journal check-exists hatası: {e}")
-        raise HTTPException(status_code=500, detail=f"Veritabanı kontrolü başarısız: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Veri tabanı kontrolü başarısız: {str(e)}")
 
 
 

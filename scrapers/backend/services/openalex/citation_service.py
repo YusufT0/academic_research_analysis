@@ -16,7 +16,7 @@ class CitationService:
     """
     OpenAlex Citation Service.
     Sorumlulukları:
-    - Veritabanı modelleriyle (Article, Journal) haberleşerek atıf verilerini tazelemek
+    - Veri tabanı modelleriyle (Article, Journal) haberleşerek atıf verilerini tazelemek
     - Toplu (Bulk) işlemleri asenkron olarak yönetmek
     """
 
@@ -83,7 +83,7 @@ class CitationService:
                 # OpenAlex genelde {"min": 85, "max": 90} şeklinde döndürür
                 target_article.citation_percentile = float(percentile.get("min", 0))
             
-            # Veritabanında güncelle
+            # Veri tabanında güncelle
             await target_article.save()
             updated_count += 1
             

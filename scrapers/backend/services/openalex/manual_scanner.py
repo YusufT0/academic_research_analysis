@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class OpenAlexManualScanner:
     """
     Manuel olarak tetiklenebilen OpenAlex tarama yöneticisi.
-    Background task olarak çalışır, mevcut makale veritabanını tarar
+    Background task olarak çalışır, mevcut makale veri tabanını tarar
     ve henüz OpenAlex verisi çekilmemiş (is_openalex_indexed=False veya missing)
     makalelerin/dergilerin verilerini API üzerinden günceller.
     WebSocket üzerinden ilerleme durumunu 'openalex' scraper_type ile yayınlar.

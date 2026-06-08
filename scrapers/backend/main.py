@@ -109,7 +109,7 @@ async def delayed_scraper_start(manager: ScraperManager, delay: float = 2.0):
 
 
 async def sync_es_on_startup():
-    """Uygulama başlatılırken veritabanı ile Elasticsearch'ü senkronize eder."""
+    """Uygulama başlatılırken veri tabanı ile Elasticsearch'ü senkronize eder."""
     try:
         from backend.services.elasticsearch_service import elasticsearch_service
         if not elasticsearch_service.is_connected:

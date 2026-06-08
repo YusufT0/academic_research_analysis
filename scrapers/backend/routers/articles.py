@@ -183,7 +183,7 @@ async def list_articles(
 
 @router.get("/year-range", summary="Makale yayın yılı min/max değerlerini getir")
 async def get_article_year_range():
-    """Veritabanındaki makalelerin en küçük ve en büyük yayın yılını döndürür."""
+    """Veri tabanındaki makalelerin en küçük ve en büyük yayın yılını döndürür."""
     pipeline = [
         {"$match": {"publication_year": {"$ne": None}}},
         {"$group": {"_id": None, "min_year": {"$min": "$publication_year"}, "max_year": {"$max": "$publication_year"}}},

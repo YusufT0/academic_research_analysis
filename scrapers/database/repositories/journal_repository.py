@@ -187,7 +187,7 @@ class JournalRepository(BaseRepository[Journal]):
     
     async def check_exists(self, name: str, source_website: str) -> bool:
         """
-        Derginin veritabanında olup olmadığını kontrol et
+        Derginin veri tabanında olup olmadığını kontrol et
         
         Args:
             name: Dergi adı
@@ -242,7 +242,7 @@ class JournalRepository(BaseRepository[Journal]):
         Returns:
             dict: {journal_name: {'exists': bool, 'last_scraped_at': datetime}}
         """
-        # Veritabanındaki eşleşen dergileri bul
+        # Veri tabanındaki eşleşen dergileri bul
         journals = await Journal.find({
             "name": {"$in": journal_names},
             "source_website": source_website
@@ -283,7 +283,7 @@ class JournalRepository(BaseRepository[Journal]):
         Dergileri öncelik sistemine göre sırala
 
         Öncelik Sırası:
-        1. Veritabanında bulunmayan dergiler (yeni dergiler)
+        1. Veri tabanında bulunmayan dergiler (yeni dergiler)
         2. 0 issue veya 0 makale olan mevcut dergiler (eksik veri)
         3. Geri kalan mevcut dergiler — last_scraped_at'e göre (en eski önce)
 
@@ -294,7 +294,7 @@ class JournalRepository(BaseRepository[Journal]):
         Returns:
             Sıralanmış dergi listesi
         """
-        new_journals = []       # Veritabanında olmayanlar
+        new_journals = []       # Veri tabanında olmayanlar
         incomplete_journals = []  # 0 issue veya 0 makale olanlar
         existing_journals = []  # Tam veri olan mevcut dergiler
 

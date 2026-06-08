@@ -401,7 +401,7 @@ async def train_clustering(
     background_tasks: BackgroundTasks
 ):
     """
-    Veritabanındaki makalelerden yeni bir clustering modeli eğitir.
+    Veri tabanındaki makalelerden yeni bir clustering modeli eğitir.
 
     - Tüm makalelerin abstract'larını alır
     - Embedding oluşturur

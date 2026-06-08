@@ -8,8 +8,8 @@ Scraper'lar ayrı thread'lerde çalışır - Selenium senkron kod içerdiğinden
 asyncio event loop'unu bloklamaz.
 
 Öncelik Sistemi:
-- Veritabanında bulunmayan dergiler öncelikli olarak işlenir
-- Tüm dergiler veritabanındaysa, last_scraped_at tarihine göre en eski öncelikli
+- Veri tabanında bulunmayan dergiler öncelikli olarak işlenir
+- Tüm dergiler veri tabanındaysa, last_scraped_at tarihine göre en eski öncelikli
 """
 
 import asyncio
@@ -601,7 +601,7 @@ class ScraperManager:
         operation_name: str = "DB operation"
     ) -> Optional[Any]:
         """
-        Veritabanı sorgularını güvenli bir şekilde çalıştır
+        Veri tabanı sorgularını güvenli bir şekilde çalıştır
         
         Args:
             coro: Çalıştırılacak coroutine
@@ -1158,7 +1158,7 @@ class ScraperManager:
                     except ImportError:
                         pass
 
-                    # Makale olsun olmasın journal'ı veritabanına kaydet
+                    # Makale olsun olmasın journal'ı veri tabanına kaydet
                     if self._db_service and self._loop:
                         journal_info = {
                             'name': journal.get('name'),
@@ -1657,7 +1657,7 @@ class ScraperManager:
                     except ImportError:
                         pass
 
-                    # Makale olsun olmasın journal'ı veritabanına kaydet
+                    # Makale olsun olmasın journal'ı veri tabanına kaydet
                     if self._db_service and self._loop:
                         journal_info = {
                             'name': journal.get('name'),
@@ -2149,7 +2149,7 @@ class ScraperManager:
                     except ImportError:
                         pass
 
-                    # Makale olsun olmasın journal'ı veritabanına kaydet
+                    # Makale olsun olmasın journal'ı veri tabanına kaydet
                     if self._db_service and self._loop:
                         journal_info = {
                             'name': journal.get('name'),
@@ -2622,7 +2622,7 @@ class ScraperManager:
                     total_articles_for_journal = sum(len(r['articles']) for r in issue_results)
                     progress.add_log("success", f"{journal.get('name')}: {total_articles_for_journal} makale toplandı")
                     
-                    # Veritabanına kaydet (ayrı thread -> event loop iletişimi)
+                    # Veri tabanına kaydet (ayrı thread -> event loop iletişimi)
                     if self._db_service and self._loop:
                         journal_info = {
                             'name': journal.get('name', journal_name),
@@ -2718,7 +2718,7 @@ class ScraperManager:
                         # run_coroutine_threadsafe ile main thread'deki event loop'a işi gönder
                         future = asyncio.run_coroutine_threadsafe(_save_to_db(), self._loop)
                         articles_created, db_journal_obj = future.result(timeout=600)  # max 10 dakika bekle
-                        progress.add_log("success", f"{articles_created} makale veritabanına kaydedildi")
+                        progress.add_log("success", f"{articles_created} makale veri tabanına kaydedildi")
 
                         issues_count = len(issue_results)
                         progress.completed_journals.append({
@@ -3147,7 +3147,7 @@ class ScraperManager:
                     total_articles_for_journal = sum(len(r['articles']) for r in issue_results)
                     progress.add_log("success", f"{journal.get('name')}: {total_articles_for_journal} makale toplandı")
                     
-                    # Veritabanına kaydet (ayrı thread -> event loop iletişimi)
+                    # Veri tabanına kaydet (ayrı thread -> event loop iletişimi)
                     if self._db_service and self._loop:
                         journal_info = {
                             'name': journal.get('name', journal_name),
@@ -3243,7 +3243,7 @@ class ScraperManager:
                         # run_coroutine_threadsafe ile main thread'deki event loop'a işi gönder
                         future = asyncio.run_coroutine_threadsafe(_save_to_db(), self._loop)
                         articles_created, db_journal_obj = future.result(timeout=600)  # max 10 dakika bekle
-                        progress.add_log("success", f"{articles_created} makale veritabanına kaydedildi")
+                        progress.add_log("success", f"{articles_created} makale veri tabanına kaydedildi")
 
                         issues_count = len(issue_results)
                         progress.completed_journals.append({
@@ -3991,10 +3991,10 @@ class ScraperManager:
                         # Makale topla
                         articles = scraper.scrape_journal_articles(journal, max_articles=max_articles, max_tabs=max_tabs, depth=depth_eff, issues_order=issues_order_eff)
                         
-                        # Makale olsun olmasın journal'ı veritabanına kaydet
+                        # Makale olsun olmasın journal'ı veri tabanına kaydet
                         # Bu sayede bir sonraki çalışmada tekrar kontrol edilmez
                         if self._db_service and self._loop:
-                            # Veritabanına kaydet
+                            # Veri tabanına kaydet
                             journal_info = {
                                 'name': journal.get('name'),
                                 'url': journal.get('url'),
