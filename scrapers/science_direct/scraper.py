@@ -105,7 +105,7 @@ class ScienceDirectScraper:
         
         logger.success(f"Hedef URL: {self.config.base_url}")
 
-    def _ensure_worker_pool(self, max_tabs: int) -> List[SeleniumDriver]:
+    def _ensure_worker_pool(self, max_tabs: int, on_ready=None) -> List[SeleniumDriver]:
         """
         Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
 
@@ -114,27 +114,54 @@ class ScienceDirectScraper:
         hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
         kendi get()/restart() mantığıyla iyileşir; havuz korunur. Havuz
         yalnızca scraper.close() ile (oturum sonu) kapatılır.
+
+        on_ready: Her driver açıldığında çağrılan callback (ör. pool_container.append).
         """
         if max_tabs <= 1:
             return []
-        # Eksik worker varsa tamamla (ilk açılış ya da daha büyük max_tabs)
-        while len(self._worker_pool) < max_tabs:
-            worker_id = len(self._worker_pool) + 1
+        needed = max_tabs - len(self._worker_pool)
+        if needed <= 0:
+            if self._worker_pool:
+                logger.info(
+                    f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                    f"(journal/issue boyunca yeniden kullanılır)"
+                )
+            return self._worker_pool
+
+        start_index = len(self._worker_pool)
+        _new: list = [None] * needed
+
+        def _open_one(slot_i: int):
+            worker_id = start_index + slot_i + 1
             wd = SeleniumDriver(
                 self.proxy_config,
                 headless=getattr(self.selenium_driver, 'headless', False),
                 use_undetected=getattr(self.selenium_driver, 'use_undetected', True),
             )
             try:
-                if wd.start():  # start() → self (truthy) başarıda, None başarısızlıkta
-                    self._worker_pool.append(wd)
+                if wd.start():
+                    _new[slot_i] = wd
                     logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                    if on_ready:
+                        on_ready(wd)
                 else:
                     logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
-                    break
             except Exception:
                 logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
-                break
+
+        open_threads = [
+            threading.Thread(target=_open_one, args=(i,), daemon=True)
+            for i in range(needed)
+        ]
+        for t in open_threads:
+            t.start()
+        for t in open_threads:
+            t.join()
+
+        for wd in _new:
+            if wd is not None:
+                self._worker_pool.append(wd)
+
         if self._worker_pool:
             logger.info(
                 f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
@@ -757,6 +784,57 @@ class ScienceDirectScraper:
             traceback.print_exc()
             return []
 
+    def _fetch_issue_page(
+        self,
+        issue_stub: dict,
+        issue_idx: int = 0,
+        total_issues: int = 0,
+    ) -> tuple:
+        """
+        Ana tab ile issue sayfasına gider, issue bilgilerini ve makale stub listesini döndürür.
+
+        Paralel pipeline'da worker'lar mevcut issue'yu işlerken bu metot ayrı bir thread'den
+        çağrılarak bir sonraki issue önceden yüklenir; worker'lar biter bitmez makalelere
+        anında başlayabilirler.
+
+        Returns:
+            (issue_info: dict, article_stubs: list)  —  hata durumunda exception fırlatır
+        """
+        issue_url = issue_stub['url']
+        full_issue_url = (
+            f"https://www.sciencedirect.com{issue_url}"
+            if issue_url.startswith('/') else issue_url
+        )
+        if issue_idx and total_issues:
+            logger.section(
+                f"Issue {issue_idx}/{total_issues} yükleniyor: "
+                f"{issue_stub.get('title', issue_url)}"
+            )
+        logger.info(f"  Issue URL: {full_issue_url}")
+
+        self.driver.get(full_issue_url)
+        if self.rate_limiter.check_cloudflare():
+            self.rate_limiter.wait_for_cloudflare(timeout=20)
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "main"))
+            )
+        except Exception:
+            pass
+        time.sleep(0.5)
+        handle_cookie_consent(self.driver)
+
+        issue_info = ArticleParser.extract_issue_info(self.driver.page_source)
+        issue_info['url'] = self.driver.current_url
+        logger.success(
+            f"  Issue bilgisi alındı: "
+            f"{issue_info.get('issue_number')} | {issue_info.get('date')}"
+        )
+
+        article_stubs = ArticleParser.extract_article_urls_from_issue(self.driver.page_source)
+        logger.info(f"  {len(article_stubs)} makale linki bulundu")
+        return issue_info, article_stubs
+
     def _process_single_issue(
         self,
         issue_stub: dict,
@@ -911,6 +989,7 @@ class ScienceDirectScraper:
         max_tabs: int,
         article_progress_callback=None,
         reusable_drivers=None,
+        pool_bg: Optional[threading.Thread] = None,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """Issue içindeki makaleleri worker havuzu ile paralel işler."""
         total = len(article_stubs)
@@ -926,13 +1005,26 @@ class ScienceDirectScraper:
         lock = threading.Lock()
         processed_count = 0
 
-        # Build worker slots: (worker_id, driver, owns_driver, pool_index)
-        worker_slots = []
-        if reusable_drivers:
-            for pool_index, driver in enumerate(reusable_drivers[:worker_count]):
-                worker_id = pool_index + 1
-                worker_slots.append((worker_id, driver, False, pool_index))
+        # Worker'ları havuzdan al; havuz henüz yükleniyorsa supervisor ile dinamik başlat
+        _started: set = set()
+        _all_threads: list = []
+
+        def _spawn_ready():
+            for i, drv in enumerate((reusable_drivers or [])[:worker_count]):
+                if i not in _started:
+                    _started.add(i)
+                    t = threading.Thread(target=_worker, args=(i + 1, drv, False, i), daemon=True)
+                    t.start()
+                    _all_threads.append(t)
+
+        if reusable_drivers is not None:
+            # Supervisor: havuz yüklenirken driver hazır olunca hemen başlat
+            while pool_bg is not None and pool_bg.is_alive():
+                _spawn_ready()
+                time.sleep(0.05)
+            _spawn_ready()  # Son kontrol
         else:
+            # Havuz yok: lokal driver'lar oluştur
             for worker_id in range(1, worker_count + 1):
                 local_driver = SeleniumDriver(
                     self.proxy_config,
@@ -941,11 +1033,14 @@ class ScienceDirectScraper:
                 )
                 try:
                     local_driver.start()
-                    worker_slots.append((worker_id, local_driver, True, -1))
+                    _started.add(worker_id - 1)
+                    t = threading.Thread(target=_worker, args=(worker_id, local_driver, True, -1), daemon=True)
+                    t.start()
+                    _all_threads.append(t)
                 except Exception:
                     logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
 
-        if not worker_slots:
+        if not _all_threads:
             logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
             while not jobs.empty():
                 try:
@@ -1073,13 +1168,7 @@ class ScienceDirectScraper:
                 if owns_driver:
                     local_driver.close()
 
-        threads = [
-            threading.Thread(target=_worker, args=(wid, drv, owns, pool_idx), daemon=True)
-            for wid, drv, owns, pool_idx in worker_slots
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
+        for t in _all_threads:
             t.join()
 
         ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
@@ -1338,13 +1427,29 @@ class ScienceDirectScraper:
                 f"{len(issues_to_process)} tanesi işlenecek (depth={depth})"
             )
 
-            # 3. Journal-level worker havuzu: tüm issue'lar boyunca yeniden kullanılır
-            # Oturum worker havuzu (bir kez açılır, tüm journal/issue'larda
-            # yeniden kullanılır; burada KAPATILMAZ)
-            parallel_drivers = self._ensure_worker_pool(max_tabs)
+            # 3. Worker havuzunu arka planda başlat; ilk issue yüklenirken tarayıcılar açılır
+            _pool_container: list = []
+            _pool_bg: Optional[threading.Thread] = None
+            if max_tabs > 1:
+                _pool_bg = threading.Thread(
+                    target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
+                    daemon=True,
+                )
+                _pool_bg.start()
+                logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
+            parallel_drivers = _pool_container
 
             # 4. Her issue'yu işle
+            # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
+            # Worker tablar mevcut issue'nun makalelerini işlerken ana tab bir sonraki
+            # issue sayfasına gider ve makale linklerini hazırlar; worker'lar bitince
+            # bekleme olmadan hemen başlarlar.
             issue_results = []
+
+            # Prefetch pipeline durumu (yalnızca parallel_drivers varsa aktif)
+            _pf_thread: Optional[threading.Thread] = None  # şu an çalışan prefetch thread
+            _pf_next_idx: int = -1                         # hangi issue_idx'i çekiyor
+            _pf_holder: dict = {}                          # {'data': (issue_info, stubs)}
 
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
@@ -1364,16 +1469,136 @@ class ScienceDirectScraper:
                     except Exception:
                         pass
 
-                result = self._process_single_issue(
-                    issue_stub=issue_stub,
-                    max_articles=max_articles,
-                    max_tabs=max_tabs if parallel_drivers else 1,
-                    article_progress_callback=article_progress_callback,
-                    article_list_callback=article_list_callback,
-                    issue_idx=issue_idx,
-                    total_issues=len(issues_to_process),
-                    reusable_drivers=parallel_drivers,
-                )
+                if (parallel_drivers or _pool_bg) and max_tabs > 1:
+                    # ── Pipeline modu ──────────────────────────────────────────────
+
+                    # 4a. Issue verilerini al: önceden yüklendiyse hazır, yoksa şimdi çek
+                    if _pf_next_idx == issue_idx:
+                        if _pf_thread and _pf_thread.is_alive():
+                            _pf_thread.join()
+                        if _pf_holder.get('data'):
+                            issue_info, article_stubs = _pf_holder['data']
+                            logger.info(f"Issue {issue_idx}: önceden yüklenmiş veri kullanılıyor")
+                        else:
+                            logger.warning(f"Issue {issue_idx}: prefetch başarısız, şimdi yükleniyor")
+                            issue_info, article_stubs = self._fetch_issue_page(
+                                issue_stub, issue_idx, len(issues_to_process)
+                            )
+                    else:
+                        issue_info, article_stubs = self._fetch_issue_page(
+                            issue_stub, issue_idx, len(issues_to_process)
+                        )
+
+                    # Prefetch durumunu sıfırla; aşağıda yeniden set edilecek
+                    _pf_thread = None
+                    _pf_next_idx = -1
+                    _pf_holder = {}
+
+                    if not article_stubs:
+                        logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
+                        result = {'issue_info': issue_info, 'articles': []}
+                    else:
+                        if max_articles:
+                            article_stubs = article_stubs[:max_articles]
+                            logger.info(f"  İlk {max_articles} makale işlenecek")
+
+                        if article_list_callback:
+                            try:
+                                article_list_callback([a.get('title', '') for a in article_stubs])
+                            except Exception:
+                                pass
+
+                        # 4b. Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                        next_idx = issue_idx + 1
+                        if next_idx <= len(issues_to_process):
+                            next_stub = issues_to_process[next_idx - 1]
+                            holder_ref: dict = {}
+                            _pf_holder = holder_ref
+                            _pf_next_idx = next_idx
+                            total_count = len(issues_to_process)
+
+                            def _do_prefetch(
+                                stub=next_stub, idx=next_idx,
+                                h=holder_ref, total=total_count,
+                            ):
+                                try:
+                                    self.check_stop_flag()
+                                    ni, ns = self._fetch_issue_page(stub, idx, total)
+                                    h['data'] = (ni, ns)
+                                    logger.info(
+                                        f"Issue {idx} prefetch tamamlandı "
+                                        f"({len(ns)} makale linki worker'lar için hazır)"
+                                    )
+                                except ScraperStoppedException:
+                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Issue {idx} prefetch hatası: {e}")
+
+                            _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
+                            _pf_thread.start()
+
+                        # 4c. Bu issue'nun makalelerini worker tablarla işle
+                        # (_process_issue_articles_parallel self.driver kullanmaz → prefetch ile çakışmaz)
+                        # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                        articles, failed_stubs = self._process_issue_articles_parallel(
+                            article_stubs=article_stubs,
+                            max_tabs=max_tabs,
+                            article_progress_callback=article_progress_callback,
+                            reusable_drivers=parallel_drivers,
+                            pool_bg=_pool_bg,
+                        )
+                        _pool_bg = None  # join zaten içeride yapıldı
+
+                        # 4d. Retry öncesi prefetch thread'ini bekle
+                        # (retry self.driver kullanır; prefetch de self.driver kullanır → çakışma önlenir)
+                        if _pf_thread and _pf_thread.is_alive():
+                            logger.info(
+                                f"Issue {issue_idx + 1} prefetch bitmesini bekleniyor "
+                                f"(retry için ana tab gerekiyor)..."
+                            )
+                            _pf_thread.join()
+                            _pf_thread = None
+
+                        # 4e. Başarısız makaleleri tekli retry (ana tab)
+                        if failed_stubs:
+                            logger.info(
+                                f"{len(failed_stubs)} makale paralel aşamada alınamadı, "
+                                f"tekli retry yapılıyor..."
+                            )
+                            for article_stub in failed_stubs:
+                                self.check_stop_flag()
+                                article_url = article_stub.get('url', '')
+                                article_details = self.extract_article_details(
+                                    article_url, retry_attempt=1
+                                )
+                                if article_details:
+                                    article_details['journal_name'] = None
+                                    article_details['issue_number'] = issue_info.get('issue_number')
+                                    article_details['issue_date'] = issue_info.get('date')
+                                    articles.append(article_details)
+
+                        if self.rate_limiter.retry_queue:
+                            retry_results = self._process_retry_queue()
+                            for r in retry_results:
+                                r['issue_number'] = issue_info.get('issue_number')
+                                r['issue_date'] = issue_info.get('date')
+                            articles.extend(retry_results)
+
+                        logger.found(len(articles), f"makale (issue {issue_idx})")
+                        result = {'issue_info': issue_info, 'articles': articles}
+
+                else:
+                    # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
+                    result = self._process_single_issue(
+                        issue_stub=issue_stub,
+                        max_articles=max_articles,
+                        max_tabs=1,
+                        article_progress_callback=article_progress_callback,
+                        article_list_callback=article_list_callback,
+                        issue_idx=issue_idx,
+                        total_issues=len(issues_to_process),
+                        reusable_drivers=None,
+                    )
 
                 # Journal bilgilerini makalelere ekle
                 for article in result['articles']:

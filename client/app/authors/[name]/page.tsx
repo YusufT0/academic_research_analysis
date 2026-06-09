@@ -97,7 +97,7 @@ function AuthorProfileContent() {
       <div className="flex flex-col items-center justify-center py-20 text-center">
         <Users className="h-16 w-16 text-slate-200 mb-4" />
         <h2 className="text-2xl font-bold text-slate-700">Yazar Bulunamadı</h2>
-        <p className="text-slate-500 mt-2 max-w-md">"{name}" isimli yazar veritabanımızda bulunmamaktadır.</p>
+        <p className="text-slate-500 mt-2 max-w-md">"{name}" isimli yazar veri tabanımızda bulunmamaktadır.</p>
         <Button className="mt-6" variant="secondary" onClick={() => router.back()}>
           Geri Dön
         </Button>

@@ -2,8 +2,8 @@
 Main execution script for Science Direct scraper (Async + MongoDB)
 
 Öncelik Sistemi:
-- Veritabanında bulunmayan dergiler öncelikli olarak işlenir
-- Tüm dergiler veritabanındaysa, last_scraped_at tarihine göre en eski öncelikli
+- Veri tabanında bulunmayan dergiler öncelikli olarak işlenir
+- Tüm dergiler veri tabanındaysa, last_scraped_at tarihine göre en eski öncelikli
 """
 
 import sys

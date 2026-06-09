@@ -2239,7 +2239,7 @@ class NLPService:
         self, articles: List[ArticleEmbedding], query: str
     ) -> List[Tuple[str, float]]:
         """
-        Makalelerin önceden çıkarılmış veritabanındaki kelimelerini
+        Makalelerin önceden çıkarılmış veri tabanındaki kelimelerini
         sorgumuzla kıyaslar ve en ilgili olanları döndürür.
         """
         all_keywords_per_abstract = []

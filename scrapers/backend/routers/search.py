@@ -32,7 +32,7 @@ async def sync_to_elasticsearch():
         articles = await Article.find_all().to_list()
         
         if not articles:
-            return {"status": "ok", "indexed": 0, "message": "Veritabanında makale yok"}
+            return {"status": "ok", "indexed": 0, "message": "Veri tabanında makale yok"}
         
         # Beanie document → dict
         article_dicts = []
@@ -133,7 +133,7 @@ async def suggest_journals(
     """
     Elasticsearch üzerinden dergi adı autocomplete.
 
-    Wildcard + aggregation kullanarak veritabanındaki gerçek dergi
+    Wildcard + aggregation kullanarak veri tabanındaki gerçek dergi
     adlarını (journal_name) prefix eşleşmesine göre döner.
     """
     suggestions = await elasticsearch_service.suggest_journals(prefix=q, limit=limit)

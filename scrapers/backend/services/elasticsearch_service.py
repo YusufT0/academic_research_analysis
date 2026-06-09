@@ -185,7 +185,24 @@ class ElasticsearchService:
         except Exception as e:
             logger.error("Bulk index failed", error=str(e))
             return 0
-    
+
+    async def delete_by_journal_id(self, journal_id: str) -> int:
+        """Bir dergiye ait tüm ES dokümanlarını sil"""
+        if not self._client:
+            return 0
+        try:
+            resp = await self._client.delete_by_query(
+                index=self.articles_index,
+                body={"query": {"term": {"journal_id": journal_id}}},
+                refresh=True,
+            )
+            deleted = resp.get("deleted", 0)
+            logger.info(f"ES: {deleted} doküman silindi (journal_id={journal_id})")
+            return deleted
+        except Exception as e:
+            logger.warning(f"ES delete_by_journal_id hata: {e}")
+            return 0
+
     async def search(
         self,
         query: str,

@@ -135,7 +135,7 @@ function ExistingJournalBanner({
           <Info className="h-4 w-4 text-amber-700" />
         </div>
         <div className="flex-1">
-          <p className="text-sm font-semibold text-amber-800">Bu dergi veritabanında mevcut</p>
+          <p className="text-sm font-semibold text-amber-800">Bu dergi veri tabanında mevcut</p>
           <p className="text-xs text-amber-600">Yeniden scrape etmek ister misiniz?</p>
         </div>
         <Badge variant={sourceVariants[info.source_website] ?? 'default'} className="text-xs">
@@ -324,7 +324,7 @@ function InlineJournalQueue({ scraper }: { scraper: ScraperStatus }) {
             journal: null,
             issues: [],
             citationMetrics: null,
-            error: 'Dergi detayı veritabanında bulunamadı.',
+            error: 'Dergi detayı veri tabanında bulunamadı.',
           },
         }));
         return;
@@ -1052,7 +1052,7 @@ export function JournalUrlScraper() {
       {flowState === 'validating' && (
         <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 rounded-xl border border-slate-200 animate-pulse">
           <Loader2 className="h-4 w-4 text-slate-400 animate-spin flex-shrink-0" />
-          <span className="text-sm text-slate-500">URL doğrulanıyor ve veritabanı kontrol ediliyor...</span>
+          <span className="text-sm text-slate-500">URL doğrulanıyor ve veri tabanı kontrol ediliyor...</span>
         </div>
       )}
 

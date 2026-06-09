@@ -144,7 +144,7 @@ function ExistingJournalBanner({
           <Info className="h-4 w-4 text-amber-700" />
         </div>
         <div className="flex-1">
-          <p className="text-sm font-semibold text-amber-800">Bu dergi veritabanında mevcut</p>
+          <p className="text-sm font-semibold text-amber-800">Bu dergi veri tabanında mevcut</p>
           <p className="text-xs text-amber-600">Yeniden scrape edip analiz etmek ister misiniz?</p>
         </div>
         <Badge variant={sourceVariants[info.source_website] ?? 'default'} className="text-xs">
@@ -334,7 +334,7 @@ function InlineJournalQueue({
             journal: null,
             issues: [],
             citationMetrics: null,
-            error: 'Dergi detayı veritabanında bulunamadı.',
+            error: 'Dergi detayı veri tabanında bulunamadı.',
           },
         }));
         return;
@@ -792,6 +792,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
   // stopTracking() gibi "bilerek kapatma" durumlarında reconnect'i engellemek için
   const shouldReconnectRef = useRef(false);
   const scrapeDoneRef    = useRef(false);
+  const seenActiveRef    = useRef(false);
   const stopRequestedRef = useRef(false);
   const displayedProgressRef = useRef(0);
   /** Kontrol Et sonrası URL; kullanıcı metni düzenlemedikçe sarı/yeşil paneller sıfırlanmaz */
@@ -824,6 +825,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     stopTracking();
     if (analysisPollRef.current) { clearInterval(analysisPollRef.current); analysisPollRef.current = null; }
     scrapeDoneRef.current = false;
+    seenActiveRef.current = false;
     stopRequestedRef.current = false;
     displayedProgressRef.current = 0;
     setFlowState('idle');
@@ -864,11 +866,15 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       ws.onmessage = (e) => {
         try {
           const event = JSON.parse(e.data);
+          if (event._replayed) return;
           if ((event.type === 'status_update' || event.type === 'progress') && event.scraper_type === scraperType) {
             if (event.data) {
               setScraperStatus(prev => prev ? { ...prev, ...event.data } : event.data as ScraperStatus);
               const s = (event.data as Record<string, unknown>).status as string;
-              if (s === 'completed' && !scrapeDoneRef.current) {
+              if (['starting', 'running', 'paused'].includes(s)) {
+                seenActiveRef.current = true;
+              }
+              if (s === 'completed' && !scrapeDoneRef.current && seenActiveRef.current) {
                 scrapeDoneRef.current = true;
                 setFlowState('scrape_done');
               } else if (s === 'stopped') {
@@ -899,7 +905,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       try {
         const s = await getSingleJournalScraperStatus(scraperType) as ScraperStatus;
         setScraperStatus(s);
-        if (s.status === 'completed' && !scrapeDoneRef.current) {
+        if (['starting', 'running', 'paused'].includes(s.status)) {
+          seenActiveRef.current = true;
+        }
+        if (s.status === 'completed' && !scrapeDoneRef.current && seenActiveRef.current) {
           scrapeDoneRef.current = true;
           setFlowState('scrape_done');
         } else if (s.status === 'stopped') {
@@ -940,6 +949,10 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       return;
     }
     setFlowState('analyzing');
+    setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
     setAnalysisSteps({
       cluster_update: { status: 'pending', message: 'Bekliyor...' },
       openalex:       { status: 'pending', message: 'Bekliyor...' },
@@ -950,7 +963,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       // 1. Get journal ID and name
       const existsRes = await checkJournalExists(url.trim());
       if (!existsRes.exists || !existsRes.journal) {
-        setErrorMsg('Scraping tamamlandı fakat journal veritabanında bulunamadı.');
+        setErrorMsg('Scraping tamamlandı fakat journal veri tabanında bulunamadı.');
         setFlowState('error');
         return;
       }
@@ -1034,6 +1047,16 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     setErrorMsg(null);
     setBackendValidation(null);
     setExistsInfo(null);
+    setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
+    setAnalysisSteps({
+      cluster_update: { status: 'pending', message: 'Bekliyor...' },
+      openalex:       { status: 'pending', message: 'Bekliyor...' },
+      elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
+    });
+    displayedProgressRef.current = 0;
     lastValidatedUrlRef.current = null;
     try {
       const validation = await validateJournalUrl(trimmedUrl);
@@ -1053,16 +1076,27 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
     }
   }, [url]);
 
-  const handleStart = useCallback(async () => {
+  const handleStart = useCallback(async (force = false) => {
     const scraperType = backendValidation?.scraper_type;
     if (!scraperType) return;
     scrapeDoneRef.current = false;
+    seenActiveRef.current = false;
     stopRequestedRef.current = false;
+    displayedProgressRef.current = 0;
     setFlowState('scraping');
     setScraperStatus(null);
     setIsStopping(false);
+    setResultData(null);
+    setResolvedJournal(null);
+    setJournalDetailLoading(false);
+    setJournalDetailError(null);
+    setAnalysisSteps({
+      cluster_update: { status: 'pending', message: 'Bekliyor...' },
+      openalex:       { status: 'pending', message: 'Bekliyor...' },
+      elasticsearch:  { status: 'pending', message: 'Bekliyor...' },
+    });
     try {
-      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs);
+      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs, force);
       startTracking(scraperType);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : 'Scraper başlatılamadı.');
@@ -1429,7 +1463,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
       {flowState === 'validating' && (
         <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 rounded-xl border border-slate-200 animate-pulse">
           <Loader2 className="h-4 w-4 text-slate-400 animate-spin flex-shrink-0" />
-          <span className="text-sm text-slate-500">URL doğrulanıyor ve veritabanı kontrol ediliyor...</span>
+          <span className="text-sm text-slate-500">URL doğrulanıyor ve veri tabanı kontrol ediliyor...</span>
         </div>
       )}
 
@@ -1447,7 +1481,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
 
       {/* Existing journal prompt */}
       {flowState === 'exists_prompt' && existsInfo?.journal && (
-        <ExistingJournalBanner info={existsInfo.journal} onContinue={handleStart} onCancel={resetFlow} />
+        <ExistingJournalBanner info={existsInfo.journal} onContinue={() => handleStart(true)} onCancel={resetFlow} />
       )}
 
       {/* Confirmed — ready to start */}

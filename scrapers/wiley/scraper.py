@@ -111,7 +111,7 @@ class WileyScraper:
         self.navigator = PageNavigator(self.selenium_driver, self.WILEY_BASE)
         logger.success(f"Hedef URL: {self.config.base_url}")
 
-    def _ensure_worker_pool(self, max_tabs: int) -> List[SeleniumDriver]:
+    def _ensure_worker_pool(self, max_tabs: int, on_ready=None) -> List[SeleniumDriver]:
         """
         Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
 
@@ -120,19 +120,50 @@ class WileyScraper:
         hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
         kendi get()/restart() mantığıyla iyileşir; havuz korunur. Havuz
         yalnızca scraper.close() ile (oturum sonu) kapatılır.
+
+        on_ready: Her driver açıldığında çağrılan callback (ör. pool_container.append).
         """
         if max_tabs <= 1:
             return []
-        # Eksik worker varsa tamamla (ilk açılış ya da daha büyük max_tabs)
-        while len(self._worker_pool) < max_tabs:
-            worker_id = len(self._worker_pool) + 1
-            local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
-            if local_driver.start():
-                self._worker_pool.append(local_driver)
-                logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
-            else:
+        needed = max_tabs - len(self._worker_pool)
+        if needed <= 0:
+            if self._worker_pool:
+                logger.info(
+                    f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                    f"(journal/issue boyunca yeniden kullanılır)"
+                )
+            return self._worker_pool
+
+        start_index = len(self._worker_pool)
+        _new: list = [None] * needed
+
+        def _open_one(slot_i: int):
+            worker_id = start_index + slot_i + 1
+            wd = SeleniumDriver(self.proxy_config, headless=self.headless)
+            try:
+                if wd.start():
+                    _new[slot_i] = wd
+                    logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                    if on_ready:
+                        on_ready(wd)
+                else:
+                    logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+            except Exception:
                 logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
-                break
+
+        open_threads = [
+            threading.Thread(target=_open_one, args=(i,), daemon=True)
+            for i in range(needed)
+        ]
+        for t in open_threads:
+            t.start()
+        for t in open_threads:
+            t.join()
+
+        for wd in _new:
+            if wd is not None:
+                self._worker_pool.append(wd)
+
         if self._worker_pool:
             logger.info(
                 f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
@@ -423,6 +454,48 @@ class WileyScraper:
         logger.success(f"Toplam {len(all_issues)} issue bulundu ({count_new()} yeni)")
         return all_issues
 
+    def _fetch_issue_page(
+        self,
+        issue: Dict[str, Any],
+        issue_idx: int = 0,
+        total_issues: int = 0,
+    ) -> tuple:
+        """
+        Ana tab ile issue ToC sayfasına gider, full-text makale stub listesini döndürür.
+
+        Paralel pipeline'da worker'lar mevcut issue'yu işlerken bu metot ayrı bir thread'den
+        çağrılarak bir sonraki issue önceden yüklenir; worker'lar biter bitmez makalelere
+        anında başlayabilirler.
+
+        Returns:
+            (issue: dict, full_text_stubs: list)  —  hata durumunda exception fırlatır
+        """
+        issue_url = issue['url']
+        full_url = (
+            f"{self.WILEY_BASE}{issue_url}"
+            if issue_url.startswith('/') else issue_url
+        )
+        if issue_idx and total_issues:
+            logger.section(
+                f"Issue {issue_idx}/{total_issues} yükleniyor: "
+                f"{issue.get('title', issue_url)}"
+            )
+        logger.info(f"  Issue URL: {full_url}")
+
+        if not self.navigator.go_to_issue_toc(full_url):
+            raise Exception(f"Issue ToC yüklenemedi: {full_url}")
+
+        self._close_modals()
+        self._check_cloudflare_and_handle()
+
+        article_stubs = JournalParser.parse_article_list_from_toc(self.selenium_driver.page_source)
+        full_text_stubs = [a for a in article_stubs if a.get('has_full_text')]
+        logger.info(
+            f"  {len(article_stubs)} makale, "
+            f"{len(full_text_stubs)} Full Text (prefetch tamamlandı)"
+        )
+        return issue, full_text_stubs
+
     def _process_single_issue(
         self,
         issue: Dict[str, Any],
@@ -608,6 +681,7 @@ class WileyScraper:
         max_tabs: int,
         article_progress_callback: Callable = None,
         reusable_drivers=None,
+        pool_bg: Optional[threading.Thread] = None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """Issue içindeki makaleleri worker havuzu ile paralel işler."""
         total = len(full_text_stubs)
@@ -631,32 +705,8 @@ class WileyScraper:
                 return doi_url
             return f"{self.WILEY_BASE}/doi/full/{doi_url}"
 
-        # Build worker slots: (worker_id, driver, owns_driver, pool_index)
-        # If reusable_drivers provided, use them (don't close on exit).
-        # Otherwise create new drivers (close on exit).
-        worker_slots = []
-        if reusable_drivers:
-            for pool_index, driver in enumerate(reusable_drivers[:worker_count]):
-                worker_id = pool_index + 1
-                worker_slots.append((worker_id, driver, False, pool_index))
-        else:
-            for worker_id in range(1, worker_count + 1):
-                local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
-                if local_driver.start():
-                    worker_slots.append((worker_id, local_driver, True, -1))
-                else:
-                    logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
-                    # Jobs for this worker will be handled by remaining workers or retry
-
-        if not worker_slots:
-            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
-            while not jobs.empty():
-                try:
-                    _, stub = jobs.get_nowait()
-                    retry_urls.append(_to_article_url(stub))
-                except queue.Empty:
-                    break
-            return [], retry_urls
+        # Worker'ları havuzdan al; havuz yükleniyorsa supervisor ile dinamik başlat
+        # (Aşağıdaki _worker tanımlandıktan sonra supervisor bloğunda kullanılır)
 
         def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int):
             try:
@@ -746,13 +796,45 @@ class WileyScraper:
                 if owns_driver:
                     local_driver.close()
 
-        threads = [
-            threading.Thread(target=_worker, args=(wid, drv, owns, pool_idx), daemon=True)
-            for wid, drv, owns, pool_idx in worker_slots
-        ]
-        for t in threads:
-            t.start()
-        for t in threads:
+        _started: set = set()
+        _all_threads: list = []
+
+        def _spawn_ready():
+            if reusable_drivers is not None:
+                for i, drv in enumerate(reusable_drivers[:worker_count]):
+                    if i not in _started:
+                        _started.add(i)
+                        t = threading.Thread(target=_worker, args=(i + 1, drv, False, i), daemon=True)
+                        t.start()
+                        _all_threads.append(t)
+            else:
+                if not _started:
+                    _started.add(0)
+                    for worker_id in range(1, worker_count + 1):
+                        local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                        if local_driver.start():
+                            t = threading.Thread(target=_worker, args=(worker_id, local_driver, True, -1), daemon=True)
+                            t.start()
+                            _all_threads.append(t)
+                        else:
+                            logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+
+        while pool_bg is not None and pool_bg.is_alive():
+            _spawn_ready()
+            time.sleep(0.05)
+        _spawn_ready()
+
+        if not _all_threads:
+            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
+            while not jobs.empty():
+                try:
+                    _, stub = jobs.get_nowait()
+                    retry_urls.append(_to_article_url(stub))
+                except queue.Empty:
+                    break
+            return [], retry_urls
+
+        for t in _all_threads:
             t.join()
 
         ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
@@ -1024,9 +1106,17 @@ class WileyScraper:
 
             # ── 3a. Issue-based ───────────────────────────────────────────────
             if journal_type != 'article_based':
-                # Oturum worker havuzu (bir kez açılır, tüm journal/issue'larda
-                # yeniden kullanılır; burada KAPATILMAZ)
-                parallel_drivers = self._ensure_worker_pool(max_tabs)
+                # Worker havuzunu arka planda başlat; issue listesi yüklenirken tarayıcılar açılır
+                _pool_container: list = []
+                _pool_bg: Optional[threading.Thread] = None
+                if max_tabs > 1:
+                    _pool_bg = threading.Thread(
+                        target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
+                        daemon=True,
+                    )
+                    _pool_bg.start()
+                    logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
+                parallel_drivers = _pool_container
 
                 all_issues = self._extract_all_issues(
                     journal_id,
@@ -1081,7 +1171,13 @@ class WileyScraper:
                         return f"Volume {volume}"
                     return f"Issue {fallback_index}"
 
+                # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
                 issue_results = []
+
+                _pf_thread: Optional[threading.Thread] = None
+                _pf_next_idx: int = -1
+                _pf_holder: dict = {}
+
                 for idx, issue in enumerate(issues_to_process, 1):
                     self.check_stop_flag()
 
@@ -1100,16 +1196,147 @@ class WileyScraper:
                         except Exception:
                             pass
 
-                    result = self._process_single_issue(
-                        issue=issue,
-                        max_articles=max_articles,
-                        max_tabs=max_tabs if parallel_drivers else 1,
-                        article_progress_callback=article_progress_callback,
-                        article_list_callback=article_list_callback,
-                        issue_idx=idx,
-                        total_issues=len(issues_to_process),
-                        reusable_drivers=parallel_drivers,
-                    )
+                    if (parallel_drivers or _pool_bg) and max_tabs > 1:
+                        # ── Pipeline modu ──────────────────────────────────────────────
+
+                        # Issue verilerini al: önceden yüklendiyse hazır, yoksa şimdi çek
+                        if _pf_next_idx == idx:
+                            if _pf_thread and _pf_thread.is_alive():
+                                _pf_thread.join()
+                            if _pf_holder.get('data'):
+                                issue_obj, full_text_stubs = _pf_holder['data']
+                                logger.info(f"Issue {idx}: önceden yüklenmiş veri kullanılıyor")
+                            else:
+                                logger.warning(f"Issue {idx}: prefetch başarısız, şimdi yükleniyor")
+                                try:
+                                    issue_obj, full_text_stubs = self._fetch_issue_page(
+                                        issue, idx, len(issues_to_process)
+                                    )
+                                except Exception as fe:
+                                    logger.warning(f"Issue {idx} yüklenemedi: {fe}")
+                                    result = {'issue_info': issue, 'articles': []}
+                                    issue_results.append(result)
+                                    continue
+                        else:
+                            try:
+                                issue_obj, full_text_stubs = self._fetch_issue_page(
+                                    issue, idx, len(issues_to_process)
+                                )
+                            except Exception as fe:
+                                logger.warning(f"Issue {idx} yüklenemedi: {fe}")
+                                result = {'issue_info': issue, 'articles': []}
+                                issue_results.append(result)
+                                continue
+
+                        _pf_thread = None
+                        _pf_next_idx = -1
+                        _pf_holder = {}
+
+                        if not full_text_stubs:
+                            logger.warning("  Full Text makale bulunamadı, issue atlanıyor")
+                            result = {'issue_info': issue_obj, 'articles': []}
+                        else:
+                            if max_articles and len(full_text_stubs) > max_articles:
+                                full_text_stubs = full_text_stubs[:max_articles]
+                                logger.info(f"  max_articles={max_articles} ile kırpıldı")
+
+                            if article_list_callback:
+                                try:
+                                    article_list_callback([a.get('title', '') for a in full_text_stubs])
+                                except Exception:
+                                    pass
+
+                            # Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                            next_idx = idx + 1
+                            if next_idx <= len(issues_to_process):
+                                next_issue = issues_to_process[next_idx - 1]
+                                holder_ref: dict = {}
+                                _pf_holder = holder_ref
+                                _pf_next_idx = next_idx
+                                total_count = len(issues_to_process)
+
+                                def _do_prefetch(
+                                    iss=next_issue, i=next_idx,
+                                    h=holder_ref, total=total_count,
+                                ):
+                                    try:
+                                        self.check_stop_flag()
+                                        io, fs = self._fetch_issue_page(iss, i, total)
+                                        h['data'] = (io, fs)
+                                        logger.info(
+                                            f"Issue {i} prefetch tamamlandı "
+                                            f"({len(fs)} full-text stub hazır)"
+                                        )
+                                    except ScraperStoppedException:
+                                        pass
+                                    except CloudflareBlockedException:
+                                        pass
+                                    except Exception as e:
+                                        logger.warning(f"Issue {i} prefetch hatası: {e}")
+
+                                _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
+                                _pf_thread.start()
+
+                            # Makaleleri worker tablarla işle
+                            # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                            articles, retry_queue = self._process_issue_articles_parallel(
+                                full_text_stubs=full_text_stubs,
+                                max_tabs=max_tabs,
+                                article_progress_callback=article_progress_callback,
+                                reusable_drivers=parallel_drivers,
+                                pool_bg=_pool_bg,
+                            )
+                            _pool_bg = None  # join zaten içeride yapıldı
+
+                            # Retry öncesi prefetch thread'ini bekle (self.selenium_driver çakışmasını önle)
+                            if _pf_thread and _pf_thread.is_alive():
+                                logger.info(
+                                    f"Issue {idx + 1} prefetch bitmesini bekleniyor "
+                                    f"(retry için ana tab gerekiyor)..."
+                                )
+                                _pf_thread.join()
+                                _pf_thread = None
+
+                            # Başarısız makaleleri retry (ana tab)
+                            if retry_queue:
+                                logger.info(f"{len(retry_queue)} makale yüklenemedi, yeniden deneniyor...")
+                                for retry_idx, r_url in enumerate(retry_queue, 1):
+                                    self.check_stop_flag()
+                                    try:
+                                        logger.info(f"[Retry {retry_idx}/{len(retry_queue)}] {r_url}")
+                                        if not self.selenium_driver.get(r_url, wait_after=4):
+                                            logger.warning(f"Retry başarısız, makale atlanıyor: {r_url}")
+                                            continue
+                                        self._close_modals()
+                                        wait_for_page_load(self.selenium_driver)
+                                        article_data = ArticleParser.parse_article_detail(
+                                            self.selenium_driver.page_source, r_url
+                                        )
+                                        if article_data and article_data.get('title'):
+                                            articles.append(article_data)
+                                            logger.success(f"Retry başarılı: {article_data['title'][:50]}...")
+                                        else:
+                                            logger.warning(f"Retry: makale detayları alınamadı ({r_url})")
+                                        self._random_wait()
+                                    except (ScraperStoppedException, CloudflareBlockedException):
+                                        raise
+                                    except Exception as e:
+                                        logger.warning(f"Retry hatası ({r_url}): {e}")
+
+                            result = {'issue_info': issue_obj, 'articles': articles}
+
+                    else:
+                        # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
+                        result = self._process_single_issue(
+                            issue=issue,
+                            max_articles=max_articles,
+                            max_tabs=1,
+                            article_progress_callback=article_progress_callback,
+                            article_list_callback=article_list_callback,
+                            issue_idx=idx,
+                            total_issues=len(issues_to_process),
+                            reusable_drivers=None,
+                        )
 
                     for art in result['articles']:
                         art['journal_name'] = journal_name

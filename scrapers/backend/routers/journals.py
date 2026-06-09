@@ -162,7 +162,7 @@ async def list_journals(
 
 @router.get("/year-range", summary="Dergi sayı yılı min/max değerlerini getir")
 async def get_journal_year_range():
-    """Veritabanındaki sayıların (issue) en küçük ve en büyük yılını döndürür."""
+    """Veri tabanındaki sayıların (issue) en küçük ve en büyük yılını döndürür."""
     from database.models import Issue
     pipeline = [
         {"$match": {"year": {"$ne": None}}},
@@ -268,7 +268,7 @@ async def get_journal(journal_id: str):
 async def recalculate_all_counts():
     """
     Tüm dergilerin issue_count ve article_count alanlarını
-    veritabanındaki gerçek verilerden yeniden hesaplar.
+    veri tabanındaki gerçek verilerden yeniden hesaplar.
     Önbelleği de temizler.
     """
     from database.service import get_database_service
