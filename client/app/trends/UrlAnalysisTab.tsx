@@ -1421,7 +1421,7 @@ export function UrlAnalysisTab({ modelVersion, topN, onAnalysisComplete }: Props
               </Button>
             )}
             {flowState === 'confirmed' && (
-              <Button variant="primary" size="sm" onClick={handleStart} className="min-w-[140px] bg-blue-600 hover:bg-blue-700">
+              <Button variant="primary" size="sm" onClick={() => handleStart()} className="min-w-[140px] bg-blue-600 hover:bg-blue-700">
                 <Play className="h-4 w-4 mr-1.5" />
                 Tara ve Analiz Et
               </Button>
