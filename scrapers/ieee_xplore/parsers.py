@@ -16,6 +16,36 @@ class JournalParser:
     """Journal bilgilerini parse eden sınıf"""
 
     @staticmethod
+    def extract_journal_name_from_journal_page(page_source: str) -> Optional[str]:
+        """
+        IEEE journal sayfasından dergi adını çıkarır.
+
+        Hedef yapı:
+        <div class="title-container ..."><h1>...</h1></div>
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+
+            title_container = soup.find('div', class_=lambda c: c and 'title-container' in c)
+            if title_container:
+                h1 = title_container.find('h1')
+                if h1:
+                    journal_name = h1.get_text(strip=True)
+                    if journal_name:
+                        return journal_name
+
+            # Fallback: genel h1 başlığı
+            h1 = soup.find('h1')
+            if h1:
+                journal_name = h1.get_text(strip=True)
+                return journal_name or None
+
+            return None
+        except Exception as e:
+            logger.warning(f"Journal adı çıkarma hatası: {e}")
+            return None
+
+    @staticmethod
     def extract_aims_and_scope(page_source: str) -> Optional[str]:
         """
         Journal ana sayfasındaki <section class="aimsAndScope"> bileşeninden
@@ -382,8 +412,28 @@ class ArticleParser:
             result_items = soup.find_all('xpl-issue-results-items')
             
             if not result_items:
-                logger.warning("Makale item'ları bulunamadı")
-                return []
+                # Fallback: bazı TOC varyantlarında custom element yerine doğrudan /document/ linkleri bulunur
+                article_links = soup.select('a[href*="/document/"]')
+                if not article_links:
+                    logger.warning("Makale item'ları bulunamadı")
+                    return []
+
+                dedup = set()
+                articles = []
+                for link in article_links:
+                    href = link.get('href', '').strip()
+                    if not href or '/document/' not in href:
+                        continue
+                    if href in dedup:
+                        continue
+                    dedup.add(href)
+                    title_text = link.get_text(strip=True)
+                    if not title_text:
+                        continue
+                    articles.append({'url': href, 'title': title_text})
+
+                logger.found(len(articles), "makale URL'i (fallback)")
+                return articles
             
             logger.found(len(result_items), "item")
             

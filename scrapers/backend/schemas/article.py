@@ -5,6 +5,7 @@ Article Schemas
 from typing import Optional, List
 from datetime import datetime
 from pydantic import BaseModel, Field
+from beanie import PydanticObjectId
 
 
 class ArticleFilter(BaseModel):
@@ -115,3 +116,16 @@ class ArticleCitationMetricsResponse(BaseModel):
     
     class Config:
         from_attributes = True
+
+
+class ArticleNLPProjection(BaseModel):
+    """NLP işlemleri için minimum gerekli alanları çeken projection modeli"""
+    id: PydanticObjectId = Field(alias="_id")
+    abstract: str
+    publication_date: Optional[str] = None
+    publisher: Optional[str] = None
+    journal_id: Optional[PydanticObjectId] = None
+    title: Optional[str] = None
+
+    class Config:
+        populate_by_name = True

@@ -28,6 +28,10 @@ function getFullUrl(url: string, sourceWebsite: string): string {
     return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   } else if (sourceWebsite === 'acm') {
     return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'wiley') {
+    return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  } else if (sourceWebsite === 'springer') {
+    return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   }
 
   return url;
@@ -38,10 +42,22 @@ function JournalsContent() {
   const journalIdParam = searchParams.get('journal_id');
   const issueIdParam = searchParams.get('issue_id');
   const articleIdParam = searchParams.get('article_id');
+  const searchNameParam = searchParams.get('search');
 
   const [data, setData] = useState<PaginatedResponse<Journal> | null>(null);
   const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
+
+  const handleJournalDeleted = (journalId: string) => {
+    setData(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: prev.items.filter(j => j.id !== journalId),
+        total: prev.total - 1,
+      };
+    });
+  };
+  const [searchTerm, setSearchTerm] = useState(searchNameParam ?? '');
   const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
   const initializedUrlParam = useRef(false);
   const skipSearchTrigger = useRef(false);
@@ -122,7 +138,7 @@ function JournalsContent() {
                 <input
                   type="text"
                   placeholder="Dergi ara..."
-                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 outline-none"
+                  className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-300 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 outline-none"
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
@@ -137,6 +153,8 @@ function JournalsContent() {
                 <option value="ieeexplore">IEEE Xplore</option>
                 <option value="sciencedirect">ScienceDirect</option>
                 <option value="acm">ACM Digital Library</option>
+                <option value="wiley">Wiley Online Library</option>
+                <option value="springer">Springer Link</option>
               </select>
 
               <select
@@ -199,12 +217,13 @@ function JournalsContent() {
           </div>
         ) : (
           data?.items.map((journal) => (
-            <JournalCard 
-              key={journal.id} 
-              journal={journal} 
-              getFullUrl={getFullUrl} 
+            <JournalCard
+              key={journal.id}
+              journal={journal}
+              getFullUrl={getFullUrl}
               defaultExpandedIssueId={journal.id === journalIdParam ? issueIdParam : null}
               highlightArticleId={journal.id === journalIdParam ? articleIdParam : null}
+              onDelete={handleJournalDeleted}
             />
           ))
         )}

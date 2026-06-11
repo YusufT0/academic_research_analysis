@@ -185,7 +185,24 @@ class ElasticsearchService:
         except Exception as e:
             logger.error("Bulk index failed", error=str(e))
             return 0
-    
+
+    async def delete_by_journal_id(self, journal_id: str) -> int:
+        """Bir dergiye ait tüm ES dokümanlarını sil"""
+        if not self._client:
+            return 0
+        try:
+            resp = await self._client.delete_by_query(
+                index=self.articles_index,
+                body={"query": {"term": {"journal_id": journal_id}}},
+                refresh=True,
+            )
+            deleted = resp.get("deleted", 0)
+            logger.info(f"ES: {deleted} doküman silindi (journal_id={journal_id})")
+            return deleted
+        except Exception as e:
+            logger.warning(f"ES delete_by_journal_id hata: {e}")
+            return 0
+
     async def search(
         self,
         query: str,
@@ -283,11 +300,11 @@ class ElasticsearchService:
             logger.error("Search failed", query=query, error=str(e))
             return {"items": [], "total": 0, "query": query, "error": str(e)}
     
-    async def suggest(self, prefix: str, limit: int = 10) -> List[str]:
-        """Autocomplete önerileri"""
+    async def suggest(self, prefix: str, limit: int = 10) -> List[dict]:
+        """Autocomplete önerileri — {id, text} listesi döner"""
         if not self._client or not prefix:
             return []
-        
+
         try:
             result = await self._client.search(
                 index=self.articles_index,
@@ -303,8 +320,8 @@ class ElasticsearchService:
                     "_source": ["title"],
                 },
             )
-            
-            return [hit["_source"]["title"] for hit in result["hits"]["hits"]]
+
+            return [{"id": hit["_id"], "text": hit["_source"]["title"]} for hit in result["hits"]["hits"]]
         except Exception as e:
             logger.error("Suggest failed", prefix=prefix, error=str(e))
             return []

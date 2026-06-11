@@ -25,11 +25,24 @@ sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('ieee_xplore')
 
-from .config import ProxyConfig
+from .config import ProxyConfig, ARTICLE_READY_SELECTOR
 import random
 
 # Farklı User Agent'lar utils altından import ediliyor
 from utils.user_agents import USER_AGENTS
+
+# Yavaş internet optimizasyonu — paylaşımlı yardımcılar
+from backend.core.config import settings
+from utils.chrome_tuning import (
+    apply_page_load_strategy,
+    build_perf_prefs,
+    perf_chrome_args,
+    enable_cdp_request_blocking,
+    blocked_url_patterns,
+    maybe_emulate_slow_network,
+)
+from utils.network_probe import NetworkProbe, effective_page_load_timeout
+from utils.resilient_fetch import resilient_get
 
 class SeleniumDriver:
     """Selenium WebDriver'ı yöneten sınıf"""
@@ -47,6 +60,9 @@ class SeleniumDriver:
         self.driver = None
         self.current_user_agent = None
         self._used_user_agents = []
+        # Yavaş internet adaptasyonu için durum
+        self.network_class = "fast"
+        self.last_fetch = None
 
     def get_random_user_agent(self, exclude_current: bool = True) -> str:
         """Rastgele bir user agent seçer"""
@@ -113,7 +129,22 @@ class SeleniumDriver:
         
         # Proxy loopback (kendi selenium-wire proxy trafiği ile çakışmaması için)
         options.add_argument('--proxy-bypass-list=<-loopback>')
-        
+
+        # ── Yavaş internet optimizasyonu (her iki driver yolu için) ──
+        apply_page_load_strategy(options, settings.page_load_strategy)
+        if settings.block_resources_for('ieee'):
+            for _arg in perf_chrome_args(block_images=settings.block_images):
+                options.add_argument(_arg)
+            try:
+                options.add_experimental_option('prefs', build_perf_prefs(
+                    block_images=settings.block_images,
+                    block_fonts=settings.block_fonts,
+                    block_media=settings.block_media,
+                    block_stylesheets=settings.block_stylesheets,
+                ))
+            except Exception as e:
+                logger.warning(f"prefs ayarlanamadı (CDP fallback aktif): {e}")
+
         # Undetected-chromedriver için
         if use_uc:
             return options
@@ -255,9 +286,21 @@ class SeleniumDriver:
                     
                 self.driver = uc.Chrome(**kwargs)
             
-            # Timeout ayarları
-            self.driver.set_page_load_timeout(60)
-            self.driver.implicitly_wait(10)
+            # ── Adaptif timeout: ağ hızını ölç, timeout'u ölçekle ──
+            try:
+                self.network_class = NetworkProbe().measure_and_classify(self.driver)
+            except Exception:
+                self.network_class = "fast"
+            eff_timeout = effective_page_load_timeout(
+                settings.ieee_page_load_timeout, self.network_class
+            )
+            self.driver.set_page_load_timeout(eff_timeout)
+            self.driver.implicitly_wait(settings.implicit_wait)
+            logger.info(
+                "page_load_timeout_set",
+                effective_timeout=eff_timeout,
+                network_class=self.network_class,
+            )
             
             # Pencere boyutu
             self.driver.set_window_size(1920, 1080)
@@ -273,7 +316,19 @@ class SeleniumDriver:
             # Bot tespitini zorlaştıran JavaScript injection
             if self.headless:
                 self._apply_stealth_scripts()
-            
+
+            # ── Kaynak engelleme (CDP — uc prefs'i strip etse de garanti yol) ──
+            if settings.block_resources_for('ieee'):
+                enable_cdp_request_blocking(
+                    self.driver,
+                    patterns=blocked_url_patterns(settings.blocked_url_patterns_csv),
+                    block_images=settings.block_images,
+                    block_fonts=settings.block_fonts,
+                    block_media=settings.block_media,
+                )
+            # Yalnızca test/doğrulama: yavaş ağ emülasyonu (varsayılan kapalı)
+            maybe_emulate_slow_network(self.driver, settings)
+
             logger.success("WebDriver başarıyla başlatıldı")
             return True
             
@@ -402,63 +457,29 @@ class SeleniumDriver:
     
     def get(self, url: str, wait_after: int = 3, max_retries: int = 2) -> bool:
         """
-        Belirtilen URL'e git. Bağlantı hatası alınırsa driver'ı yeniden başlatarak tekrar dener.
-        
+        Belirtilen URL'e git. Dayanıklı getirme (resilient_get) kullanır:
+        - yavaş timeout → aynı driver'da artan timeout + backoff (RESTART YOK)
+        - net::ERR_/session ölümü → driver restart
+        - timeout'ta window.stop() + selector kontrolü ile kısmi sayfa kurtarma
+
+        Geriye dönük imza korunur (bool döner). Detay için self.last_fetch.
+
         Args:
             url: Gidilecek URL
-            wait_after: Sayfa yüklendikten sonra bekleme süresi (saniye)
-            max_retries: Maksimum deneme sayısı (her denemede driver yeniden başlatılır)
-            
-        Returns:
-            bool: Başarılı ise True
+            wait_after: readyState beklemesi için taban (saniye)
+            max_retries: KULLANILMIYOR — retry artık settings.retry_max ile merkezi
         """
-        for attempt in range(max_retries + 1):
-            try:
-                # Driver yoksa başlat
-                if self.driver is None:
-                    logger.warning("Driver aktif değil, başlatılıyor...")
-                    if not self.start():
-                        logger.error("Driver başlatılamadı!")
-                        return False
-                
-                if attempt > 0:
-                    logger.info(f"Yeniden deneniyor ({attempt}/{max_retries})...")
-                
-                logger.url(url, "Açılıyor")
-                self.driver.get(url)
-                time.sleep(wait_after)
-                logger.success("Sayfa yüklendi")
-                return True
-                
-            except Exception as e:
-                error_str = str(e)
-                
-                # Bağlantı hatalarını kontrol et
-                is_connection_error = any(err in error_str for err in [
-                    'ERR_TUNNEL_CONNECTION_FAILED',
-                    'ERR_PROXY_CONNECTION_FAILED', 
-                    'ERR_CONNECTION_REFUSED',
-                    'ERR_CONNECTION_TIMED_OUT',
-                    'ERR_NAME_NOT_RESOLVED',
-                    'net::ERR_'
-                ])
-                
-                if is_connection_error:
-                    logger.failed("Sayfa yükleme hatası (bağlantı sorunu)", e)
-                    
-                    if attempt < max_retries:
-                        logger.warning(f"Bağlantı hatası - driver yeniden başlatılarak tekrar denenecek...")
-                        # Driver'ı kapat ve yeniden başlat
-                        if not self.restart():
-                            logger.error("Driver yeniden başlatılamadı!")
-                            return False
-                        time.sleep(2)  # Yeniden başlatma sonrası kısa bekleme
-                        continue
-                    else:
-                        logger.error("Maksimum deneme sayısına ulaşıldı - bağlantı sorunu devam ediyor")
-                        return False
-                else:
-                    logger.failed("Sayfa yükleme hatası", e)
-                    return False
-        
-        return False
+        base_timeout = effective_page_load_timeout(
+            settings.ieee_page_load_timeout,
+            getattr(self, "network_class", "fast"),
+        )
+        result = resilient_get(
+            self,
+            url,
+            expected_selector=ARTICLE_READY_SELECTOR,
+            wait_after=wait_after,
+            scraper_name="ieee",
+            base_timeout=base_timeout,
+        )
+        self.last_fetch = result
+        return result.ok

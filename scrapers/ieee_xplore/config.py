@@ -34,6 +34,11 @@ class ProxyConfig:
         return f"http://{self.user}:{self.password}@{self.host}:{self.port}"
 
 
+# Makale sayfası "hazır" göstergesi — resilient_fetch kısmi sayfa kurtarmada
+# bu selector varsa sayfayı kullanılabilir kabul eder (parsers.py:508 ile uyumlu).
+ARTICLE_READY_SELECTOR = "h1.document-title"
+
+
 class IEEEXploreConfig:
     """IEEE Xplore scraper için genel ayarlar"""
     

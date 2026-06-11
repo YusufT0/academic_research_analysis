@@ -1,88 +1,157 @@
-﻿'use client';
+'use client';
 
-import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
-} from 'recharts';
+import { useEffect, useRef, useState } from 'react';
 import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/components/ui/Card';
+import { ChevronDown, ChevronUp } from 'lucide-react';
+import { UrlAnalysisTab, type UrlAnalysisResult } from './UrlAnalysisTab';
+import { TopicTrendChart } from './TopicTrendChart';
 import {
   getNlpStatus,
+  getNlpModelVersions,
   getAllTopicTrends,
   getJournalTopicTrends,
   getPublisherTopicTrends,
+  getKeywordTopicTrends,
+  nlpSearch,
   listClusters,
-  getClusterTrendSeries,
-  getClusterArticles,
   suggestJournals,
 } from '@/lib/api';
-import type { TopicTrendsData, TopicCluster, NlpStatus } from '@/lib/types';
-import Link from 'next/link';
+import type { TopicTrendsData, TopicCluster, NlpStatus, NlpSearchResponse } from '@/lib/types';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const COLOR_PALETTE = [
-  '#10b981', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6',
-  '#06b6d4', '#f97316', '#84cc16', '#ec4899', '#14b8a6',
-  '#a855f7', '#eab308', '#64748b', '#0ea5e9', '#d946ef',
-  '#22c55e', '#f43f5e', '#fb923c', '#a3e635', '#38bdf8',
-];
-
-const TOP_N_OPTIONS = [10, 15, 20];
-
 const PUBLISHERS = [
-  { label: 'IEEE Xplore', value: 'IEEE' },
-  { label: 'ACM Digital Library', value: 'ACM' },
-  { label: 'Science Direct', value: 'Elsevier' },
+  { label: 'IEEE Xplore',        value: 'IEEE'     },
+  { label: 'ACM Digital Library', value: 'ACM'     },
+  { label: 'Science Direct',     value: 'Elsevier' },
+  { label: 'Wiley Online Library', value: 'Wiley'   },
+  { label: 'Springer Link',      value: 'Springer' },
 ];
 
-const CLUSTER_PAGE_SIZE = 20;
+type Mode = 'all' | 'journal' | 'publisher' | 'keyword';
 
-type Mode = 'all' | 'journal' | 'publisher';
+// ─── Component ───────────────────────────────────────────────────────────────
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function capitalize(s: string): string {
-  return s.replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-// ─── Tooltip ─────────────────────────────────────────────────────────────────
-
-function CustomTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean;
-  payload?: Array<{ name: string; value: number; color: string }>;
-  label?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  const sorted = [...payload]
-    .filter((p) => p.value != null && p.value > 0)
-    .sort((a, b) => b.value - a.value);
-  if (!sorted.length) return null;
+function KeywordSkeleton({ message }: { message: string }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-3 shadow-lg text-xs max-h-72 overflow-y-auto min-w-[180px]">
-      <p className="font-semibold text-slate-700 mb-2">{label}</p>
-      {sorted.map((entry) => (
-        <div key={entry.name} className="flex items-center gap-2 py-0.5">
-          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: entry.color }} />
-          <span className="text-slate-600 flex-1">{capitalize(entry.name)}</span>
-          <span className="font-semibold text-slate-800 ml-2">{entry.value}</span>
-        </div>
-      ))}
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="py-10 text-center">
+        <div className="h-10 w-10 rounded-full bg-slate-100 mx-auto mb-3 animate-pulse" />
+        <p className="text-slate-600 font-medium">{message}</p>
+        <p className="text-sm text-slate-400 mt-1">NLP modeli sorgunuzu işliyor</p>
+      </div>
     </div>
   );
 }
 
-// ─── Component ───────────────────────────────────────────────────────────────
+function KeywordError({ message }: { message: string }) {
+  return (
+    <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+      {message}
+    </div>
+  );
+}
 
-export function TopicTrendsSection() {
+function KeywordClusterInfo({ data }: { data: NlpSearchResponse }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm p-4">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+            AI Cluster Bilgisi
+          </p>
+          <p className="text-sm text-slate-700 mt-1 truncate">
+            Cluster:{' '}
+            <span className="font-semibold text-slate-900">
+              {data.cluster_label ?? (data.cluster_id != null ? `#${data.cluster_id}` : 'Bilinmiyor')}
+            </span>
+          </p>
+          <p className="text-xs text-slate-400 mt-1">
+            Model: {data.model_version}
+          </p>
+        </div>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="px-3 py-2 rounded-lg bg-indigo-50 text-center">
+            <p className="text-lg font-bold text-indigo-700">
+              {(data.similarity_score * 100).toFixed(1)}%
+            </p>
+            <p className="text-[11px] text-indigo-500 mt-0.5">Benzerlik</p>
+          </div>
+          <div className="px-3 py-2 rounded-lg bg-slate-50 text-center">
+            <p className="text-lg font-bold text-slate-800">
+              {data.total_in_cluster ?? data.articles.length}
+            </p>
+            <p className="text-[11px] text-slate-500 mt-0.5">Kümede Makale</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KeywordMatchedArticles({ data }: { data: NlpSearchResponse }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50 transition-colors cursor-pointer"
+      >
+        <div className="text-left min-w-0">
+          <p className="text-sm font-semibold text-slate-900">Eşleşen Makaleler</p>
+          <p className="text-xs text-slate-500 truncate">
+            NLP modelinin bulduğu en benzer makaleler
+          </p>
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <span className="text-xs font-semibold px-2 py-1 rounded-full bg-indigo-100 text-indigo-700">
+            {data.articles.length} sonuç
+          </span>
+          {open ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+        </div>
+      </button>
+      {open && (
+        <div className="p-4 space-y-3">
+          {data.articles.map((a) => (
+            <a
+              key={a.id}
+              href={`/articles/${a.id}`}
+              className="block p-3 rounded-lg border border-slate-100 hover:border-indigo-200 hover:bg-indigo-50/30 transition-colors"
+            >
+              <p className="text-sm font-medium text-slate-900 line-clamp-2">
+                {a.title}
+              </p>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                {a.cluster_id != null && (
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                    Cluster #{a.cluster_id}
+                  </span>
+                )}
+                {a.similarity_score != null && (
+                  <span className="text-[11px] text-slate-400">
+                    Benzerlik: {(a.similarity_score * 100).toFixed(1)}%
+                  </span>
+                )}
+              </div>
+              {a.abstract && (
+                <p className="text-xs text-slate-500 mt-2 line-clamp-2">{a.abstract}</p>
+              )}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function TopicTrendsSection({ collapsible = false }: { collapsible?: boolean }) {
+  // ── Collapsible ──
+  const [collapsed, setCollapsed] = useState(false);
+
+  // ── Active tab ──
+  const [topTab, setTopTab] = useState<'trend' | 'url'>('trend');
+
   // ── Core state ──
   const [mode, setMode] = useState<Mode>('all');
   const [nameInput, setNameInput] = useState('');
@@ -93,52 +162,34 @@ export function TopicTrendsSection() {
 
   // ── NLP model ──
   const [nlpStatus, setNlpStatus] = useState<NlpStatus | null>(null);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [modelVersion, setModelVersion] = useState<string | null>(null);
 
-  // ── Top-N chart data ──
+  // ── Chart data ──
   const [data, setData] = useState<TopicTrendsData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [topN, setTopN] = useState(10);
-
-  // ── Full cluster metadata list (lightweight) ──
   const [allClusters, setAllClusters] = useState<TopicCluster[]>([]);
   const [allLoading, setAllLoading] = useState(false);
 
-  // ── On-demand series cache: topic_tag → { date → count } ──
-  const [seriesCache, setSeriesCache] = useState<Map<string, Record<string, number>>>(new Map());
-  const [fetchingTopics, setFetchingTopics] = useState<Set<string>>(new Set());
-
-  // ── Visibility (which topic_tags appear on chart) ──
-  const [visibleTopics, setVisibleTopics] = useState<Set<string>>(new Set());
-
-  // ── Full-list UI ──
-  const [fullListOpen, setFullListOpen] = useState(false);
-  const [clusterSearch, setClusterSearch] = useState('');
-  const [clusterPage, setClusterPage] = useState(0);
-
-  // ── Chart zoom ──
-  const [zoomStart, setZoomStart] = useState(0);
-  const [zoomEnd, setZoomEnd] = useState<number | null>(null);
-
-  // ── Cluster article panel ──
-  type ClusterArticle = { id: string; title: string; doi?: string; url?: string; publication_date?: string };
-  const [openArticleClusterId, setOpenArticleClusterId] = useState<number | null>(null);
-  const [clusterArticles, setClusterArticles] = useState<ClusterArticle[]>([]);
-  const [clusterArticlesLoading, setClusterArticlesLoading] = useState(false);
-  const [clusterArticlesTotal, setClusterArticlesTotal] = useState(0);
-  const [articleSearch, setArticleSearch] = useState('');
-  const [articlePage, setArticlePage] = useState(0);
-  const ARTICLE_PAGE_SIZE = 15;
+  // ── Keyword mode: NLP result (cluster + matched articles) ──
+  const [nlpResult, setNlpResult] = useState<NlpSearchResponse | null>(null);
+  const [nlpLoading, setNlpLoading] = useState(false);
+  const [nlpError, setNlpError] = useState<string | null>(null);
+  const [nlpTraining, setNlpTraining] = useState(false);
 
   // ── NLP status on mount ──
   useEffect(() => {
-    getNlpStatus()
-      .then((status) => {
+    Promise.all([getNlpStatus(), getNlpModelVersions()])
+      .then(([status, versions]) => {
         setNlpStatus(status);
-        setModelVersion(status.latest_model_version);
+        setModelOptions(versions.model_versions ?? []);
+        const latest = status.latest_model_version;
+        if (latest) { setModelVersion(latest); return; }
+        if (versions.model_versions?.length) setModelVersion(versions.model_versions[0]);
       })
-      .catch(() => setNlpStatus(null));
+      .catch(() => { setNlpStatus(null); setModelOptions([]); });
   }, []);
 
   // ── Fetch helpers ──
@@ -152,18 +203,61 @@ export function TopicTrendsSection() {
         result = await getAllTopicTrends(mv, n);
       } else if (mode === 'journal') {
         result = await getJournalTopicTrends(name ?? '', mv, n);
+      } else if (mode === 'keyword') {
+        const kw = (name ?? '').trim();
+        setNlpLoading(true);
+        setNlpError(null);
+        setNlpResult(null);
+
+        let needsTraining = false;
+        try {
+          const status = await getNlpStatus();
+          needsTraining = !status.has_trained_model && !status.pkl_model_available && !status.cache_loaded;
+        } catch {
+          // ignore status fetch errors
+        }
+        setNlpTraining(needsTraining);
+
+        const tasks: Promise<unknown>[] = [getKeywordTopicTrends(kw, mv, n)];
+        const shouldRunNlp = kw.length >= 2;
+        if (shouldRunNlp) tasks.push(nlpSearch(kw, 20, true));
+
+        const settled = await Promise.allSettled(tasks);
+        const trendsRes = settled[0] as PromiseSettledResult<TopicTrendsData>;
+        const nlpRes = (settled[1] as PromiseSettledResult<NlpSearchResponse>) ?? null;
+
+        if (trendsRes.status === 'fulfilled') {
+          const raw = trendsRes.value;
+          const dist = raw.keyword_distribution ?? {};
+          const synth: TopicCluster[] = Object.entries(dist)
+            .map(([topic_tag, article_count], idx) => ({
+              cluster_id: -1000 - idx,
+              topic_tag,
+              article_count,
+            }))
+            .sort((a, b) => b.article_count - a.article_count);
+          result = { ...raw, clusters: synth };
+        } else {
+          result = { graph_data: [], clusters: [] };
+        }
+
+        if (!shouldRunNlp) {
+          setNlpError('NLP araması için en az 2 karakter girin (trend grafiği 1 karakterle çalışır).');
+        } else if (nlpRes?.status === 'fulfilled') {
+          setNlpResult(nlpRes.value);
+        } else {
+          const msg = (nlpRes as PromiseRejectedResult | null)?.reason?.message;
+          setNlpError(msg ? `NLP sonuç alınamadı: ${msg}` : 'NLP sonuç alınamadı.');
+        }
+
+        setNlpLoading(false);
+        setNlpTraining(false);
       } else {
         result = await getPublisherTopicTrends(name ?? '', mv, n);
       }
-      if (!result) {
-        setData({ graph_data: [], clusters: [] });
-        setVisibleTopics(new Set());
-        return;
-      }
-      setData(result);
-      setVisibleTopics(new Set(result.clusters.map((c) => c.topic_tag)));
+      setData(!result ? { graph_data: [], clusters: [] } : result);
     } catch {
-      setError('Veri yuklenirken hata olustu.');
+      setError('Veri yüklenirken hata oluştu.');
       setData(null);
     } finally {
       setLoading(false);
@@ -171,11 +265,16 @@ export function TopicTrendsSection() {
   }
 
   async function fetchAllClusters(name: string | undefined, mv: string) {
+    if (mode === 'keyword') {
+      setAllClusters([]);
+      setAllLoading(false);
+      return;
+    }
     setAllLoading(true);
     try {
-      const clusterType = mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher';
-      const groupId = mode !== 'all' ? (name ?? '') : undefined;
-      const res = await listClusters(mv, clusterType, groupId);
+      const ct = mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher';
+      const gid = mode !== 'all' ? (name ?? '') : undefined;
+      const res = await listClusters(mv, ct, gid);
       setAllClusters(res.clusters);
     } catch {
       setAllClusters([]);
@@ -184,70 +283,33 @@ export function TopicTrendsSection() {
     }
   }
 
-  function fetchBoth(name?: string, n?: number) {
-    if (!modelVersion) return;
-    const resolvedN = n ?? topN;
-    setFullListOpen(false);
-    setClusterSearch('');
-    setClusterPage(0);
-    setSeriesCache(new Map());
-    setFetchingTopics(new Set());
-    setOpenArticleClusterId(null);
-    setClusterArticles([]);
-    setArticleSearch('');
-    setArticlePage(0);
-    setZoomStart(0);
-    setZoomEnd(null);
-    fetchTopN(name, resolvedN, modelVersion);
-    fetchAllClusters(name, modelVersion);
+  function fetchBoth(name?: string, n?: number, mvOverride?: string) {
+    const mv = mvOverride ?? modelVersion;
+    if (!mv) return;
+    fetchTopN(name, n ?? topN, mv);
+    fetchAllClusters(name, mv);
   }
 
-  async function fetchArticlePanel(clusterId: number, page: number, search: string) {
-    if (!modelVersion) return;
-    setClusterArticlesLoading(true);
-    try {
-      const res = await getClusterArticles(clusterId, modelVersion, {
-        skip: page * ARTICLE_PAGE_SIZE,
-        limit: ARTICLE_PAGE_SIZE,
-        search: search.trim() || undefined,
-      });
-      setClusterArticles(res.articles);
-      setClusterArticlesTotal(res.total_count);
-    } catch {
-      setClusterArticles([]);
-      setClusterArticlesTotal(0);
-    } finally {
-      setClusterArticlesLoading(false);
+  function handleModelVersionChange(nextVersion: string) {
+    setModelVersion(nextVersion || null);
+    setData(null);
+    setAllClusters([]);
+    setError(null);
+    if (nextVersion) {
+      if (mode === 'all') fetchBoth(undefined, topN, nextVersion);
+      else if (submittedName.trim()) fetchBoth(submittedName, topN, nextVersion);
     }
-  }
-
-  async function openArticlePanel(cluster: TopicCluster) {
-    if (openArticleClusterId === cluster.cluster_id) {
-      setOpenArticleClusterId(null);
-      setArticleSearch('');
-      setArticlePage(0);
-      return;
-    }
-    setOpenArticleClusterId(cluster.cluster_id);
-    setArticleSearch('');
-    setArticlePage(0);
-    fetchArticlePanel(cluster.cluster_id, 0, '');
   }
 
   // ── Auto-fetch on mode=all ──
   useEffect(() => {
-    if (mode === 'all' && modelVersion) {
-      fetchBoth();
-    }
+    if (mode === 'all' && modelVersion) fetchBoth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, modelVersion]);
 
-  // ── Journal name autocomplete debounce ──
+  // ── Journal autocomplete debounce ──
   useEffect(() => {
-    if (mode !== 'journal' || !nameInput.trim()) {
-      setJournalSuggestions([]);
-      return;
-    }
+    if (mode !== 'journal' || !nameInput.trim()) { setJournalSuggestions([]); return; }
     const t = setTimeout(() => {
       suggestJournals(nameInput.trim()).then((s) => {
         setJournalSuggestions(s);
@@ -256,16 +318,6 @@ export function TopicTrendsSection() {
     }, 300);
     return () => clearTimeout(t);
   }, [nameInput, mode]);
-
-  // ── Article search debounce (fires 500ms after articleSearch stops changing) ──
-  useEffect(() => {
-    if (openArticleClusterId === null) return;
-    const t = setTimeout(() => {
-      fetchArticlePanel(openArticleClusterId, 0, articleSearch);
-    }, 500);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [articleSearch, openArticleClusterId]);
 
   // ── Handlers ──
 
@@ -281,17 +333,15 @@ export function TopicTrendsSection() {
     setMode(newMode);
     setData(null);
     setAllClusters([]);
-    setSeriesCache(new Map());
-    setFetchingTopics(new Set());
     setError(null);
     setNameInput('');
     setSubmittedName('');
-    setVisibleTopics(new Set());
-    setFullListOpen(false);
-    setClusterSearch('');
-    setClusterPage(0);
     setJournalSuggestions([]);
     setShowJournalSuggestions(false);
+    setNlpResult(null);
+    setNlpError(null);
+    setNlpLoading(false);
+    setNlpTraining(false);
   }
 
   function handleTopNChange(n: number) {
@@ -300,687 +350,275 @@ export function TopicTrendsSection() {
     fetchTopN(submittedName || undefined, n, modelVersion);
   }
 
-  // ── Derived ──
-
-  // Top-N topic tags
-  const topNSet = useMemo(
-    () => new Set((data?.clusters ?? []).map((c) => c.topic_tag)),
-    [data],
-  );
-
-  const toggleVisible = useCallback((cluster: TopicCluster) => {
-    const tag = cluster.topic_tag;
-    const willBeVisible = !visibleTopics.has(tag);
-
-    if (willBeVisible && !topNSet.has(tag) && !seriesCache.has(tag) && modelVersion) {
-      const clusterType = (mode === 'all' ? 'all' : mode === 'journal' ? 'journal' : 'publisher') as 'all' | 'journal' | 'publisher';
-      const groupId = mode !== 'all' ? submittedName : undefined;
-      setFetchingTopics((prev) => new Set(prev).add(tag));
-      getClusterTrendSeries(cluster.cluster_id, modelVersion, clusterType, groupId)
-        .then((res) => {
-          const map: Record<string, number> = {};
-          for (const { date, count } of res.series) map[date] = count;
-          setSeriesCache((prev) => new Map(prev).set(tag, map));
-        })
-        .catch(() => {})
-        .finally(() => {
-          setFetchingTopics((prev) => {
-            const next = new Set(prev);
-            next.delete(tag);
-            return next;
-          });
-        });
-    }
-
-    setVisibleTopics((prev) => {
-      const next = new Set(prev);
-      next.has(tag) ? next.delete(tag) : next.add(tag);
-      return next;
-    });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleTopics, topNSet, seriesCache, modelVersion, mode, submittedName]);
-
-  // Color map: top-N first, then extra activated topics
-  const topicColorMap = useMemo(() => {
-    const map = new Map<string, string>();
-    (data?.clusters ?? []).forEach((c, idx) => {
-      map.set(c.topic_tag, COLOR_PALETTE[idx % COLOR_PALETTE.length]);
-    });
-    let extra = data?.clusters.length ?? 0;
-    allClusters.forEach((c) => {
-      if (!map.has(c.topic_tag)) {
-        map.set(c.topic_tag, COLOR_PALETTE[extra % COLOR_PALETTE.length]);
-        extra++;
-      }
-    });
-    return map;
-  }, [data, allClusters]);
-
-  // Merged graph_data: top-N data + on-demand series from cache
-  const mergedGraphData = useMemo(() => {
-    if (!data?.graph_data) return [];
-    const dateMap = new Map<string, Record<string, string | number>>();
-    for (const entry of data.graph_data) dateMap.set(entry.date as string, { ...entry });
-    for (const [tag, seriesMap] of seriesCache.entries()) {
-      if (!visibleTopics.has(tag)) continue;
-      for (const [date, count] of Object.entries(seriesMap)) {
-        if (!dateMap.has(date)) dateMap.set(date, { date });
-        dateMap.get(date)![tag] = count;
-      }
-    }
-    return Array.from(dateMap.values()).sort((a, b) =>
-      String(a.date).localeCompare(String(b.date))
-    );
-  }, [data, seriesCache, visibleTopics]);
-
-  // Lines to render on chart — use local `seen` set to guarantee no duplicate dataKeys
-  // (prevents double entries during parallel fetch race conditions)
-  const chartLines = useMemo(() => {
-    const seen = new Set<string>();
-    const lines: TopicCluster[] = [];
-    for (const c of data?.clusters ?? []) {
-      if (visibleTopics.has(c.topic_tag) && !seen.has(c.topic_tag)) {
-        seen.add(c.topic_tag);
-        lines.push(c);
-      }
-    }
-    for (const c of allClusters) {
-      if (visibleTopics.has(c.topic_tag) && !seen.has(c.topic_tag)) {
-        seen.add(c.topic_tag);
-        lines.push(c);
-      }
-    }
-    return lines;
-  }, [data, allClusters, visibleTopics]);
-
-  // Zoom-sliced data for chart rendering
-  const visibleChartData = useMemo(() => {
-    if (mergedGraphData.length === 0) return mergedGraphData;
-    const end = zoomEnd ?? mergedGraphData.length;
-    return mergedGraphData.slice(zoomStart, end);
-  }, [mergedGraphData, zoomStart, zoomEnd]);
-
-  const isZoomed = zoomStart > 0 || (zoomEnd !== null && zoomEnd < mergedGraphData.length);
-
-  // Refs so the native wheel listener always sees latest zoom state
-  const zoomStartRef = useRef(zoomStart);
-  const zoomEndRef = useRef(zoomEnd);
-  const mergedGraphDataLenRef = useRef(mergedGraphData.length);
-  useEffect(() => { zoomStartRef.current = zoomStart; }, [zoomStart]);
-  useEffect(() => { zoomEndRef.current = zoomEnd; }, [zoomEnd]);
-  useEffect(() => { mergedGraphDataLenRef.current = mergedGraphData.length; }, [mergedGraphData.length]);
-
-  // Chart container ref — passive:false blocks page scroll while over the chart.
-  // Depends on `data` so the listener is (re-)attached after the chart div renders.
-  const chartWrapperRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = chartWrapperRef.current;
-    if (!el) return;
-    function onWheel(e: WheelEvent) {
-      e.preventDefault();
-      const len = mergedGraphDataLenRef.current;
-      if (len === 0) return;
-      const curStart = zoomStartRef.current;
-      const curEnd = zoomEndRef.current ?? len;
-      const range = curEnd - curStart;
-      const step = Math.max(1, Math.floor(range * 0.12));
-
-      // Mouse ratio: 0 = sol kenar, 1 = sağ kenar
-      const rect = (el as HTMLDivElement).getBoundingClientRect();
-      const mouseRatio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-
-      if (e.deltaY < 0) {
-        // Zoom in — fareye yakın taraf daha az kırpılır
-        const cutLeft = Math.round(step * mouseRatio);
-        const cutRight = Math.round(step * (1 - mouseRatio));
-        const newStart = Math.min(curStart + cutLeft, curEnd - 3);
-        const newEnd = Math.max(curEnd - cutRight, newStart + 3);
-        setZoomStart(newStart);
-        setZoomEnd(newEnd);
-      } else {
-        // Zoom out — fareye yakın taraf daha az genişler
-        const addLeft = Math.round(step * mouseRatio);
-        const addRight = Math.round(step * (1 - mouseRatio));
-        const newStart = Math.max(0, curStart - addLeft);
-        const newEnd = Math.min(len, curEnd + addRight);
-        setZoomStart(newStart);
-        setZoomEnd(newEnd === len ? null : newEnd);
-      }
-    }
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data]);
-
-  function resetZoom() {
-    setZoomStart(0);
-    setZoomEnd(null);
+  function handleUrlAnalysisComplete(result: UrlAnalysisResult) {
+    // Populate trend tab data (for manual navigation), no tab switch
+    setMode('journal');
+    setNameInput(result.journalName);
+    setSubmittedName(result.journalName);
+    setData(result.trendsData);
+    setAllClusters(result.allClusters);
   }
 
-  const filteredAll = useMemo(() => {
-    if (!clusterSearch.trim()) return allClusters;
-    const q = clusterSearch.toLowerCase();
-    return allClusters.filter((c) => c.topic_tag.toLowerCase().includes(q));
-  }, [allClusters, clusterSearch]);
-
-  const totalPages = Math.ceil(filteredAll.length / CLUSTER_PAGE_SIZE);
-  const pagedAll = filteredAll.slice(
-    clusterPage * CLUSTER_PAGE_SIZE,
-    (clusterPage + 1) * CLUSTER_PAGE_SIZE,
-  );
-
   const noModel = nlpStatus !== null && !nlpStatus.has_trained_model;
+  const clusterType: 'all' | 'journal' | 'publisher' =
+    mode === 'publisher' ? 'publisher' : mode === 'journal' ? 'journal' : 'all';
 
   // ─── Render ───────────────────────────────────────────────────────────────
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Konu Trend Analizi</CardTitle>
-        <CardDescription>
-          NLP kumeleme modeline gore konu trendleri
-          {nlpStatus?.latest_model_version && (
-            <span className="ml-2 text-xs text-slate-400">
-              (model: {nlpStatus.latest_model_version})
-            </span>
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <CardTitle>Konu Trend Analizi</CardTitle>
+            <CardDescription>NLP kümeleme modeline göre konu trendleri</CardDescription>
+            {modelOptions.length > 0 && (
+              <div className="mt-2 flex items-center gap-2">
+                <label htmlFor="trend-model-select" className="text-xs font-medium text-slate-500">Model</label>
+                <select
+                  id="trend-model-select"
+                  value={modelVersion ?? ''}
+                  onChange={(e) => handleModelVersionChange(e.target.value)}
+                  className="h-8 min-w-[210px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  {modelOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+          {collapsible && (
+            <button
+              onClick={() => setCollapsed((v) => !v)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-500 hover:bg-slate-100 transition-colors cursor-pointer flex-shrink-0"
+            >
+              <span>{collapsed ? 'Göster' : 'Gizle'}</span>
+              {collapsed ? <ChevronDown className="h-4 w-4" /> : <ChevronUp className="h-4 w-4" />}
+            </button>
           )}
-        </CardDescription>
+        </div>
       </CardHeader>
 
-      <CardContent className="space-y-6">
-        {/* Mode selector */}
-        <div className="flex gap-2">
-          {(['all', 'journal', 'publisher'] as Mode[]).map((m) => (
+      <div
+        className={
+          collapsible
+            ? `transition-[max-height,opacity,margin-top] duration-300 ease-in-out motion-reduce:transition-none ${
+                collapsed
+                  ? 'overflow-hidden pointer-events-none max-h-0 opacity-0 mt-0'
+                  : 'overflow-visible max-h-[10000px] opacity-100'
+              }`
+            : 'contents'
+        }
+      >
+      <CardContent className={`space-y-6 ${collapsible ? 'transition-opacity duration-300 ease-out' : ''}`}>
+
+        {/* Top-level tab buttons */}
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex gap-2">
             <button
-              key={m}
-              onClick={() => handleModeChange(m)}
-              className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                mode === m
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-              }`}
+              onClick={() => setTopTab('trend')}
+              className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${topTab === 'trend' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
             >
-              {m === 'all' ? 'Tumu' : m === 'journal' ? 'Dergi Bazli' : 'Yayinci Bazli'}
+              Trend Analizi
             </button>
-          ))}
+            <button
+              onClick={() => setTopTab('url')}
+              className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${topTab === 'url' ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+            >
+              URL Analizi
+            </button>
+          </div>
         </div>
 
-        {/* Journal input */}
-        {mode === 'journal' && (
-          <div className="flex gap-2">
-            <div ref={journalInputRef} className="relative flex-1">
-              <input
-                type="text"
-                value={nameInput}
-                onChange={(e) => {
-                  setNameInput(e.target.value);
-                  if (!e.target.value.trim()) {
-                    setJournalSuggestions([]);
-                    setShowJournalSuggestions(false);
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { setShowJournalSuggestions(false); handleSearch(); }
-                  if (e.key === 'Escape') setShowJournalSuggestions(false);
-                }}
-                onFocus={() => journalSuggestions.length > 0 && setShowJournalSuggestions(true)}
-                onBlur={() => setTimeout(() => setShowJournalSuggestions(false), 150)}
-                placeholder="Dergi adi girin..."
-                className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              />
-              {showJournalSuggestions && journalSuggestions.length > 0 && (
-                <ul className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto text-sm">
-                  {journalSuggestions.map((name) => (
-                    <li
-                      key={name}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        setNameInput(name);
-                        setShowJournalSuggestions(false);
-                        setSubmittedName(name);
-                        fetchBoth(name);
-                      }}
-                      className="px-3 py-2 cursor-pointer hover:bg-emerald-50 hover:text-emerald-700 truncate border-b border-slate-100 last:border-0"
-                    >
-                      {name}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <button
-              onClick={handleSearch}
-              disabled={!nameInput.trim() || loading || !modelVersion}
-              className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm font-medium hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              Ara
-            </button>
-          </div>
-        )}
+        {/* URL Analysis Tab — always mounted to preserve flowState across tab switches */}
+        <div className={topTab !== 'url' ? 'hidden' : ''}>
+          <UrlAnalysisTab
+            modelVersion={modelVersion}
+            topN={topN}
+            onAnalysisComplete={handleUrlAnalysisComplete}
+          />
+        </div>
 
-        {/* Publisher buttons */}
-        {mode === 'publisher' && (
-          <div className="flex gap-2 flex-wrap">
-            {PUBLISHERS.map((pub) => (
-              <button
-                key={pub.value}
-                disabled={loading || !modelVersion}
-                onClick={() => {
-                  setNameInput(pub.value);
-                  setSubmittedName(pub.value);
-                  fetchBoth(pub.value);
-                }}
-                className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
-                  submittedName === pub.value
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                {pub.label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* No model */}
-        {noModel && (
-          <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-600 text-sm">
-            Henuz egitilmis bir NLP modeli bulunmuyor. Model egitildikten sonra konu trendleri burada gorunecektir.
-          </div>
-        )}
-
-        {/* Loading skeleton */}
-        {loading && <div className="animate-pulse h-64 bg-slate-100 rounded-lg" />}
-
-        {/* Error */}
-        {!loading && error && (
-          <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">
-            {error}
-          </div>
-        )}
-
-        {/* Chart section */}
-        {!loading && !error && data && data.graph_data.length > 0 && (
+        {/* Trend Analysis Tab */}
+        {topTab === 'trend' && (
           <>
-            {/* Top-N selector row */}
-            <div className="flex items-center justify-between flex-wrap gap-2">
-              <p className="text-sm text-slate-500">
-                Grafik: en yuksek{' '}
-                <span className="font-semibold text-slate-700">{topN}</span> konu
-                {data.clusters.length < topN && data.clusters.length > 0 && (
-                  <span className="ml-1 text-slate-400">
-                    ({data.clusters.length} konu mevcut)
-                  </span>
-                )}
-                {isZoomed && (
-                  <span className="ml-2 text-xs text-emerald-600">
-                    • {visibleChartData.length} / {mergedGraphData.length} tarih gösteriliyor
-                  </span>
-                )}
-              </p>
-              <div className="flex items-center gap-1 flex-wrap">
-                {isZoomed && (
+            {/* Mode selector */}
+            <div className="flex gap-2 flex-wrap">
+              {(['all', 'journal', 'publisher', 'keyword'] as Mode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => handleModeChange(m)}
+                  className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    mode === m
+                      ? m === 'keyword'
+                        ? 'bg-indigo-600 text-white'
+                        : 'bg-indigo-600 text-white'
+                      : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                  }`}
+                >
+                  {m === 'all' ? 'Tümü' : m === 'journal' ? 'Dergi Bazlı' : m === 'publisher' ? 'Yayıncı Bazlı' : 'Kelime Bazlı'}
+                </button>
+              ))}
+            </div>
+
+            {/* Journal input */}
+            {mode === 'journal' && (
+              <div className="flex gap-2">
+                <div ref={journalInputRef} className="relative flex-1">
+                  <input
+                    type="text"
+                    value={nameInput}
+                    onChange={(e) => {
+                      setNameInput(e.target.value);
+                      if (!e.target.value.trim()) { setJournalSuggestions([]); setShowJournalSuggestions(false); }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') { setShowJournalSuggestions(false); handleSearch(); }
+                      if (e.key === 'Escape') setShowJournalSuggestions(false);
+                    }}
+                    onFocus={() => journalSuggestions.length > 0 && setShowJournalSuggestions(true)}
+                    onBlur={() => setTimeout(() => setShowJournalSuggestions(false), 150)}
+                    placeholder="Dergi adı girin..."
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  />
+                  {showJournalSuggestions && journalSuggestions.length > 0 && (
+                    <ul className="absolute z-50 left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-60 overflow-y-auto text-sm">
+                      {journalSuggestions.map((name) => (
+                        <li
+                          key={name}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setNameInput(name);
+                            setShowJournalSuggestions(false);
+                            setSubmittedName(name);
+                            fetchBoth(name);
+                          }}
+                          className="px-3 py-2 cursor-pointer hover:bg-indigo-50 hover:text-indigo-700 truncate border-b border-slate-100 last:border-0"
+                        >
+                          {name}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <button
+                  onClick={handleSearch}
+                  disabled={!nameInput.trim() || loading || !modelVersion}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Ara
+                </button>
+              </div>
+            )}
+
+            {/* Publisher buttons */}
+            {mode === 'publisher' && (
+              <div className="flex gap-2 flex-wrap">
+                {PUBLISHERS.map((pub) => (
                   <button
-                    onClick={resetZoom}
-                    className="cursor-pointer px-2.5 py-1 rounded text-xs font-medium bg-amber-100 text-amber-700 hover:bg-amber-200 transition-colors mr-1"
-                    title="Zoom'u sıfırla"
-                  >
-                    ↺ Zoom Sıfırla
-                  </button>
-                )}
-                <span className="text-xs text-slate-500 mr-1">Grafik:</span>
-                {TOP_N_OPTIONS.map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => handleTopNChange(n)}
-                    className={`cursor-pointer px-2.5 py-1 rounded text-xs font-medium transition-colors ${
-                      topN === n
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    key={pub.value}
+                    disabled={loading || !modelVersion}
+                    onClick={() => { setNameInput(pub.value); setSubmittedName(pub.value); fetchBoth(pub.value); }}
+                    className={`cursor-pointer px-4 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                      submittedName === pub.value ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
                     }`}
                   >
-                    Top {n}
+                    {pub.label}
                   </button>
                 ))}
               </div>
-            </div>
+            )}
 
-            {/* LineChart — mouse wheel zoom (scroll locked via passive:false native listener) */}
-            <div
-              ref={chartWrapperRef}
-              style={{ touchAction: 'none', userSelect: 'none' }}
-              title="Fare tekerleği ile zoom yapabilirsiniz"
-              className="relative"
-            >
-              <ResponsiveContainer width="100%" height={400}>
-                <LineChart data={visibleChartData} margin={{ top: 10, right: 20, left: 0, bottom: 60 }}>
-                  <XAxis
-                    dataKey="date"
-                    angle={-35}
-                    textAnchor="end"
-                    tick={{ fontSize: 11 }}
-                    interval="preserveStartEnd"
-                  />
-                  <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
-                  <Tooltip content={<CustomTooltip />} />
-                  {chartLines.map((cluster) => {
-                    const color = topicColorMap.get(cluster.topic_tag) ?? '#94a3b8';
-                    return (
-                      <Line
-                        key={cluster.cluster_id}
-                        type="monotone"
-                        dataKey={cluster.topic_tag}
-                        name={cluster.topic_tag}
-                        stroke={color}
-                        strokeWidth={2}
-                        dot={false}
-                        connectNulls
-                        activeDot={{ r: 7, strokeWidth: 2, stroke: '#fff', fill: color }}
-                      />
-                    );
-                  })}
-                </LineChart>
-              </ResponsiveContainer>
-              {isZoomed && (
-                <button
-                  onClick={resetZoom}
-                  className="cursor-pointer absolute top-2 right-2 px-2 py-1 text-xs font-medium rounded-lg bg-white border border-amber-300 text-amber-700 hover:bg-amber-50 shadow-sm transition-colors"
-                >
-                  ↺ Zoom Sıfırla
-                </button>
-              )}
-            </div>
-
-            {/* Top-N badge list — click to toggle */}
-            <div>
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                  Grafikteki Konular (Top {topN}) — Tıkla: Göster/Gizle
-                </p>
-                <button
-                  onClick={() => {
-                    const allVisible = data.clusters.every(c => visibleTopics.has(c.topic_tag));
-                    if (allVisible) {
-                      setVisibleTopics(new Set());
-                    } else {
-                      setVisibleTopics(new Set(data.clusters.map(c => c.topic_tag)));
-                    }
+            {/* Keyword input */}
+            {mode === 'keyword' && (
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSearch();
                   }}
-                  className="cursor-pointer text-xs font-medium px-2.5 py-1 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors flex-shrink-0"
-                >
-                  {data.clusters.every(c => visibleTopics.has(c.topic_tag)) ? 'Hepsini Gizle' : 'Hepsini Göster'}
-                </button>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {data.clusters.map((cluster, idx) => {
-                  const color = COLOR_PALETTE[idx % COLOR_PALETTE.length];
-                  const visible = visibleTopics.has(cluster.topic_tag);
-                  return (
-                    <button
-                      key={cluster.cluster_id}
-                      onClick={() => toggleVisible(cluster)}
-                      title={`${cluster.article_count} makale — tikla: ${visible ? 'gizle' : 'goster'}`}
-                      className={`cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-                        visible
-                          ? 'border-transparent text-white shadow-sm'
-                          : 'border-slate-300 text-slate-400 bg-white'
-                      }`}
-                      style={visible ? { backgroundColor: color, borderColor: color } : {}}
-                    >
-                      <span
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: visible ? 'rgba(255,255,255,0.7)' : color }}
-                      />
-                      <span className={visible ? '' : 'line-through'}>{capitalize(cluster.topic_tag)}</span>
-                      <span className={`ml-0.5 ${visible ? 'opacity-70' : 'opacity-50'}`}>
-                        ({cluster.article_count})
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Full cluster list — paginated */}
-            <div className="border border-slate-200 rounded-xl overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 bg-slate-50 border-b border-slate-200">
-                <span className="text-sm font-semibold text-slate-700">
-                  Tum Konular
-                  {allClusters.length > 0 && (
-                    <span className="ml-2 text-xs font-normal text-slate-400">
-                      ({allClusters.length} konu)
-                    </span>
-                  )}
-                </span>
+                  placeholder="Anahtar kelime girin..."
+                  className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
                 <button
-                  onClick={() => setFullListOpen((v) => !v)}
-                  className="cursor-pointer text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+                  type="button"
+                  onClick={handleSearch}
+                  disabled={!nameInput.trim() || loading || !modelVersion}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
-                  {fullListOpen ? 'Kapat ▲' : 'Aç ▼'}
+                  Ara
                 </button>
               </div>
+            )}
 
-              {fullListOpen && (
-                <div className="p-4 space-y-3">
-                  {/* Search */}
-                  <input
-                    type="text"
-                    value={clusterSearch}
-                    onChange={(e) => {
-                      setClusterSearch(e.target.value);
-                      setClusterPage(0);
-                    }}
-                    placeholder="Konu ara..."
-                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+            {/* No model */}
+            {noModel && (
+              <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-600 text-sm">
+                Henüz eğitilmiş bir NLP modeli bulunmuyor. Model eğitildikten sonra konu trendleri burada görünecektir.
+              </div>
+            )}
+
+            {/* Loading skeleton */}
+            {loading && <div className="animate-pulse h-64 bg-slate-100 rounded-lg" />}
+
+            {/* Error */}
+            {!loading && error && (
+              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-600 text-sm">{error}</div>
+            )}
+
+            {/* Chart */}
+            {!loading && !error && data && data.graph_data.length > 0 && (
+              <TopicTrendChart
+                data={data}
+                allClusters={allClusters}
+                allLoading={allLoading}
+                topN={topN}
+                onTopNChange={handleTopNChange}
+                modelVersion={modelVersion}
+                clusterType={clusterType}
+                groupId={mode !== 'all' && mode !== 'keyword' ? submittedName : undefined}
+                visible={topTab === 'trend' && !collapsed}
+                keywordDistribution={data.keyword_distribution}
+                hideFullClusterList={mode === 'keyword'}
+              />
+            )}
+
+            {/* Keyword mode: cluster info + matched articles */}
+            {mode === 'keyword' && (
+              <div className="space-y-4">
+                {nlpLoading && (
+                  <KeywordSkeleton
+                    message={nlpTraining ? 'NLP modeli eğitiliyor...' : 'AI analiz yapılıyor...'}
                   />
+                )}
+                {!nlpLoading && nlpError && <KeywordError message={nlpError} />}
+                {!nlpLoading && nlpResult && (
+                  <>
+                    <KeywordClusterInfo data={nlpResult} />
+                    {nlpResult.articles.length > 0 && (
+                      <KeywordMatchedArticles data={nlpResult} />
+                    )}
+                  </>
+                )}
+              </div>
+            )}
 
-                  {/* Legend */}
-                  <div className="flex flex-wrap items-center gap-4 text-xs text-slate-400 pb-1 border-b border-slate-100">
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                      Top {topN} — gorunuyor
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-blue-400" />
-                      Eklendi (Top {topN} disi)
-                    </span>
-                    <span className="flex items-center gap-1.5">
-                      <span className="inline-block w-2.5 h-2.5 rounded-full bg-slate-300" />
-                      Gizli (tikla: goster)
-                    </span>
-                  </div>
-
-                  {/* Loading */}
-                  {allLoading && (
-                    <div className="text-center py-6 text-sm text-slate-400 animate-pulse">
-                      Konular yukleniyor...
-                    </div>
-                  )}
-
-                  {/* Rows */}
-                  {!allLoading && pagedAll.map((cluster) => {
-                    const isTopN = topNSet.has(cluster.topic_tag);
-                    const visible = visibleTopics.has(cluster.topic_tag);
-                    const isFetching = fetchingTopics.has(cluster.topic_tag);
-                    const color = topicColorMap.get(cluster.topic_tag) ?? '#cbd5e1';
-                    const articlesOpen = openArticleClusterId === cluster.cluster_id;
-
-                    return (
-                      <div key={cluster.cluster_id}>
-                        <div
-                          onClick={() => !isFetching && toggleVisible(cluster)}
-                          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg border transition-all select-none cursor-pointer hover:bg-slate-50 active:bg-slate-100 ${
-                            visible
-                              ? 'border-slate-300 bg-white'
-                              : 'border-slate-200 bg-white opacity-60'
-                          }`}
-                        >
-                          <span
-                            className={`w-3 h-3 rounded-full flex-shrink-0 transition-opacity ${visible ? '' : 'opacity-30'}`}
-                            style={{ backgroundColor: color }}
-                          />
-                          <span
-                            className={`flex-1 text-sm font-medium truncate ${
-                              visible ? 'text-slate-800' : 'text-slate-400 line-through'
-                            }`}
-                          >
-                            {capitalize(cluster.topic_tag)}
-                          </span>
-                          <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full flex-shrink-0">
-                            {articlesOpen && !clusterArticlesLoading
-                              ? clusterArticlesTotal
-                              : cluster.article_count} makale
-                          </span>
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0 ${
-                              visible
-                                ? isTopN
-                                  ? 'bg-emerald-100 text-emerald-700'
-                                  : 'bg-blue-100 text-blue-700'
-                                : 'bg-slate-100 text-slate-500'
-                            }`}
-                          >
-                            {isFetching ? 'Yukleniyor...' : visible ? (isTopN ? 'Top ' + topN : 'Eklendi') : 'Gizli'}
-                          </span>
-                          {/* Article list toggle button */}
-                          <button
-                            onClick={(e) => { e.stopPropagation(); openArticlePanel(cluster); }}
-                            title="Makaleleri goster/gizle"
-                            className={`flex-shrink-0 px-2 py-0.5 text-xs rounded-lg border transition-colors ${
-                              articlesOpen
-                                ? 'bg-indigo-600 text-white border-indigo-600'
-                                : 'bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50'
-                            }`}
-                          >
-                            Makaleler {articlesOpen ? '▲' : '▼'}
-                          </button>
-                        </div>
-
-                        {/* Article panel */}
-                        {articlesOpen && (
-                          <div className="ml-6 mt-1 mb-2 border border-indigo-100 rounded-lg bg-indigo-50/40 overflow-hidden">
-                            {/* Search bar */}
-                            <div className="px-4 pt-3 pb-2 bg-indigo-50 border-b border-indigo-100">
-                              <input
-                                type="text"
-                                value={articleSearch}
-                                onChange={(e) => {
-                                  setArticleSearch(e.target.value);
-                                  setArticlePage(0);
-                                }}
-                                placeholder="Makale başlığında ara..."
-                                className="w-full px-3 py-1.5 text-xs border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-400 bg-white"
-                              />
-                            </div>
-
-                            {clusterArticlesLoading ? (
-                              <p className="text-xs text-slate-400 animate-pulse px-4 py-3">Makaleler yukleniyor...</p>
-                            ) : clusterArticles.length === 0 ? (
-                              <p className="text-xs text-slate-400 px-4 py-3">Makale bulunamadi.</p>
-                            ) : (
-                              <>
-                                <ul className="divide-y divide-indigo-100">
-                                  <li className="px-4 py-2 text-xs text-slate-400 font-medium bg-indigo-50 sticky top-0">
-                                    {clusterArticlesTotal} makale
-                                    {articleSearch.trim() && ' (arama sonucu)'}
-                                    {' — '}sayfa {articlePage + 1} / {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE) || 1}
-                                  </li>
-                                  {clusterArticles.map((art) => (
-                                    <li key={art.id} className="flex items-center gap-2 px-4 py-2.5 hover:bg-indigo-50 group">
-                                      <span className="flex-1 text-xs text-slate-700 line-clamp-2 group-hover:text-indigo-700 transition-colors">
-                                        {art.title}
-                                      </span>
-                                      <Link
-                                        href={`/articles?article_id=${art.id}`}
-                                        onClick={(e) => e.stopPropagation()}
-                                        className="flex-shrink-0 px-2.5 py-1 text-xs font-medium rounded-lg bg-indigo-600 text-white hover:bg-indigo-700 transition-colors whitespace-nowrap"
-                                      >
-                                        Goruntule →
-                                      </Link>
-                                    </li>
-                                  ))}
-                                </ul>
-
-                                {/* Article pagination */}
-                                {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE) > 1 && (
-                                  <div className="flex items-center justify-between px-4 py-2 border-t border-indigo-100 bg-indigo-50">
-                                    <button
-                                      onClick={() => {
-                                        const np = articlePage - 1;
-                                        setArticlePage(np);
-                                        if (openArticleClusterId !== null) fetchArticlePanel(openArticleClusterId, np, articleSearch);
-                                      }}
-                                      disabled={articlePage === 0 || clusterArticlesLoading}
-                                      className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      ← Onceki
-                                    </button>
-                                    <span className="text-xs text-slate-500">
-                                      {articlePage + 1} / {Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE)}
-                                    </span>
-                                    <button
-                                      onClick={() => {
-                                        const np = articlePage + 1;
-                                        setArticlePage(np);
-                                        if (openArticleClusterId !== null) fetchArticlePanel(openArticleClusterId, np, articleSearch);
-                                      }}
-                                      disabled={articlePage >= Math.ceil(clusterArticlesTotal / ARTICLE_PAGE_SIZE) - 1 || clusterArticlesLoading}
-                                      className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-indigo-200 text-indigo-600 hover:bg-indigo-50 disabled:opacity-40 disabled:cursor-not-allowed"
-                                    >
-                                      Sonraki →
-                                    </button>
-                                  </div>
-                                )}
-                              </>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-
-                  {!allLoading && pagedAll.length === 0 && (
-                    <p className="text-sm text-slate-400 text-center py-4">Sonuc bulunamadi.</p>
-                  )}
-
-                  {/* Pagination */}
-                  {!allLoading && totalPages > 1 && (
-                    <div className="flex items-center justify-between pt-2 border-t border-slate-100">
-                      <button
-                        onClick={() => setClusterPage((p) => Math.max(0, p - 1))}
-                        disabled={clusterPage === 0}
-                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        Onceki
-                      </button>
-                      <span className="text-xs text-slate-500">
-                        {clusterPage + 1} / {totalPages}
-                        <span className="ml-1 text-slate-400">({filteredAll.length} konu)</span>
-                      </span>
-                      <button
-                        onClick={() => setClusterPage((p) => Math.min(totalPages - 1, p + 1))}
-                        disabled={clusterPage >= totalPages - 1}
-                        className="px-3 py-1.5 text-xs font-medium rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        Sonraki
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
+            {/* Empty state */}
+            {!loading && !error && data && data.graph_data.length === 0 && (
+              <div className="text-center py-10 text-slate-500 text-sm">
+                {mode === 'keyword'
+                  ? 'Bu anahtar kelime için trend verisi bulunamadı. Farklı bir kelime deneyin veya modelin güncel olduğundan emin olun.'
+                  : mode !== 'all'
+                    ? 'Bu yayıncı/dergi için cluster verisi bulunamadı. Modeli yeniden eğiterek publisher/journal clustering ekleyebilirsiniz.'
+                    : 'Bu sorgu için grafik verisi bulunamadı.'}
+              </div>
+            )}
           </>
         )}
 
-        {/* Empty state */}
-        {!loading && !error && data && data.graph_data.length === 0 && (
-          <div className="text-center py-10 text-slate-500 text-sm">
-            {mode !== 'all'
-              ? 'Bu yayinci/dergi icin cluster verisi bulunamadi. Modeli yeniden egiterek publisher/journal clustering ekleyebilirsiniz.'
-              : 'Bu sorgu icin grafik verisi bulunamadi.'}
-          </div>
-        )}
       </CardContent>
+      </div>
     </Card>
   );
 }

@@ -11,7 +11,6 @@ import { Card, CardHeader, CardTitle, CardContent, CardDescription } from '@/com
 import { Badge } from '@/components/ui/Badge';
 import { getArticleStats, getCitationStats, getArticles, getGeneralStats } from '@/lib/api';
 import type { ArticleStats, CitationStats, Article, GeneralStats } from '@/lib/types';
-import { TopicTrendsSection } from './trends/TopicTrendsSection';
 import { CitationsSection } from './trends/CitationsSection';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -22,6 +21,8 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   return url;
 }
 
@@ -93,7 +94,7 @@ function YearlyTrendChart({ data }: { data: Record<string, number> }) {
           <span className="text-sm font-medium text-slate-600 w-12">{year}</span>
           <div className="flex-1 h-8 bg-slate-100 rounded-lg overflow-hidden relative">
             <div
-              className="h-full bg-gradient-to-r from-emerald-500 to-teal-400 rounded-lg transition-all duration-700 flex items-center justify-end pr-2"
+              className="h-full bg-gradient-to-r from-indigo-500 to-violet-400 rounded-lg transition-all duration-700 flex items-center justify-end pr-2"
               style={{ width: `${Math.max((count / maxCount) * 100, 5)}%` }}
             >
               <span className="text-xs font-semibold text-white">{count}</span>
@@ -125,18 +126,18 @@ function KeywordCloud({ keywords }: { keywords: Array<{ _id: string; count: numb
   const maxCount = Math.max(...keywords.map(k => k.count), 1);
   const getSize = (count: number) => {
     const ratio = count / maxCount;
-    if (ratio > 0.7) return 'text-xl font-bold text-emerald-700';
-    if (ratio > 0.4) return 'text-lg font-semibold text-emerald-600';
+    if (ratio > 0.7) return 'text-xl font-bold text-indigo-700';
+    if (ratio > 0.4) return 'text-lg font-semibold text-indigo-600';
     if (ratio > 0.2) return 'text-base font-medium text-slate-700';
     return 'text-sm text-slate-500';
   };
 
   return (
-    <div className="flex flex-wrap gap-3 justify-center p-4">
+    <div className="flex flex-wrap gap-3 justify-center p-4 cursor-text select-text">
       {keywords.map((kw) => (
         <span
           key={kw._id}
-          className={`${getSize(kw.count)} hover:text-emerald-500 cursor-pointer transition-colors px-2 py-1 rounded hover:bg-emerald-50`}
+          className={`${getSize(kw.count)} px-2 py-1 rounded select-text cursor-text`}
           title={`${kw.count} makale`}
         >
           {kw._id}
@@ -151,36 +152,81 @@ function KeywordCloud({ keywords }: { keywords: Array<{ _id: string; count: numb
 function SourceDistribution({ data }: { data: ArticleStats['by_source'] }) {
   const sources = Object.entries(data);
   const total = sources.reduce((sum, [, s]) => sum + s.count, 0);
+  const [hoveredSource, setHoveredSource] = useState<string | null>(null);
 
   const colors: Record<string, string> = {
     ieeexplore: 'bg-blue-500',
     sciencedirect: 'bg-orange-500',
     acm: 'bg-amber-500',
+    wiley: 'bg-slate-500',
+    springer: 'bg-indigo-500',
   };
   const labels: Record<string, string> = {
     ieeexplore: 'IEEE Xplore',
     sciencedirect: 'ScienceDirect',
     acm: 'ACM Digital Library',
+    wiley: 'Wiley Online Library',
+    springer: 'Springer Link',
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex h-4 rounded-full overflow-hidden">
-        {sources.map(([source, info]) => (
-          <div key={source} className={`${colors[source] || 'bg-slate-400'} transition-all duration-500`} style={{ width: `${(info.count / total) * 100}%` }} />
-        ))}
+      <div className="relative">
+        <div
+          className="flex h-4 rounded-full overflow-hidden"
+          onMouseLeave={() => setHoveredSource(null)}
+        >
+          {sources.map(([source, info]) => {
+            const percent = total > 0 ? (info.count / total) * 100 : 0;
+            const isHovered = hoveredSource === source;
+
+            return (
+              <div
+                key={source}
+                className={`${colors[source] || 'bg-slate-400'} transition-all duration-200 ${isHovered ? 'brightness-110' : 'opacity-90 hover:opacity-100'} cursor-pointer`}
+                style={{ width: `${percent}%` }}
+                onMouseEnter={() => setHoveredSource(source)}
+                title={`${labels[source] || source}: %${percent.toFixed(1)} (${info.count.toLocaleString()} makale)`}
+                aria-label={`${labels[source] || source} %${percent.toFixed(1)}`}
+              />
+            );
+          })}
+        </div>
+        {hoveredSource && (() => {
+          const hoveredInfo = data[hoveredSource];
+          const hoveredPercent = total > 0 ? (hoveredInfo.count / total) * 100 : 0;
+
+          return (
+            <div className="absolute -top-12 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm">
+              <span className="text-slate-900">{labels[hoveredSource] || hoveredSource}</span>
+              <span className="mx-1 text-slate-400">•</span>
+              <span>%{hoveredPercent.toFixed(1)}</span>
+              <span className="mx-1 text-slate-400">•</span>
+              <span>{hoveredInfo.count.toLocaleString()} makale</span>
+            </div>
+          );
+        })()}
       </div>
       <div className="flex flex-wrap gap-4">
-        {sources.map(([source, info]) => (
-          <div key={source} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg flex-1 min-w-[calc(50%-0.5rem)]">
-            <div className={`w-4 h-4 rounded ${colors[source] || 'bg-slate-400'}`} />
-            <div className="flex-1">
-              <p className="font-medium text-slate-900">{labels[source] || source}</p>
-              <p className="text-sm text-slate-500">{info.count.toLocaleString()} makale</p>
+        {sources.map(([source, info]) => {
+          const percent = total > 0 ? (info.count / total) * 100 : 0;
+          const isHovered = hoveredSource === source;
+          const isDimmed = hoveredSource !== null && hoveredSource !== source;
+
+          return (
+            <div
+              key={source}
+              className={`flex items-center gap-3 p-3 rounded-lg flex-1 min-w-[calc(50%-0.5rem)] border transition-all duration-200 ${isHovered ? 'bg-indigo-50 border-indigo-200 shadow-sm ring-1 ring-indigo-100' : 'bg-slate-50 border-transparent'} ${isDimmed ? 'opacity-60' : ''}`}
+            >
+              <div className={`w-4 h-4 rounded ${colors[source] || 'bg-slate-400'}`} />
+              <div className="flex-1">
+                <p className="font-medium text-slate-900">{labels[source] || source}</p>
+                <p className="text-sm text-slate-500">{info.count.toLocaleString()} makale</p>
+              </div>
+              <p className={`text-lg font-bold ${isHovered ? 'text-indigo-700' : 'text-slate-900'}`}>%{percent.toFixed(1)}</p>
             </div>
-            <p className="text-lg font-bold text-slate-900">{((info.count / total) * 100).toFixed(1)}%</p>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -198,12 +244,12 @@ function TopAuthors({ authors }: { authors: Array<{ _id: string; count: number }
           href={`/authors/${encodeURIComponent(author._id)}`}
           className="flex items-center gap-3 rounded-lg px-1 py-0.5 hover:bg-slate-50 transition-colors group"
         >
-          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${idx < 3 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${idx < 3 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
             {idx + 1}
           </span>
-          <span className="flex-1 text-sm font-medium text-slate-700 truncate group-hover:text-emerald-600 transition-colors">{author._id}</span>
+          <span className="flex-1 text-sm font-medium text-slate-700 truncate group-hover:text-indigo-600 transition-colors">{author._id}</span>
           <div className="w-24 h-2 bg-slate-100 rounded-full overflow-hidden flex-shrink-0">
-            <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${(author.count / maxCount) * 100}%` }} />
+            <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${(author.count / maxCount) * 100}%` }} />
           </div>
           <span className="text-sm font-semibold text-slate-900 w-8 text-right flex-shrink-0">{author.count}</span>
         </Link>
@@ -303,9 +349,6 @@ export default function OverviewPage() {
         </div>
       )}
 
-      {/* Konu Trend Analizi — stats'ın hemen altında */}
-      <TopicTrendsSection />
-
       {/* Scraper Durumu + Son Makaleler */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ScraperStatus />
@@ -319,7 +362,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <TrendingUp className="h-5 w-5 text-emerald-600" />
+                  <TrendingUp className="h-5 w-5 text-indigo-600" />
                   <CardTitle>Yıllara Göre Yayın Trendi</CardTitle>
                 </div>
                 <CardDescription>Son 10 yılın makale dağılımı</CardDescription>
@@ -330,7 +373,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <PieChart className="h-5 w-5 text-emerald-600" />
+                  <PieChart className="h-5 w-5 text-indigo-600" />
                   <CardTitle>Kaynak Dağılımı</CardTitle>
                 </div>
                 <CardDescription>Platformlara göre makale dağılımı</CardDescription>
@@ -344,8 +387,8 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <BarChart3 className="h-5 w-5 text-emerald-600" />
-                  <CardTitle>Popüler Anahtar Kelimeler</CardTitle>
+                  <BarChart3 className="h-5 w-5 text-indigo-600" />
+                  <CardTitle>Popüler Anahtar Kelimeler (ACM)</CardTitle>
                 </div>
                 <CardDescription>En sık kullanılan anahtar kelimeler</CardDescription>
               </CardHeader>
@@ -355,7 +398,7 @@ export default function OverviewPage() {
             <Card>
               <CardHeader>
                 <div className="flex items-center gap-2">
-                  <Users className="h-5 w-5 text-emerald-600" />
+                  <Users className="h-5 w-5 text-indigo-600" />
                   <CardTitle>En Aktif Yazarlar</CardTitle>
                 </div>
                 <CardDescription>En çok makalesi olan yazarlar</CardDescription>

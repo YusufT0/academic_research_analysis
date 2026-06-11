@@ -20,6 +20,8 @@ function getFullUrl(url: string, sourceWebsite: string): string {
   if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
   if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+    if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+    if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
   return url;
 }
 
@@ -93,10 +95,14 @@ function ArticleCard({ article }: { article: Article }) {
 
   const sourceLabel =
     article.source_website === 'ieeexplore' ? 'IEEE' :
-    article.source_website === 'acm' ? 'ACM' : 'ScienceDirect';
+    article.source_website === 'acm' ? 'ACM' :
+    article.source_website === 'wiley' ? 'Wiley' :
+    article.source_website === 'springer' ? 'Springer' : 'ScienceDirect';
   const sourceBadgeVariant =
     article.source_website === 'ieeexplore' ? 'info' :
-    article.source_website === 'acm' ? 'warning' : 'success';
+    article.source_website === 'acm' ? 'warning' :
+    article.source_website === 'wiley' ? 'default' :
+    article.source_website === 'springer' ? 'info' : 'success';
 
   return (
     <Card
@@ -120,9 +126,17 @@ function ArticleCard({ article }: { article: Article }) {
               </h3>
 
               <div className="flex flex-wrap items-center gap-2 mt-2">
-                <span className="text-sm text-slate-600 font-medium">{article.journal_name}</span>
+                <Link
+                  href={`/journals?journal_id=${article.journal_id}`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="text-sm text-indigo-700 font-medium hover:text-indigo-900 hover:underline cursor-pointer transition-colors"
+                >
+                  {article.journal_name}
+                </Link>
                 {article.publication_year && <Badge variant="default">{article.publication_year}</Badge>}
-                <Badge variant={sourceBadgeVariant}>{sourceLabel}</Badge>
+                <Badge variant={sourceBadgeVariant} className="border border-indigo-200 bg-indigo-50 text-indigo-700">
+                  {sourceLabel}
+                </Badge>
                 {article.article_type && (
                   <span className="text-xs text-slate-400 italic">{article.article_type}</span>
                 )}
@@ -166,19 +180,17 @@ function ArticleCard({ article }: { article: Article }) {
               {article.authors.length > 0 && (
                 <p className="text-sm text-slate-500 mt-2">
                   {article.authors.slice(0, 3).map((author, i) => (
-                    <span key={i}>
-                      <Link 
-                        href={`/authors/${encodeURIComponent(author)}`}
-                        onClick={(e) => e.stopPropagation()}
-                        className="hover:text-indigo-600 hover:underline transition-colors"
-                      >
-                        {author}
-                      </Link>
-                      {i < Math.min(article.authors.length, 3) - 1 ? ', ' : ''}
-                    </span>
+                    <Link
+                      key={i}
+                      href={`/authors/${encodeURIComponent(author)}`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="inline-flex items-center px-2.5 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-800 text-xs rounded-full cursor-pointer transition-all hover:bg-indigo-100 hover:border-indigo-400 hover:shadow-[0_0_8px_rgba(99,102,241,0.35)]"
+                    >
+                      {author}
+                    </Link>
                   ))}
                   {article.authors.length > 3 && (
-                    <span className="text-slate-400"> ve {article.authors.length - 3} diğer</span>
+                    <span className="text-xs text-slate-400">+{article.authors.length - 3} diğer</span>
                   )}
                 </p>
               )}
@@ -211,7 +223,7 @@ function ArticleCard({ article }: { article: Article }) {
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={(e) => e.stopPropagation()}
-                className="p-2 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 transition-all"
+                className="p-2 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-all"
                 title="Makaleyi aç"
               >
                 <ExternalLink className="h-4.5 w-4.5" />
@@ -261,7 +273,7 @@ function ArticleCard({ article }: { article: Article }) {
                     const isDisabled = isNotIndexed || hasNoCitations;
                     
                     const tooltip = isNotIndexed 
-                      ? "Bu makale OpenAlex veritabanında bulunamadı" 
+                      ? "Bu makale OpenAlex veri tabanında bulunamadı" 
                       : hasNoCitations 
                       ? "Bu makalenin henüz atıfı bulunmamaktadır" 
                       : "";
@@ -357,9 +369,10 @@ function ArticleCard({ article }: { article: Article }) {
                       <Link
                         key={i}
                         href={`/authors/${encodeURIComponent(author)}`}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-slate-200 text-slate-700 text-sm rounded-full shadow-sm hover:border-amber-300 hover:text-amber-800 hover:bg-amber-50 transition-all cursor-pointer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 border border-indigo-200 text-indigo-800 text-sm rounded-full cursor-pointer transition-all hover:bg-indigo-100 hover:border-indigo-400 hover:shadow-[0_0_8px_rgba(99,102,241,0.35)]"
                       >
-                        <span className="text-[10px] text-slate-400 font-mono">{i + 1}</span>
+                        <span className="text-[10px] text-indigo-500 font-mono">{i + 1}</span>
                         {author}
                       </Link>
                     ))}
@@ -423,7 +436,17 @@ function ArticleCard({ article }: { article: Article }) {
                   <MetaItem
                     icon={<BookOpen className="h-3.5 w-3.5" />}
                     label="Dergi"
-                    value={detail.journal_name}
+                    value={
+                      detail.journal_name ? (
+                        <Link
+                          href={`/journals?journal_id=${detail.journal_id}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer transition-colors"
+                        >
+                          {detail.journal_name}
+                        </Link>
+                      ) : null
+                    }
                   />
                   <MetaItem
                     icon={<FileText className="h-3.5 w-3.5" />}
@@ -545,6 +568,7 @@ function ArticlesContent() {
   const [data, setData] = useState<PaginatedResponse<Article> | null>(null);
   const [loading, setLoading] = useState(true);
   const [yearRange, setYearRange] = useState<{ min: number; max: number } | null>(null);
+  const [yearRangeLoaded, setYearRangeLoaded] = useState(false);
   const [filters, setFilters] = useState<ArticleFilters>({
     page: 1,
     page_size: 10,
@@ -557,8 +581,11 @@ function ArticlesContent() {
   useEffect(() => {
     getArticleYearRange().then((r) => {
       setYearRange({ min: r.min_year, max: r.max_year });
-      setFilters((prev) => ({ ...prev, year_min: r.min_year, year_max: r.max_year }));
-    }).catch(() => {});
+      setFilters((prev) => ({ ...prev, year_min: r.min_year, year_max: r.max_year, include_no_date: true }));
+      setYearRangeLoaded(true);
+    }).catch(() => {
+      setYearRangeLoaded(true);
+    });
   }, []);
 
   useEffect(() => {
@@ -574,6 +601,7 @@ function ArticlesContent() {
   }, [articleId]);
 
   useEffect(() => {
+    if (!yearRangeLoaded) return;
     async function fetchArticles() {
       setLoading(true);
       try {
@@ -586,7 +614,7 @@ function ArticlesContent() {
       }
     }
     fetchArticles();
-  }, [filters]);
+  }, [filters, yearRangeLoaded]);
 
   const handlePageChange = (newPage: number) => {
     setFilters((prev) => ({ ...prev, page: newPage }));
@@ -617,9 +645,14 @@ function ArticlesContent() {
         )}
       </div>
 
-      {/* Filters */}
-      {showFilters && (
-        <Card>
+      {/* Filters — smooth height open/close */}
+      <div
+        className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${
+          showFilters ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+        }`}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <Card className={showFilters ? '' : 'pointer-events-none'}>
           <CardContent className="pt-6">
             <div className="flex flex-col lg:flex-row gap-6">
               {/* Sol yarı — 3 dropdown */}
@@ -635,6 +668,8 @@ function ArticlesContent() {
                     <option value="ieeexplore">IEEE Xplore</option>
                     <option value="sciencedirect">ScienceDirect</option>
                     <option value="acm">ACM Digital Library</option>
+                    <option value="wiley">Wiley Online Library</option>
+                    <option value="springer">Springer Link</option>
                   </select>
                 </div>
                 <div className="flex-1">
@@ -679,9 +714,9 @@ function ArticlesContent() {
                 </div>
               </div>
 
-              {/* Sağ yarı — yıl aralığı slider */}
+              {/* Sağ yarı — yıl aralığı slider + no-date toggle */}
               {yearRange && (
-                <div className="flex-1 flex flex-col justify-center">
+                <div className="flex-1 flex flex-col justify-center gap-3">
                   <YearRangeSlider
                     label="Yayın Yılı Aralığı"
                     min={yearRange.min}
@@ -691,12 +726,22 @@ function ArticlesContent() {
                       setFilters((prev) => ({ ...prev, year_min: min, year_max: max, page: 1 }))
                     }
                   />
+                  <label className="flex items-center gap-2 cursor-pointer select-none w-fit">
+                    <input
+                      type="checkbox"
+                      className="w-4 h-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer"
+                      checked={filters.include_no_date ?? true}
+                      onChange={(e) => handleFilterChange('include_no_date', e.target.checked)}
+                    />
+                    <span className="text-sm text-slate-600">Tarihi olmayan makaleleri dahil et</span>
+                  </label>
                 </div>
               )}
             </div>
           </CardContent>
         </Card>
-      )}
+        </div>
+      </div>
 
       {/* Articles List */}
       <div className="space-y-4">

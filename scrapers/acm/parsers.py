@@ -15,6 +15,42 @@ class JournalParser:
     """ACM Journal bilgilerini parse eden sınıf"""
 
     @staticmethod
+    def extract_journal_name_from_journal_page(page_source: str):
+        """
+        ACM journal sayfasından dergi adını çıkarır.
+
+        Hedef yapı:
+        <div class="colored-block__title ..."><h2 ...><span>...</span></h2></div>
+        """
+        try:
+            soup = BeautifulSoup(page_source, 'html.parser')
+
+            title_block = soup.find('div', class_=lambda c: c and 'colored-block__title' in c)
+            if title_block:
+                span = title_block.find('h2').find('span') if title_block.find('h2') else None
+                if span:
+                    journal_name = span.get_text(strip=True)
+                    if journal_name:
+                        return journal_name
+
+            # Fallback: h2 > span
+            h2 = soup.find('h2', class_=lambda c: c and 'left-bordered-title' in c)
+            if h2:
+                span = h2.find('span')
+                if span:
+                    journal_name = span.get_text(strip=True)
+                    if journal_name:
+                        return journal_name
+                journal_name = h2.get_text(strip=True)
+                if journal_name:
+                    return journal_name
+
+            return None
+        except Exception as e:
+            logger.warning(f"Journal adı çıkarma hatası: {e}")
+            return None
+
+    @staticmethod
     def extract_aims_and_scope(page_source: str):
         """
         /journal/CODE sayfasındaki .item-meta__info > .truncate-text bölümünden
@@ -542,6 +578,9 @@ class ArticleDetailParser:
                 h1 = soup.find('h1')
                 if h1:
                     article_details['title'] = h1.get_text(strip=True)
+                    logger.success(f"Başlık: {article_details['title'][:60]}...")
+                else:
+                    logger.warning("Başlık bulunamadı")
             
             # ====== 2. MAKALE TİPİ ve ERİŞİM ======
             logger.info("Makale tipi alınıyor...")
@@ -596,6 +635,11 @@ class ArticleDetailParser:
                         article_details['doi'] = doi_text.split('doi.org/')[-1]
                     else:
                         article_details['doi'] = doi_text
+                    logger.success(f"DOI: {article_details['doi']}")
+                else:
+                    logger.warning("DOI bulunamadı")
+            else:
+                logger.warning("DOI bulunamadı")
             
             # ====== 5. YAYIN TARİHİ ======
             logger.info("Yayın tarihi alınıyor...")
@@ -606,6 +650,10 @@ class ArticleDetailParser:
                     raw_date = date_span.get_text(strip=True)
                     article_details['publication_date'] = ArticleDetailParser._parse_acm_date(raw_date)
                     logger.success(f"Yayın tarihi: {article_details['publication_date']}")
+                else:
+                    logger.warning("Yayın tarihi bulunamadı")
+            else:
+                logger.warning("Yayın tarihi bulunamadı")
             
             # ====== 6. VOLUME / ISSUE / PAGES ======
             logger.info("Volume/Issue/Pages alınıyor...")
@@ -696,9 +744,13 @@ class ArticleDetailParser:
                     kw_text = kw_link.get_text(strip=True)
                     if kw_text and len(kw_text) < 100:  # Çok uzun metinleri filtrele
                         article_details['keywords'].append(kw_text)
-                
+
                 if article_details['keywords']:
-                    logger.found(len(article_details['keywords']), "keyword")
+                    logger.found(len(article_details['keywords']), "anahtar kelime")
+                else:
+                    logger.warning("Anahtar kelime bulunamadı")
+            else:
+                logger.warning("Anahtar kelime bulunamadı")
             
             # ====== 11. CITATION COUNT ======
             metrics_div = soup.find('div', class_='pub-metrics')

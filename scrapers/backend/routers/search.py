@@ -32,7 +32,7 @@ async def sync_to_elasticsearch():
         articles = await Article.find_all().to_list()
         
         if not articles:
-            return {"status": "ok", "indexed": 0, "message": "Veritabanında makale yok"}
+            return {"status": "ok", "indexed": 0, "message": "Veri tabanında makale yok"}
         
         # Beanie document → dict
         article_dicts = []
@@ -62,7 +62,8 @@ async def sync_to_elasticsearch():
         return {"status": "error", "message": str(e)}
 
 
-@router.get("/", summary="Full-text makale arama")
+@router.get("", summary="Full-text makale arama") #todo: yeni eklenen, gerek var mı kontrol et
+@router.get("/", summary="Full-text makale arama") #eski olan
 async def search_articles(
     q: str = Query(..., min_length=2, description="Arama sorgusu"),
     source_website: Optional[str] = Query(None, description="Kaynak site filtresi"),
@@ -121,7 +122,7 @@ async def search_suggest(
 ):
     """Title ve keyword'lere göre autocomplete önerileri"""
     suggestions = await elasticsearch_service.suggest(prefix=q, limit=limit)
-    return {"query": q, "suggestions": suggestions}
+    return {"query": q, "suggestions": [s["text"] for s in suggestions], "items": suggestions}
 
 
 @router.get("/suggest/journals", summary="Dergi adı autocomplete önerileri")
@@ -132,7 +133,7 @@ async def suggest_journals(
     """
     Elasticsearch üzerinden dergi adı autocomplete.
 
-    Wildcard + aggregation kullanarak veritabanındaki gerçek dergi
+    Wildcard + aggregation kullanarak veri tabanındaki gerçek dergi
     adlarını (journal_name) prefix eşleşmesine göre döner.
     """
     suggestions = await elasticsearch_service.suggest_journals(prefix=q, limit=limit)

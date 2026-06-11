@@ -55,7 +55,7 @@ def handle_cookie_consent(driver, timeout: int = 5) -> bool:
                 # Elementi tıkla
                 element.click()
                 logger.success("Cookie popup kapatıldı")
-                time.sleep(1)
+                time.sleep(0.3)
                 return True
                     
             except:

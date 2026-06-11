@@ -14,92 +14,120 @@ from utils.logger import get_logger
 logger = get_logger('science_direct')
 
 
-def handle_cookie_consent(driver):
-    """Cookie onay popup'larını kapatır"""
-    try:
-        logger.info("Cookie popup kontrolü yapılıyor...")
-        
-        # Önce JavaScript ile cookie banner'ı gizlemeyi dene
+def handle_cookie_consent(driver, max_rounds: int = 3, round_wait: float = 0.5):
+    """
+    Cookie onay popup'larını kapatır.
+
+    Strateji (sırayla):
+    1. Spesifik ID/selector ile direkt tıkla — JS visibility check yok, hata toleranslı
+    2. Metin tabanlı XPath ile tıkla
+    3. JS ile banner'ı DOM'dan gizle (son çare)
+    Visibility check için execute_script'e bağlı kalmaz; find_elements yeterli.
+    """
+    # Tıklanacak butonlar — en spesifikten genele
+    ACCEPT_CSS = [
+        "#onetrust-accept-btn-handler",       # SD/Elsevier "Accept all cookies"
+        "#onetrust-reject-all-handler",        # SD/Elsevier "Accept only necessary"
+        "button[id*='onetrust'][id*='accept']",
+        "button[id*='accept-btn']",
+        "button[aria-label='Accept Cookies']",
+        "button.accept-cookies-button",
+        "button.cc-accept",
+        "button.cookie-accept",
+        "#accept-cookies",
+        ".accept-cookies-button",
+        "a.cc-btn-accept",
+    ]
+
+    ACCEPT_XPATH = [
+        "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'accept all')]",
+        "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'accept cookies')]",
+        "//button[contains(translate(normalize-space(.),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'i accept')]",
+        "//button[normalize-space()='Accept']",
+        "//a[normalize-space()='Accept']",
+    ]
+
+    # Banner varlık kontrolü için — sadece element bul, JS lazım değil
+    BANNER_IDS = [
+        "onetrust-banner-sdk",
+        "CybotCookiebotDialog",
+        "cc-window",
+    ]
+
+    def _try_click(el) -> bool:
+        """Elemente tıklamayı dene; başarısızsa JS click."""
         try:
-            driver.execute_script("""
-                // Yaygın cookie banner class'larını gizle
-                const cookieSelectors = [
-                    '#onetrust-banner-sdk',
-                    '.onetrust-pc-dark-filter',
-                    '[class*="cookie-banner"]',
-                    '[class*="cookie-consent"]',
-                    '[id*="cookie"]',
-                    '.cc-window',
-                    '#CybotCookiebotDialog'
-                ];
-                
-                cookieSelectors.forEach(selector => {
-                    const elements = document.querySelectorAll(selector);
-                    elements.forEach(el => {
+            el.click()
+            return True
+        except Exception:
+            pass
+        try:
+            driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception:
+            pass
+        return False
+
+    def _banner_exists() -> bool:
+        for bid in BANNER_IDS:
+            try:
+                if driver.find_elements(By.ID, bid):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    try:
+        for attempt in range(max_rounds):
+            # --- CSS selectors ---
+            for sel in ACCEPT_CSS:
+                try:
+                    for el in driver.find_elements(By.CSS_SELECTOR, sel):
+                        if _try_click(el):
+                            logger.success(f"Cookie popup kapatıldı: {sel}")
+                            time.sleep(0.3)
+                            return True
+                except Exception:
+                    continue
+
+            # --- XPath selectors ---
+            for xpath in ACCEPT_XPATH:
+                try:
+                    for el in driver.find_elements(By.XPATH, xpath):
+                        if _try_click(el):
+                            logger.success("Cookie popup kapatıldı (XPath)")
+                            time.sleep(0.3)
+                            return True
+                except Exception:
+                    continue
+
+            # --- Banner var mı kontrol ---
+            if not _banner_exists():
+                if attempt == 0:
+                    logger.info("Cookie popup bulunamadı (zaten kapalı olabilir)")
+                return False
+
+            # --- JS fallback: banner'ı gizle ---
+            try:
+                driver.execute_script("""
+                    ['onetrust-banner-sdk','onetrust-pc-dark-filter',
+                     'CybotCookiebotDialog','cc-window'].forEach(function(id){
+                        var el = document.getElementById(id);
                         if (el) el.style.display = 'none';
                     });
-                });
-                
-                // Body overflow'u düzelt
-                document.body.style.overflow = 'auto';
-            """)
-            logger.success("JavaScript ile cookie banner'lar gizlendi")
-            return True
-        except:
-            pass
-        
-        # Yaygın cookie popup selektörleri
-        cookie_selectors = [
-            # Science Direct / Elsevier spesifik
-            "button#onetrust-accept-btn-handler",
-            "button.ot-sdk-show-settings",
-            "button[aria-label='Accept Cookies']",
-            
-            # OneTrust (Science Direct kullanıyor)
-            "button.accept-cookies-button",
-            "button.onetrust-close-btn-handler",
-            
-            # Genel selektörler
-            "button.cc-accept",
-            "button.cookie-accept",
-            "a.cc-btn-accept",
-            "#accept-cookies",
-            ".accept-cookies-button",
-            "button[aria-label*='Accept']",
-            "button[aria-label*='accept']",
-            "button[title*='Accept']",
-            
-            # Text içeren butonlar için XPath
-            "//button[contains(text(), 'Accept')]",
-            "//button[contains(text(), 'Accept All')]",
-            "//button[contains(text(), 'I Accept')]",
-            "//a[contains(text(), 'Accept')]",
-        ]
-        
-        # Her selektörü dene
-        for selector in cookie_selectors:
-            try:
-                # XPath mi CSS selector mı kontrol et
-                if selector.startswith('//'):
-                    button = WebDriverWait(driver, 2).until(
-                        EC.element_to_be_clickable((By.XPATH, selector))
-                    )
-                else:
-                    button = WebDriverWait(driver, 2).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                    )
-                
-                button.click()
-                logger.success(f"Cookie popup kapatıldı: {selector}")
-                time.sleep(1)
+                    if (document.body) document.body.style.overflow = 'auto';
+                """)
+                logger.success("Cookie banner JS fallback ile gizlendi")
                 return True
-                
-            except TimeoutException:
-                continue
-        
-        logger.info("Cookie popup bulunamadı (zaten kapalı olabilir)")
+            except Exception:
+                pass
+
+            if attempt < max_rounds - 1:
+                time.sleep(round_wait)
+
+        logger.warning("Cookie popup kapatılamadı")
         return False
-        
+
     except Exception as e:
         logger.warning(f"Cookie popup kapatma hatası: {e}")
         return False

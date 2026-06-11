@@ -1,6 +1,7 @@
 # Yapay Zeka Destekli Bilimsel Dergilerin Trend Analiz Sistemi
 
 **BM495-BM496 Bilgisayar Muhendisligi Projesi I-II - 2025-2026 Guz-Bahar**
+**Gazi Üniversitesi - Mühendislik Fakültesi - Bilgisayar Mühendisliği Bölümü**
 
 IEEE Xplore, ScienceDirect ve ACM Digital Library platformlarindan bilimsel makale meta-verilerini toplayan, NLP/AI ile konu kumeleme ve benzerlik analizi yapan ve sonuclari interaktif grafiklerle gorselestiren bir sistemdir.
 
@@ -19,7 +20,7 @@ IEEE Xplore, ScienceDirect ve ACM Digital Library platformlarindan bilimsel maka
 ### Backend
 - **Python 3.11+** - Ana programlama dili
 - **FastAPI** - REST API framework
-- **MongoDB + Beanie** - NoSQL veritabani ve ODM
+- **MongoDB + Beanie** - NoSQL veri tabani ve ODM
 - **Redis** - Cache, WebSocket Pub/Sub, Streams
 - **Elasticsearch 8** - Full-text arama ve autocomplete
 - **Selenium / SeleniumBase** - Web scraping
@@ -78,7 +79,7 @@ Bu komut asagidaki 7 servisi baslatir:
 
 | Servis | Port | Aciklama |
 |--------|------|----------|
-| MongoDB | 27017 | Veritabani |
+| MongoDB | 27017 | Veri tabani |
 | Redis | 6440 | Cache & Streams |
 | Elasticsearch | 9200 | Full-text arama motoru |
 | Prometheus | 9090 | Metrik toplama |
@@ -219,7 +220,7 @@ Frontend adresi: http://localhost:3000
 
 ### Veri Toplama (Scraper)
 
-Sistem bos veritabani ile baslar. Makale toplamak icin:
+Sistem bos veri tabani ile baslar. Makale toplamak icin:
 
 1. Frontend'de **Scraper** sayfasina gidin
 2. IEEE, ScienceDirect veya ACM scraperlarindan birini baslatin
@@ -235,7 +236,7 @@ NLP modulu **ilk kullanim sirasinda otomatik egitilir**:
 4. Eger model daha once egitilmemisse, otomatik egitim baslar (30sn - 5dk)
 5. Egitim bittiginde cluster bilgisi, 3 grafik ve eslesen makaleler gorunur
 
-> **Not:** Egitim icin veritabaninda en az ~20 abstract'li makale bulunmalidir. Yeterli makale yoksa once scraper calistirin.
+> **Not:** Egitim icin veri tabaninda en az ~20 abstract'li makale bulunmalidir. Yeterli makale yoksa once scraper calistirin.
 
 ### Atif Haritasi
 
@@ -358,83 +359,3 @@ Tam liste icin Swagger UI'a bakin: http://localhost:8000/docs
 | `ws://localhost:8000/ws/scrapers/events` | Canli scraper event stream |
 
 ---
-
-## Sorun Giderme
-
-### Docker servisleri baslamiyor
-
-```bash
-# Konteyner durumunu kontrol et
-docker compose ps
-
-# Loglari kontrol et
-docker compose logs elasticsearch
-docker compose logs mongodb
-
-# Temiz baslangic
-docker compose down
-docker compose up -d
-```
-
-### `No module named 'keybert'` hatasi
-
-```bash
-pip install keybert
-```
-
-Bu bagimliilik `requirements.txt` dosyasina dahildir. Eger `pip install -r requirements.txt` tamamlandiysa tekrar gerekmez.
-
-### NLP model egitimi basarisiz
-
-- Veritabaninda yeterli abstract'li makale oldugundan emin olun (minimum ~20)
-- `http://localhost:8000/api/v1/nlp/status` adresinden model durumunu kontrol edin
-- Backend loglarinda hata detaylarini inceleyin
-
-### Frontend cok yavas
-
-`npm run dev` modunda sayfa gecisleri yavas olabilir (Next.js on-demand compilation). Hizli test icin production modu kullanin:
-
-```bash
-cd client
-npm run build
-npm start
-```
-
-### MongoDB baglanti hatasi
-
-```bash
-# Docker calistigini dogrula
-docker ps | grep mongodb
-
-# Yeniden baslat
-cd scrapers
-docker compose restart mongodb
-```
-
-### Elasticsearch baglanti hatasi
-
-Elasticsearch'un baslamasi ~60 saniye surebilir. Hazir oldugundan emin olun:
-
-```bash
-curl http://localhost:9200/_cluster/health
-```
-
-### CORS hatasi
-
-Backend CORS ayarlari `scrapers/backend/core/config.py` icerisindedir. Varsayilan olarak tum originlere izin verir (`CORS_ORIGINS=["*"]`).
-
-### Redis baglanti hatasi
-
-Redis, Docker icinde 6379 portunda calisir ve host'a **6440** olarak maplanir. `.env` dosyasinda `REDIS_URL=redis://localhost:6440/0` oldugundan emin olun.
-
----
-
-## Lisans
-
-Bu proje Gazi Universitesi Bilgisayar Muhendisligi Bolumu BM495-BM496 dersleri kapsaminda gelistirilmistir.
-
----
-
-## Iletisim
-
-Sorulariniz icin: [GitHub Issues](https://github.com/emrefkucuk/academic_research_analysis/issues)

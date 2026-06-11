@@ -4,8 +4,14 @@ Academic Research Scraper API
 FastAPI backend for managing IEEE and ScienceDirect scrapers.
 """
 
+import os
+
+# Fix CUDA memory fragmentation before any PyTorch import
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import sys
 import asyncio
+import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -103,7 +109,7 @@ async def delayed_scraper_start(manager: ScraperManager, delay: float = 2.0):
 
 
 async def sync_es_on_startup():
-    """Uygulama başlatılırken veritabanı ile Elasticsearch'ü senkronize eder."""
+    """Uygulama başlatılırken veri tabanı ile Elasticsearch'ü senkronize eder."""
     try:
         from backend.services.elasticsearch_service import elasticsearch_service
         if not elasticsearch_service.is_connected:
@@ -177,6 +183,14 @@ async def lifespan(app: FastAPI):
     global scraper_manager
     
     logger.header("BACKEND BAŞLATILIYOR")
+
+    # Uvicorn access log'undan yüksek frekanslı path'leri bastır
+    class _SuppressNoiseFilter(logging.Filter):
+        _SUPPRESSED = ("/metrics", "/health", "/health/live", "/health/ready", "/favicon.ico")
+        def filter(self, record: logging.LogRecord) -> bool:
+            return not any(p in record.getMessage() for p in self._SUPPRESSED)
+    logging.getLogger("uvicorn.access").addFilter(_SuppressNoiseFilter())
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
     
     # Run tests if enabled
     if settings.run_tests_on_startup:

@@ -50,6 +50,6 @@ async def get_author_articles_paginated(
     page_size: int = Query(15, ge=1, le=100)
 ):
     """
-    Yazarın kaleme aldığı makaleleri veritabanından paginated (sayfalı) olarak döndürür.
+    Yazarın kaleme aldığı makaleleri veri tabanından paginated (sayfalı) olarak döndürür.
     """
     return await authors_service.get_author_articles(name, page, page_size)

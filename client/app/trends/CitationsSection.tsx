@@ -58,7 +58,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
   return (
     <div className="space-y-6 mt-8 border-t pt-8 border-slate-200">
       <div className="flex items-center gap-2 mb-4">
-        <Star className="h-6 w-6 text-yellow-500" />
+        <Star className="h-6 w-6 text-indigo-600" />
         <h2 className="text-2xl font-bold text-slate-900">Atıf Yoğunlukları ve Etki Analizi</h2>
       </div>
 
@@ -165,7 +165,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
         <Card className="lg:col-span-1">
           <CardHeader>
              <div className="flex items-center gap-2">
-              <Medal className="h-5 w-5 text-yellow-600" />
+              <Medal className="h-5 w-5 text-indigo-600" />
               <CardTitle>En Çok Atıf Alan 10 Makale</CardTitle>
             </div>
           </CardHeader>
@@ -199,7 +199,7 @@ export function CitationsSection({ data }: { data: CitationStats }) {
                     </p>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <p className="text-lg font-bold text-emerald-600">{article.citation_count.toLocaleString()}</p>
+                    <p className="text-lg font-bold text-indigo-600">{article.citation_count.toLocaleString()}</p>
                     <p className="text-[10px] text-slate-400 uppercase tracking-wider">Atıf</p>
                   </div>
                 </div>

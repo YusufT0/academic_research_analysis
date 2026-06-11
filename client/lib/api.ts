@@ -13,9 +13,6 @@ import type {
   SearchSuggestion,
   SearchFacets,
   NlpSearchResponse,
-  NlpBarChartData,
-  NlpPieChartData,
-  NlpScatterPoint,
   NlpStatus,
   JournalCitationMetrics,
 } from './types';
@@ -122,6 +119,22 @@ export async function getJournalCitationMetrics(journalId: string): Promise<Jour
   return fetchApi<JournalCitationMetrics>(`/journals/${journalId}/citation-metrics`);
 }
 
+export interface DeleteJournalResult {
+  success: boolean;
+  journal_id: string;
+  journal_name: string;
+  deleted: {
+    articles: number;
+    issues: number;
+    embeddings: number;
+    clusters_cleaned: number;
+  };
+}
+
+export async function deleteJournal(journalId: string): Promise<DeleteJournalResult> {
+  return fetchApi<DeleteJournalResult>(`/journals/${journalId}`, { method: 'DELETE' });
+}
+
 // ==================== Articles ====================
 
 export interface ArticleFilters {
@@ -140,6 +153,7 @@ export interface ArticleFilters {
   has_abstract?: boolean;
   sort_by?: string;
   sort_order?: 'asc' | 'desc';
+  include_no_date?: boolean;
 }
 
 export async function getArticles(filters: ArticleFilters = {}): Promise<PaginatedResponse<Article>> {
@@ -160,6 +174,7 @@ export async function getArticles(filters: ArticleFilters = {}): Promise<Paginat
   if (filters.has_abstract !== undefined) params.set('has_abstract', filters.has_abstract.toString());
   if (filters.sort_by) params.set('sort_by', filters.sort_by);
   if (filters.sort_order) params.set('sort_order', filters.sort_order);
+  if (filters.include_no_date !== undefined) params.set('include_no_date', filters.include_no_date.toString());
 
   return fetchApi<PaginatedResponse<Article>>(`/articles?${params.toString()}`);
 }
@@ -238,10 +253,10 @@ export async function getScrapersStatus(): Promise<AllScrapersStatus> {
   return fetchApi<AllScrapersStatus>('/scrapers/status');
 }
 
-export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startIeeeScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/ieee/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -257,10 +272,10 @@ export async function resumeIeeeScraper() {
   return fetchApi('/scrapers/ieee/resume', { method: 'POST' });
 }
 
-export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startScienceDirectScraper(headless = true, maxArticles = 5, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/sciencedirect/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -276,10 +291,10 @@ export async function resumeScienceDirectScraper() {
   return fetchApi('/scrapers/sciencedirect/resume', { method: 'POST' });
 }
 
-export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false) {
+export async function startAcmScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/acm/start', {
     method: 'POST',
-    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -295,10 +310,48 @@ export async function resumeAcmScraper() {
   return fetchApi('/scrapers/acm/resume', { method: 'POST' });
 }
 
-export async function startAllScrapers(headless = true) {
+export async function startWileyScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
+  return fetchApi('/scrapers/wiley/start', {
+    method: 'POST',
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
+  });
+}
+
+export async function stopWileyScraper() {
+  return fetchApi('/scrapers/wiley/stop', { method: 'POST' });
+}
+
+export async function pauseWileyScraper() {
+  return fetchApi('/scrapers/wiley/pause', { method: 'POST' });
+}
+
+export async function resumeWileyScraper() {
+  return fetchApi('/scrapers/wiley/resume', { method: 'POST' });
+}
+
+export async function startSpringerScraper(headless = true, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
+  return fetchApi('/scrapers/springer/start', {
+    method: 'POST',
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
+  });
+}
+
+export async function stopSpringerScraper() {
+  return fetchApi('/scrapers/springer/stop', { method: 'POST' });
+}
+
+export async function pauseSpringerScraper() {
+  return fetchApi('/scrapers/springer/pause', { method: 'POST' });
+}
+
+export async function resumeSpringerScraper() {
+  return fetchApi('/scrapers/springer/resume', { method: 'POST' });
+}
+
+export async function startAllScrapers(headless = false, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/start-all', {
     method: 'POST',
-    body: JSON.stringify({ headless }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
@@ -362,6 +415,8 @@ export async function startSingleJournalScraper(
   maxArticles = 50,
   depth = 1,
   headless = false,
+  maxTabs = 3,
+  force = false,
 ) {
   return fetchApi('/scrapers/journal/start', {
     method: 'POST',
@@ -371,12 +426,74 @@ export async function startSingleJournalScraper(
       max_articles: maxArticles,
       depth,
       headless,
+      max_tabs: maxTabs,
+      force,
     }),
   });
 }
 
 export async function getSingleJournalScraperStatus(scraperType: string) {
   return fetchApi(`/scrapers/journal/status?scraper_type=${scraperType}`);
+}
+
+export async function stopSingleJournalScraper(scraperType: string): Promise<{ success: boolean }> {
+  return fetchApi<{ success: boolean }>(`/scrapers/journal/stop?scraper_type=${scraperType}`, { method: 'POST' });
+}
+
+export interface AnalysisStep {
+  status: 'pending' | 'running' | 'done' | 'error';
+  message: string;
+}
+
+export interface AnalysisTaskProgress {
+  task_id: string;
+  status: 'running' | 'done' | 'done_with_errors' | 'error';
+  error?: string;
+  steps: {
+    cluster_update: AnalysisStep;
+    openalex: AnalysisStep;
+    elasticsearch: AnalysisStep;
+  };
+  result: {
+    model_version: string;
+    new_articles_found: number;
+    assigned: number;
+    noise: number;
+    total_embeddings_saved: number;
+    status: string;
+    affected_clusters: { cluster_id: number; topic_tag: string; article_count: number }[];
+  } | null;
+}
+
+export interface ActiveJournalAnalysisResponse {
+  found: boolean;
+  task_id?: string;
+  status?: string;
+  journal_id?: string;
+  model_version?: string | null;
+  started_at?: string;
+}
+
+export async function startJournalAnalysis(
+  journalId: string,
+  modelVersion?: string | null,
+): Promise<{ task_id: string; status: string }> {
+  const params = new URLSearchParams({ journal_id: journalId });
+  if (modelVersion) params.set('model_version', modelVersion);
+  return fetchApi<{ task_id: string; status: string }>(`/nlp/assign_for_journal?${params.toString()}`, { method: 'POST' });
+}
+
+export async function getAnalysisProgress(taskId: string): Promise<AnalysisTaskProgress> {
+  return fetchApi<AnalysisTaskProgress>(`/nlp/analysis_progress/${taskId}`);
+}
+
+export async function getActiveJournalAnalysisForJournal(
+  journalId: string,
+  modelVersion?: string | null,
+): Promise<ActiveJournalAnalysisResponse> {
+  const params = new URLSearchParams({ journal_id: journalId });
+  if (modelVersion) params.set('model_version', modelVersion);
+  return fetchApi<ActiveJournalAnalysisResponse>(`/nlp/analysis_active_for_journal?${params.toString()}`);
 }
 
 
@@ -395,17 +512,22 @@ export async function elasticSearch(filters: ElasticSearchFilters): Promise<Elas
   const params = new URLSearchParams();
   params.set('q', filters.query);
   if (filters.source_website) params.set('source_website', filters.source_website);
-  if (filters.year) params.set('year', filters.year.toString());
+  // Backend search router expects publication_year (not "year")
+  if (filters.year != null) params.set('publication_year', filters.year.toString());
   if (filters.journal_name) params.set('journal_name', filters.journal_name);
   if (filters.page) params.set('page', filters.page.toString());
   if (filters.page_size) params.set('page_size', filters.page_size.toString());
 
-  return fetchApi<ElasticSearchResult>(`/search?${params.toString()}`);
+  // FastAPI route is @router.get("/") under prefix "/search" → path is /search/ (trailing slash)
+  return fetchApi<ElasticSearchResult>(`/search/?${params.toString()}`);
 }
 
 export async function getSearchSuggestions(prefix: string, limit = 5): Promise<SearchSuggestion[]> {
   const params = new URLSearchParams({ q: prefix, limit: limit.toString() });
-  const data = await fetchApi<{ query: string; suggestions: string[] }>(`/search/suggest?${params.toString()}`);
+  const data = await fetchApi<{ query: string; items?: { id: string; text: string }[]; suggestions: string[] }>(`/search/suggest?${params.toString()}`);
+  if (data.items?.length) {
+    return data.items.map(({ id, text }) => ({ id, text }));
+  }
   return (data.suggestions || []).map(text => ({ text }));
 }
 
@@ -490,6 +612,11 @@ export async function getPublisherTopicTrends(name: string, model_version: strin
   return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_publisher_topic_trends?${params.toString()}`);
 }
 
+export async function getKeywordTopicTrends(keyword: string, model_version: string, top_n = 10): Promise<import('./types').TopicTrendsData> {
+  const params = new URLSearchParams({ keyword, model_version, top_n: String(top_n) });
+  return fetchApi<import('./types').TopicTrendsData>(`/nlp/get_keyword_topic_trends?${params.toString()}`);
+}
+
 export async function listClusters(
   model_version: string,
   cluster_type: 'all' | 'journal' | 'publisher' = 'all',
@@ -564,22 +691,26 @@ export async function getJournalStats() {
   return fetchApi<any>('/stats/journals');
 }
 
-export async function startAllScrapersSequential(headless = true) {
+export async function startAllScrapersSequential(headless = false, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/start-all-sequential', {
     method: 'POST',
-    body: JSON.stringify({ headless }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
-export async function startAllScrapersRoundRobin(headless = true) {
+export async function startAllScrapersRoundRobin(headless = false, maxArticles = 10, depth = 1, issueOrder = 'newest_first', continuous = false, maxTabs = 3) {
   return fetchApi('/scrapers/start-all-round-robin', {
     method: 'POST',
-    body: JSON.stringify({ headless }),
+    body: JSON.stringify({ headless, max_articles: maxArticles, depth, issues_order: issueOrder, continuous, max_tabs: maxTabs }),
   });
 }
 
 export async function getNlpStatus(): Promise<NlpStatus> {
   return fetchApi<NlpStatus>('/nlp/status');
+}
+
+export async function getNlpModelVersions(): Promise<import('./types').NlpModelVersionsResponse> {
+  return fetchApi<import('./types').NlpModelVersionsResponse>('/nlp/model_versions');
 }
 
 export async function nlpSearch(
@@ -593,16 +724,4 @@ export async function nlpSearch(
     auto_train: autoTrain.toString(),
   });
   return fetchApi<NlpSearchResponse>(`/nlp/search?${params.toString()}`);
-}
-
-export async function getNlpBarChartInput(): Promise<NlpBarChartData> {
-  return fetchApi<NlpBarChartData>('/nlp/get_bar_chart_input');
-}
-
-export async function getNlpPieChartInput(): Promise<NlpPieChartData> {
-  return fetchApi<NlpPieChartData>('/nlp/get_pie_chart_input');
-}
-
-export async function getNlpScatterChartInput(): Promise<NlpScatterPoint[]> {
-  return fetchApi<NlpScatterPoint[]>('/nlp/get_scatter_chart_input');
 }

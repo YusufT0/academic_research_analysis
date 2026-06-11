@@ -42,6 +42,14 @@ import {
   stopAcmScraper,
   pauseAcmScraper,
   resumeAcmScraper,
+  startWileyScraper,
+  stopWileyScraper,
+  pauseWileyScraper,
+  resumeWileyScraper,
+  startSpringerScraper,
+  stopSpringerScraper,
+  pauseSpringerScraper,
+  resumeSpringerScraper,
   getScraperLogs,
   startAllScrapers,
   startAllScrapersSequential,
@@ -52,7 +60,7 @@ import {
   syncElasticsearch,
 } from '@/lib/api';
 import { useGlobalScraperEvents } from '@/components/providers/ScraperProvider';
-import type { AllScrapersStatus, ScraperStatus } from '@/lib/types';
+import type { AllScrapersStatus, ScraperStatus, IssueProgress } from '@/lib/types';
 import type { ScraperEvent, ConnectionStatus } from '@/lib/useScraperEvents';
 import { OpenAlexScanner } from '@/components/dashboard/OpenAlexScanner';
 import { JournalUrlScraper } from '@/components/scrapers/JournalUrlScraper';
@@ -98,8 +106,6 @@ function ConnectionBadge({ status }: { status: ConnectionStatus }) {
 }
 
 // ==================== Journal Queue ====================
-
-import type { IssueProgress } from '@/lib/types';
 
 /** Tamamlanmış bir issue'nun makale listesini gösterir (accordion içi) */
 function IssueArticleList({ articles }: { articles: string[] }) {
@@ -153,7 +159,6 @@ function JournalQueue({ scraper }: { scraper: ScraperStatus }) {
   const [expandedJournals, setExpandedJournals] = useState<Set<string>>(new Set());
   // expandedIssues: "journalName|issueTitle" key ile issue accordion durumu
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
-
   const toggleJournal = (name: string) =>
     setExpandedJournals(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
 
@@ -355,7 +360,7 @@ interface ScraperControlProps {
   scraper: ScraperStatus;
   title: string;
   description: string;
-  onStart: (limit: number, depth?: number, issueOrder?: string, headless?: boolean, continuous?: boolean) => Promise<void>;
+  onStart: (limit: number, depth?: number, issueOrder?: string, headless?: boolean, continuous?: boolean, maxTabs?: number) => Promise<void>;
   onStop: () => Promise<void>;
   onPause: () => Promise<void>;
   onResume: () => Promise<void>;
@@ -367,6 +372,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
   const [localElapsed, setLocalElapsed] = useState(scraper.elapsed_seconds);
   const [limit, setLimit] = useState<number>(25);
   const [depth, setDepth] = useState<number>(1);
+  const [maxTabs, setMaxTabs] = useState<number>(3);
   const [issueOrder, setIssueOrder] = useState<string>('newest_first');
   const [headless, setHeadless] = useState<boolean>(true);
   const [continuous, setContinuous] = useState<boolean>(false);
@@ -409,6 +415,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
 
   const isRunning = effectiveScraper.status === 'running';
   const isPaused = effectiveScraper.status === 'paused';
+  const isStarting = effectiveScraper.status === 'starting';
   const canStart = ['idle', 'stopped', 'completed', 'error'].includes(effectiveScraper.status);
 
   return (
@@ -434,8 +441,8 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
             <div
               className={`h-full rounded-full transition-all duration-500 ${effectiveScraper.status === 'error' ? 'bg-red-500' :
-                effectiveScraper.status === 'completed' ? 'bg-emerald-500' :
-                  'bg-gradient-to-r from-emerald-500 to-teal-400'
+                effectiveScraper.status === 'completed' ? 'bg-indigo-500' :
+                  'bg-gradient-to-r from-indigo-500 to-violet-400'
                 }`}
               style={{ width: `${effectiveScraper.progress_percent}%` }}
             />
@@ -453,7 +460,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
             <p className="text-xs text-slate-500">Sayı</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
-            <p className="text-2xl font-bold text-emerald-600">{effectiveScraper.articles_scraped}</p>
+            <p className="text-2xl font-bold text-indigo-600">{effectiveScraper.articles_scraped}</p>
             <p className="text-xs text-slate-500">Yeni Makale</p>
           </div>
           <div className="bg-slate-50 rounded-lg p-3 text-center">
@@ -483,7 +490,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Time Info */}
         <div className="flex items-center justify-between text-sm text-slate-500">
           {effectiveScraper.started_at && (
-            <span>Başlangıç: {new Date(effectiveScraper.started_at).toLocaleTimeString('tr-TR')}</span>
+            <span>Başlangıç: {new Date(effectiveScraper.started_at.endsWith('Z') ? effectiveScraper.started_at : effectiveScraper.started_at + 'Z').toLocaleTimeString('tr-TR')}</span>
           )}
           {localElapsed > 0 && (
             <span>Geçen süre: {Math.floor(localElapsed / 60)} dk {Math.floor(localElapsed % 60)} sn</span>
@@ -493,10 +500,10 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
         {/* Actions Menu */}
         <div className="flex flex-col gap-3 pt-4 border-t border-slate-100">
           {canStart && (
-            <div className="flex flex-col gap-3 w-full">
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2">
-                  <label htmlFor={`limit-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+            <div className="flex flex-col gap-2 w-full">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor={`limit-${title}`} className="text-xs text-slate-600 whitespace-nowrap">
                     Makale Limiti:
                   </label>
                   <input
@@ -506,13 +513,13 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
                     max="5000"
                     value={limit}
                     onChange={(e) => setLimit(parseInt(e.target.value) || 25)}
-                    className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    className="w-14 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
                   />
                 </div>
 
                 {showDepth && (
-                  <div className="flex items-center gap-2">
-                    <label htmlFor={`depth-${title}`} className="text-sm text-slate-600 whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor={`depth-${title}`} className="text-xs text-slate-600 whitespace-nowrap">
                       Issue Derinliği:
                     </label>
                     <input
@@ -522,11 +529,27 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
                       max="50"
                       value={depth}
                       onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
-                      className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                      className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
                       title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
                     />
                   </div>
                 )}
+
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor={`max-tabs-${title}`} className="text-xs text-slate-600 whitespace-nowrap">
+                    Max Tab:
+                  </label>
+                  <input
+                    id={`max-tabs-${title}`}
+                    type="number"
+                    min="1"
+                    max="10"
+                    value={maxTabs}
+                    onChange={(e) => setMaxTabs(parseInt(e.target.value) || 3)}
+                    className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+                    title="Issue içindeki makaleler için aynı anda açılacak tab sayısı"
+                  />
+                </div>
               </div>
 
               {/* Issue Sırası Toggle */}
@@ -597,7 +620,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
 
               <Button
                 variant="primary"
-                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder, headless, continuous))}
+                onClick={() => handleAction(() => onStart(limit, showDepth ? depth : undefined, issueOrder, headless, continuous, maxTabs))}
                 isLoading={actionLoading}
                 className="w-full"
               >
@@ -608,6 +631,12 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           )}
 
           <div className="flex gap-3 w-full">
+            {isStarting && (
+              <Button variant="secondary" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
+                <Square className="h-4 w-4 mr-2" />
+                Durdur
+              </Button>
+            )}
             {isRunning && (
               <>
                 <Button variant="warning" onClick={() => handleAction(onPause)} isLoading={actionLoading} className="flex-1">
@@ -652,17 +681,23 @@ const SCRAPER_OPTIONS = [
   { value: 'ieee', label: 'IEEE Xplore', variant: 'info' as const },
   { value: 'sciencedirect', label: 'ScienceDirect', variant: 'success' as const },
   { value: 'acm', label: 'ACM Digital Library', variant: 'warning' as const },
+  { value: 'wiley', label: 'Wiley Online Library', variant: 'default' as const },
+  { value: 'springer', label: 'Springer Link', variant: 'info' as const },
 ];
 
 function scraperLabel(type: string) {
   if (type === 'ieee') return 'IEEE';
   if (type === 'acm') return 'ACM';
+  if (type === 'wiley') return 'Wiley';
+  if (type === 'springer') return 'Springer';
   return 'SD';
 }
 
-function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' {
+function scraperBadgeVariant(type: string): 'info' | 'warning' | 'success' | 'default' {
   if (type === 'ieee') return 'info';
   if (type === 'acm') return 'warning';
+  if (type === 'wiley') return 'default';
+  if (type === 'springer') return 'info';
   return 'success';
 }
 
@@ -811,15 +846,17 @@ function useSplitLogPanel(scraperType: string) {
     const loadHistory = async () => {
       try {
         const data = await getScraperLogs(scraperType, 500);
-        const entries: LogEntry[] = (data.logs || []).map((l: LogEntry & { scraper_type?: string }) => ({
-          ...l,
-          scraper_type: l.scraper_type ?? scraperType,
-        }));
+        const entries: LogEntry[] = (data.logs || [])
+          .filter((l: LogEntry & { scraper_type?: string }) => !l.scraper_type || l.scraper_type === scraperType)
+          .map((l: LogEntry & { scraper_type?: string }) => ({
+            ...l,
+            scraper_type: scraperType,
+          }));
         setLogs((prev) => {
-          // WS ile gelen yeniler + eski REST logları, duplike olmadan birleştir
-          const existing = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
-          const fresh = entries.filter((e) => !existing.has(`${e.timestamp}|${e.message}`));
-          return [...prev, ...fresh].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 1000);
+          // REST loglarını öne koy, WS ile gelen mevcut loglarla birleştir, dedup yap
+          const allLogs = [...entries, ...prev];
+          const unique = allLogs.filter((e, i, arr) => arr.findIndex((x) => x.timestamp === e.timestamp && x.message === e.message) === i);
+          return unique.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 1000);
         });
       } catch { /* ignore */ }
     };
@@ -843,6 +880,7 @@ function useSplitLogPanel(scraperType: string) {
           const event: ScraperEvent = JSON.parse(e.data);
           if (event.type === 'pong' || event.type === 'connected' || event.type === 'subscribed') return;
           if (event.type === 'log' || event.type === 'error') {
+            if (event.scraper_type !== scraperType) return;
             const entry = wsEventToLogEntry(event);
             if (clearedAtRef.current && entry.timestamp <= clearedAtRef.current) return;
             setLogs((prev) => [entry, ...prev].slice(0, 1000));
@@ -939,9 +977,17 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 
   const fetchLogs = useCallback(async () => {
     try {
-      const scraperParam = subscribedScrapers.length === 3 ? 'all' : subscribedScrapers[0] ?? 'all';
+      const scraperParam = subscribedScrapers.length === SCRAPER_OPTIONS.length ? 'all' : subscribedScrapers[0] ?? 'all';
       const data = await getScraperLogs(scraperParam, 500);
-      setPolledLogs(data.logs || []);
+      setPolledLogs(prev => {
+        // REST'ten gelen yeni logları öne koy, sonra prev'deki eski logları ekle; dedup yap
+        const allLogs = [...(data.logs || []), ...prev];
+        const unique = allLogs.filter(
+          (l, i, arr) => arr.findIndex((x) => x.timestamp === l.timestamp && x.message === l.message) === i
+        );
+        // En yeni 500'ü tut
+        return unique.slice(0, 500);
+      });
     } catch (err) {
       console.error(err);
     } finally {
@@ -954,8 +1000,9 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
   }, [fetchLogs, viewMode]);
 
   useEffect(() => {
-    if (!isWsConnected && viewMode === 'combined') {
-      const interval = setInterval(fetchLogs, 5000);
+    if (viewMode === 'combined') {
+      // WS bağlıyken tarihsel buffer'ı taze tut (30s); bağlı değilse daha sık poll yap (5s)
+      const interval = setInterval(fetchLogs, isWsConnected ? 30000 : 5000);
       return () => clearInterval(interval);
     }
   }, [isWsConnected, fetchLogs, viewMode]);
@@ -970,7 +1017,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
     setViewMode(mode);
     if (mode === 'split') {
       // Split modda global WS tüm scraper'ları alır (status/progress için)
-      subscribe(['ieee', 'sciencedirect', 'acm']);
+      subscribe(['ieee', 'sciencedirect', 'acm', 'wiley', 'springer']);
     }
   }, [subscribe]);
 
@@ -988,6 +1035,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 
   const combinedLogs = [...wsLogEntries, ...polledLogs]
     .filter((l, i, arr) => arr.findIndex((x) => x.timestamp === l.timestamp && x.message === l.message) === i)
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
     .slice(0, 500)
     .filter((l) => !search.trim() || l.message.toLowerCase().includes(search.toLowerCase()));
 
@@ -1061,10 +1109,12 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
       <CardContent>
         {viewMode === 'split' ? (
           // ── SPLIT MOD ──
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-4">
             <SplitPanel scraperType="ieee" label="IEEE Xplore" />
             <SplitPanel scraperType="sciencedirect" label="ScienceDirect" />
             <SplitPanel scraperType="acm" label="ACM Digital Library" />
+            <SplitPanel scraperType="wiley" label="Wiley Online Library" />
+            <SplitPanel scraperType="springer" label="Springer Link" />
           </div>
         ) : loading ? (
           // ── COMBINED MOD yükleniyor ──
@@ -1214,12 +1264,20 @@ function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefre
   const [loading, setLoading] = useState(false);
   const [stopLoading, setStopLoading] = useState(false);
 
+  // Tüm scraperlara uygulanacak ortak ayarlar
+  const [maxArticles, setMaxArticles] = useState<number>(10);
+  const [depth, setDepth] = useState<number>(1);
+  const [maxTabs, setMaxTabs] = useState<number>(3);
+  const [issueOrder, setIssueOrder] = useState<string>('newest_first');
+  const [headless, setHeadless] = useState<boolean>(false);
+  const [continuous, setContinuous] = useState<boolean>(false);
+
   const handleStartAll = async () => {
     setLoading(true);
     try {
-      if (mode === 'parallel') await startAllScrapers(false);
-      else if (mode === 'sequential') await startAllScrapersSequential(false);
-      else await startAllScrapersRoundRobin(false);
+      if (mode === 'parallel') await startAllScrapers(headless, maxArticles, depth, issueOrder, continuous, maxTabs);
+      else if (mode === 'sequential') await startAllScrapersSequential(headless, maxArticles, depth, issueOrder, continuous, maxTabs);
+      else await startAllScrapersRoundRobin(headless, maxArticles, depth, issueOrder, continuous, maxTabs);
       await onRefresh();
     } catch (err) {
       console.error(err);
@@ -1257,7 +1315,7 @@ function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefre
               key={key}
               onClick={() => setMode(key)}
               className={`p-3 rounded-lg border text-left transition-colors ${mode === key
-                ? 'border-emerald-500 bg-emerald-50 text-emerald-800'
+                ? 'border-indigo-500 bg-indigo-50 text-indigo-800'
                 : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-700'
               }`}
             >
@@ -1265,6 +1323,104 @@ function StartAllPanel({ anyRunning, onRefresh }: { anyRunning: boolean; onRefre
               <p className="text-xs text-slate-500 mt-0.5">{desc}</p>
             </button>
           ))}
+        </div>
+      </div>
+
+      {/* Ortak Ayarlar (tüm scraperlara uygulanır) */}
+      <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+        <p className="text-sm font-medium text-slate-700">Ortak Ayarlar (tüm scraperlara uygulanır)</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="all-limit" className="text-xs text-slate-600 whitespace-nowrap">Makale Limiti:</label>
+            <input
+              id="all-limit"
+              type="number"
+              min="1"
+              max="5000"
+              value={maxArticles}
+              onChange={(e) => setMaxArticles(parseInt(e.target.value) || 10)}
+              className="w-16 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="all-depth" className="text-xs text-slate-600 whitespace-nowrap">Issue Derinliği:</label>
+            <input
+              id="all-depth"
+              type="number"
+              min="1"
+              max="50"
+              value={depth}
+              onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+              title="Her journal'dan kaç issue işlenecek (1 = sadece en yeni)"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="all-max-tabs" className="text-xs text-slate-600 whitespace-nowrap">Max Tab:</label>
+            <input
+              id="all-max-tabs"
+              type="number"
+              min="1"
+              max="10"
+              value={maxTabs}
+              onChange={(e) => setMaxTabs(parseInt(e.target.value) || 3)}
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-md focus:outline-none focus:ring-2 focus:ring-slate-400"
+              title="Issue içindeki makaleler için aynı anda açılacak tab sayısı"
+            />
+          </div>
+        </div>
+
+        {/* Issue Sırası */}
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-slate-600 whitespace-nowrap">Issue Sırası:</span>
+          <div className="flex rounded-lg border border-slate-200 overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setIssueOrder('newest_first')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors ${
+                issueOrder === 'newest_first' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+              title="Issue'ları en yeniden en eskiye işle"
+            >
+              Yeniden Eskiye
+            </button>
+            <button
+              type="button"
+              onClick={() => setIssueOrder('oldest_first')}
+              className={`px-3 py-1.5 text-xs font-medium transition-colors border-l border-slate-200 ${
+                issueOrder === 'oldest_first' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+              title="Issue'ları en eskiden en yeniye işle"
+            >
+              Eskiden Yeniye
+            </button>
+          </div>
+        </div>
+
+        {/* Headless & Sürekli Mod */}
+        <div className="flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={() => setHeadless((v) => !v)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+              headless ? 'bg-slate-700 border-slate-700 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            title={headless ? 'Browser gizli çalışıyor' : 'Browser görünür çalışıyor'}
+          >
+            <span className={`w-2 h-2 rounded-full ${headless ? 'bg-emerald-400' : 'bg-slate-400'}`} />
+            Headless {headless ? 'Açık' : 'Kapalı'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setContinuous((v) => !v)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border text-xs font-medium transition-colors ${
+              continuous ? 'bg-indigo-600 border-indigo-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+            }`}
+            title={continuous ? 'Tüm scraperlar tamamlandıktan sonra otomatik yeniden başlar' : 'Sürekli mod kapalı'}
+          >
+            <span className={`w-2 h-2 rounded-full ${continuous ? 'bg-indigo-300 animate-pulse' : 'bg-slate-400'}`} />
+            Sürekli Mod {continuous ? 'Açık' : 'Kapalı'}
+          </button>
         </div>
       </div>
 
@@ -1331,7 +1487,7 @@ export default function ScrapersPage() {
             const newState = { ...prev };
             const sType = event.scraper_type;
 
-            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm') {
+            if (sType === 'ieee' || sType === 'sciencedirect' || sType === 'acm' || sType === 'wiley' || sType === 'springer') {
               newState[sType] = {
                 ...newState[sType],
                 ...event.data
@@ -1339,7 +1495,7 @@ export default function ScrapersPage() {
             }
 
             // any_running / all_completed'ı yeniden hesapla
-            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status];
+            const statuses = [newState.ieee?.status, newState.sciencedirect?.status, newState.acm?.status, newState.wiley?.status, newState.springer?.status];
             newState.any_running = statuses.some(s => s === 'running' || s === 'starting' || s === 'paused');
             newState.all_completed = statuses.every(s => s === 'completed' || s === 'stopped' || s === 'idle' || s === 'error');
 
@@ -1426,7 +1582,7 @@ export default function ScrapersPage() {
             </div>
             <div className="text-left">
               <h2 className="font-semibold text-slate-900">URL ile Journal İşle</h2>
-              <p className="text-sm text-slate-500">ACM, ScienceDirect veya IEEE Xplore URL&#39;si girerek tekil dergi scraping yapın</p>
+              <p className="text-sm text-slate-500">ACM, ScienceDirect, IEEE Xplore, Wiley veya Springer URL&#39;si girerek tekil dergi scraping yapın</p>
             </div>
           </div>
           <ChevronUp
@@ -1470,7 +1626,7 @@ export default function ScrapersPage() {
       <Card>
         <CardHeader>
           <CardTitle>Tüm Scraperları Başlat</CardTitle>
-          <CardDescription>IEEE Xplore, ScienceDirect ve ACM scraperlarını aynı anda başlatın</CardDescription>
+          <CardDescription>IEEE Xplore, ScienceDirect, ACM, Wiley ve Springer scraperlarını aynı anda başlatın</CardDescription>
         </CardHeader>
         <CardContent>
           <StartAllPanel anyRunning={status?.any_running ?? false} onRefresh={fetchStatus} />
@@ -1478,39 +1634,69 @@ export default function ScrapersPage() {
       </Card>
 
       {/* Scraper Controls */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="flex flex-wrap gap-6">
         {status && (
           <>
-            <ScraperControl
-              scraper={status.ieee}
-              title="IEEE Xplore Scraper"
-              description="IEEE akademik makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
-            />
-            <ScraperControl
-              scraper={status.sciencedirect}
-              title="ScienceDirect Scraper"
-              description="Elsevier ScienceDirect makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
-            />
-            <ScraperControl
-              scraper={status.acm}
-              title="ACM Digital Library Scraper"
-              description="ACM akademik makalelerini toplar"
-              showDepth
-              onStart={async (limit, depth, issueOrder, headless, continuous) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false); await fetchStatus(); }}
-              onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
-              onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
-              onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
-            />
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.ieee}
+                title="IEEE Xplore Scraper"
+                description="IEEE akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startIeeeScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
+                onStop={async () => { await stopIeeeScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseIeeeScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeIeeeScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.sciencedirect}
+                title="ScienceDirect Scraper"
+                description="Elsevier ScienceDirect makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startScienceDirectScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
+                onStop={async () => { await stopScienceDirectScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseScienceDirectScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeScienceDirectScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.acm}
+                title="ACM Digital Library Scraper"
+                description="ACM akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startAcmScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
+                onStop={async () => { await stopAcmScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseAcmScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeAcmScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.wiley}
+                title="Wiley Online Library"
+                description="Wiley akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startWileyScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
+                onStop={async () => { await stopWileyScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseWileyScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeWileyScraper(); await fetchStatus(); }}
+              />
+            </div>
+            <div className="basis-full md:basis-[calc((100%-1.5rem)/2)] lg:basis-[calc((100%-3rem)/3)] grow">
+              <ScraperControl
+                scraper={status.springer}
+                title="Springer Link"
+                description="Springer akademik makalelerini toplar"
+                showDepth
+                onStart={async (limit, depth, issueOrder, headless, continuous, maxTabs) => { await startSpringerScraper(headless ?? true, limit, depth ?? 1, issueOrder ?? 'newest_first', continuous ?? false, maxTabs ?? 3); await fetchStatus(); }}
+                onStop={async () => { await stopSpringerScraper(); await fetchStatus(); }}
+                onPause={async () => { await pauseSpringerScraper(); await fetchStatus(); }}
+                onResume={async () => { await resumeSpringerScraper(); await fetchStatus(); }}
+              />
+            </div>
           </>
         )}
       </div>

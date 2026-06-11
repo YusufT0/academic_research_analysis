@@ -122,13 +122,20 @@ export interface ScraperStatus {
   elapsed_seconds: number;
   progress_percent: number;
   last_error: string | null;
+  max_tabs?: number | null;
   is_single_journal_mode?: boolean;
+  single_journal_url?: string | null;
+  single_journal_max_articles?: number | null;
+  single_journal_depth?: number | null;
+  single_journal_max_tabs?: number | null;
 }
 
 export interface AllScrapersStatus {
   ieee: ScraperStatus;
   sciencedirect: ScraperStatus;
   acm: ScraperStatus;
+  wiley: ScraperStatus;
+  springer: ScraperStatus;
   any_running: boolean;
   all_completed: boolean;
 }
@@ -145,6 +152,8 @@ export interface GeneralStats {
     ieee_status: string;
     sciencedirect_status: string;
     acm_status: string;
+    wiley_status?: string;
+    springer_status?: string;
     any_running: boolean;
   };
 }
@@ -207,6 +216,7 @@ export interface SearchResult {
     url: string;
     abstract: string | null;
     keywords: string[];
+    source_website?: string;
   }>;
 }
 
@@ -256,6 +266,7 @@ export interface ElasticSearchResult {
 
 export interface SearchSuggestion {
   text: string;
+  id?: string;
   score?: number;
 }
 
@@ -308,7 +319,8 @@ export interface TopicCluster {
 
 export interface TopicTrendsData {
   graph_data: Array<Record<string, string | number>>;
-  clusters: TopicCluster[];
+  clusters?: TopicCluster[];
+  keyword_distribution?: Record<string, number>;
 }
 
 export interface NlpStatus {
@@ -319,6 +331,11 @@ export interface NlpStatus {
   cache_loaded: boolean;
   cached_version: string | null;
   pkl_model_available?: boolean;
+}
+
+export interface NlpModelVersionsResponse {
+  latest_model_version: string | null;
+  model_versions: string[];
 }
 
 // ==================== NLP Search Types ====================
@@ -342,14 +359,6 @@ export interface NlpSearchResponse {
   cluster_label: string | null;
   total_in_cluster: number | null;
   articles: NlpSearchArticle[];
-}
-
-export type NlpBarChartData = Record<string, number>;
-export type NlpPieChartData = Record<string, number>;
-
-export interface NlpScatterPoint {
-  x: number;
-  y: number;
 }
 
 // ==================== Journal Citation Metrics ====================

@@ -14,8 +14,9 @@ from database.models import Article
 from backend.services.cache_service import get_cache_service
 from backend.services.openalex.client import openalex_client
 from backend.core.config import settings
+from utils.logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger("citation_graph")
 
 
 class CitationGraphService:
@@ -177,8 +178,12 @@ class CitationGraphService:
             logger.error(f"Failed to cache citation graph for {article_id}: {e}")
 
         logger.info(
-            f"Citation graph built: article={article_id} depth={depth} "
-            f"per_level={per_level} nodes={graph_data['node_count']} edges={graph_data['edge_count']}"
+            "Citation graph olusturuldu",
+            article_id=article_id,
+            depth=depth,
+            per_level=per_level,
+            nodes=graph_data["node_count"],
+            edges=graph_data["edge_count"],
         )
         return graph_data
 

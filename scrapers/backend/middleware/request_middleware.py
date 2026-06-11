@@ -9,14 +9,14 @@ Request Middleware
 
 import time
 import uuid
-import logging
 from typing import Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import Response
+from utils.logger import get_logger
 
-logger = logging.getLogger("middleware")
+logger = get_logger("api_request")
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
@@ -91,15 +91,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         process_time = getattr(request.state, "process_time_ms", 0)
         
         logger.info(
-            "request_completed",
-            extra={
-                "request_id": request_id,
-                "method": request.method,
-                "path": request.url.path,
-                "status_code": response.status_code,
-                "process_time_ms": process_time,
-                "client_ip": request.client.host if request.client else "-",
-            },
+            "HTTP request tamamlandı",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            process_time_ms=process_time,
+            client_ip=request.client.host if request.client else "-",
         )
         
         return response

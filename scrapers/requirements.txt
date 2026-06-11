@@ -1,3 +1,9 @@
+# setuptools<81: selenium-wire (ieee/science_direct) hâlâ `pkg_resources`
+# import ediyor; setuptools 81+ pkg_resources'ı kaldırdı. 80.x hem
+# pkg_resources sağlar hem de seleniumbase'i çalıştırır (pip'in >=82
+# pin'i fazla katı, runtime'da sorun yok).
+setuptools<81
+
 # SeleniumBase (local patched version — rsplit fix for @ in proxy username)
 ./libs/seleniumbase
 selenium>=4.28.0

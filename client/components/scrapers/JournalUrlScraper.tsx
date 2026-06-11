@@ -10,7 +10,8 @@
  * - Onay sonrası mevcut JournalQueue + WebSocket takip altyapısını kullanır
  */
 
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import Link from 'next/link';
 import {
   Link2,
   Search,
@@ -28,7 +29,9 @@ import {
   Zap,
   FileText,
   Clock,
+  BarChart3,
 } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -36,14 +39,19 @@ import {
   validateJournalUrl,
   checkJournalExists,
   startSingleJournalScraper,
+  getJournal,
+  getJournals,
+  getJournalIssues,
+  getJournalCitationMetrics,
   type JournalExistsResponse,
   type JournalUrlValidateResponse,
 } from '@/lib/api';
-import type { ScraperStatus, IssueProgress } from '@/lib/types';
+import type { ScraperStatus, IssueProgress, Journal, Issue, JournalCitationMetrics } from '@/lib/types';
+import { JournalCard } from '@/app/journals/JournalCard';
 
 // ==================== URL Valdiation (Frontend) ====================
 
-const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'info' | 'success' | 'warning' }> = {
+const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'default' | 'info' | 'success' | 'warning' }> = {
   ieee: {
     label: 'IEEE Xplore',
     variant: 'info',
@@ -59,6 +67,16 @@ const URL_PATTERNS: Record<string, { label: string; regex: RegExp; variant: 'inf
     variant: 'warning',
     regex: /https?:\/\/dl\.acm\.org\/(journal|loi)\/[a-zA-Z0-9\-]+/i,
   },
+  wiley: {
+    label: 'Wiley Online Library',
+    variant: 'default',
+    regex: /https?:\/\/(?:[\w\-]+\.)?onlinelibrary\.wiley\.com\/(journal|toc)\/[a-zA-Z0-9\-]+/i,
+  },
+  springer: {
+    label: 'Springer Link',
+    variant: 'info',
+    regex: /https?:\/\/link\.springer\.com\/(journal\/\d+|brands\/springer\/journals(\/computer-science)?)/i,
+  },
 };
 
 function detectPlatformFrontend(url: string): string | null {
@@ -66,6 +84,17 @@ function detectPlatformFrontend(url: string): string | null {
     if (cfg.regex.test(url.trim())) return key;
   }
   return null;
+}
+
+function getFullUrl(url: string, sourceWebsite: string): string {
+  if (!url) return '';
+  if (url.startsWith('http://') || url.startsWith('https://')) return url;
+  if (sourceWebsite === 'ieeexplore') return `https://ieeexplore.ieee.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'sciencedirect') return `https://www.sciencedirect.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'acm') return `https://dl.acm.org${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'wiley') return `https://onlinelibrary.wiley.com${url.startsWith('/') ? '' : '/'}${url}`;
+  if (sourceWebsite === 'springer') return `https://link.springer.com${url.startsWith('/') ? '' : '/'}${url}`;
+  return url;
 }
 
 // ==================== Existing Journal Banner ====================
@@ -83,11 +112,15 @@ function ExistingJournalBanner({
     ieeexplore: 'IEEE Xplore',
     sciencedirect: 'ScienceDirect',
     acm: 'ACM Digital Library',
+    wiley: 'Wiley Online Library',
+    springer: 'Springer Link',
   };
-  const sourceVariants: Record<string, 'info' | 'success' | 'warning'> = {
+  const sourceVariants: Record<string, 'info' | 'success' | 'warning' | 'default'> = {
     ieeexplore: 'info',
     sciencedirect: 'success',
     acm: 'warning',
+    wiley: 'default',
+    springer: 'info',
   };
 
   const lastUpdated = info.updated_at
@@ -102,7 +135,7 @@ function ExistingJournalBanner({
           <Info className="h-4 w-4 text-amber-700" />
         </div>
         <div className="flex-1">
-          <p className="text-sm font-semibold text-amber-800">Bu dergi veritabanında mevcut</p>
+          <p className="text-sm font-semibold text-amber-800">Bu dergi veri tabanında mevcut</p>
           <p className="text-xs text-amber-600">Yeniden scrape etmek ister misiniz?</p>
         </div>
         <Badge variant={sourceVariants[info.source_website] ?? 'default'} className="text-xs">
@@ -167,6 +200,46 @@ function ExistingJournalBanner({
 
 // ── Helpers shared with JournalQueue ────────────────────────────────────────
 
+type CompletedJournalDetails = {
+  loading: boolean;
+  journal: Journal | null;
+  issues: Issue[];
+  citationMetrics: JournalCitationMetrics | null;
+  error?: string;
+};
+
+function CitationHistoryMiniChart({ data, loading }: { data: JournalCitationMetrics | null; loading: boolean }) {
+  const chartData = useMemo(() => {
+    if (!data?.historical_citation_data) return [];
+    return Object.entries(data.historical_citation_data)
+      .map(([year, count]) => ({ year, count }))
+      .sort((a, b) => a.year.localeCompare(b.year));
+  }, [data]);
+
+  if (loading) {
+    return <div className="h-28 rounded bg-slate-100 animate-pulse" />;
+  }
+
+  if (chartData.length === 0) {
+    return <p className="text-xs text-slate-400 italic">Atıf geçmişi verisi bulunamadı.</p>;
+  }
+
+  return (
+    <ResponsiveContainer width="100%" height={140}>
+      <BarChart data={chartData} margin={{ top: 6, right: 8, left: -18, bottom: 2 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+        <XAxis dataKey="year" tick={{ fontSize: 10 }} />
+        <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+        <Tooltip
+          contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 12 }}
+          formatter={(value) => [`${Number(value).toLocaleString()} atıf`, 'Atıf']}
+        />
+        <Bar dataKey="count" fill="#6366f1" radius={[3, 3, 0, 0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
+}
+
 function IssueArticleList({ articles }: { articles: string[] }) {
   if (!articles.length) return null;
   return (
@@ -215,9 +288,92 @@ function CompletedIssueRow({ issue, expanded, onToggle }: {
 function InlineJournalQueue({ scraper }: { scraper: ScraperStatus }) {
   const [expandedJournals, setExpandedJournals] = useState<Set<string>>(new Set());
   const [expandedIssues, setExpandedIssues] = useState<Set<string>>(new Set());
+  const [journalDetails, setJournalDetails] = useState<Record<string, CompletedJournalDetails>>({});
 
-  const toggleJournal = (name: string) =>
-    setExpandedJournals(prev => { const s = new Set(prev); s.has(name) ? s.delete(name) : s.add(name); return s; });
+  const sourceMap: Record<string, string> = {
+    ieee: 'ieeexplore',
+    sciencedirect: 'sciencedirect',
+    acm: 'acm',
+    wiley: 'wiley',
+    springer: 'springer',
+  };
+
+  const loadCompletedJournalDetails = useCallback(async (journalName: string) => {
+    if (!journalName || journalDetails[journalName]?.loading || journalDetails[journalName]) return;
+
+    setJournalDetails(prev => ({
+      ...prev,
+      [journalName]: { loading: true, journal: null, issues: [], citationMetrics: null },
+    }));
+
+    try {
+      const sourceWebsite = sourceMap[scraper.scraper_type] || undefined;
+      const list = await getJournals({
+        search: journalName,
+        source_website: sourceWebsite,
+        page: 1,
+        page_size: 20,
+      });
+
+      const match = list.items.find(j => j.name.trim().toLowerCase() === journalName.trim().toLowerCase()) ?? list.items[0] ?? null;
+      if (!match) {
+        setJournalDetails(prev => ({
+          ...prev,
+          [journalName]: {
+            loading: false,
+            journal: null,
+            issues: [],
+            citationMetrics: null,
+            error: 'Dergi detayı veri tabanında bulunamadı.',
+          },
+        }));
+        return;
+      }
+
+      const [issuesData, citationMetrics] = await Promise.all([
+        getJournalIssues(match.id, 1, 100),
+        getJournalCitationMetrics(match.id).catch(() => null),
+      ]);
+      const issues = Array.isArray(issuesData)
+        ? (issuesData as Issue[])
+        : (((issuesData as { items?: Issue[] }).items) ?? []);
+
+      setJournalDetails(prev => ({
+        ...prev,
+        [journalName]: {
+          loading: false,
+          journal: match,
+          issues,
+          citationMetrics,
+        },
+      }));
+    } catch {
+      setJournalDetails(prev => ({
+        ...prev,
+        [journalName]: {
+          loading: false,
+          journal: null,
+          issues: [],
+          citationMetrics: null,
+          error: 'Dergi detayları yüklenemedi.',
+        },
+      }));
+    }
+  }, [journalDetails, scraper.scraper_type]);
+
+  const toggleJournal = (name: string) => {
+    setExpandedJournals(prev => {
+      const s = new Set(prev);
+      const willOpen = !s.has(name);
+      if (willOpen) {
+        s.add(name);
+        void loadCompletedJournalDetails(name);
+      } else {
+        s.delete(name);
+      }
+      return s;
+    });
+  };
 
   const toggleIssue = (key: string) =>
     setExpandedIssues(prev => { const s = new Set(prev); s.has(key) ? s.delete(key) : s.add(key); return s; });
@@ -265,6 +421,52 @@ function InlineJournalQueue({ scraper }: { scraper: ScraperStatus }) {
               </button>
               <div className={`grid transition-all duration-300 ease-in-out ${isOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                 <div className="overflow-hidden">
+                  {isOpen && (
+                    <div className="bg-slate-50 border-t border-slate-100 px-3 py-3 space-y-3">
+                      <div>
+                        <h4 className="font-medium text-slate-700 mb-2 flex items-center gap-1.5 text-xs">
+                          <BarChart3 className="h-3.5 w-3.5 text-indigo-600" />
+                          Yıllık Atıf Grafiği
+                        </h4>
+                        <CitationHistoryMiniChart
+                          data={journalDetails[j.name]?.citationMetrics ?? null}
+                          loading={!!journalDetails[j.name]?.loading}
+                        />
+                      </div>
+
+                      <div>
+                        <h4 className="font-medium text-slate-700 mb-2 flex items-center gap-1.5 text-xs">
+                          <BookOpen className="h-3.5 w-3.5 text-purple-600" />
+                          Dergi Sayıları
+                        </h4>
+                        {journalDetails[j.name]?.error ? (
+                          <p className="text-xs text-amber-600">{journalDetails[j.name]?.error}</p>
+                        ) : !!journalDetails[j.name]?.loading ? (
+                          <div className="space-y-1">
+                            <div className="h-6 bg-slate-100 rounded animate-pulse" />
+                            <div className="h-6 bg-slate-100 rounded animate-pulse" />
+                          </div>
+                        ) : (journalDetails[j.name]?.issues?.length ?? 0) > 0 ? (
+                          <div className="space-y-1 max-h-36 overflow-y-auto">
+                            {(journalDetails[j.name]?.issues ?? []).slice(0, 25).map((issue) => {
+                              const title = issue.volume
+                                ? `Cilt ${issue.volume}${issue.issue_number ? `, Sayı ${issue.issue_number}` : ''}`
+                                : `Sayı ${issue.issue_number || issue.year || 'Bilinmiyor'}`;
+                              return (
+                                <div key={issue.id} className="text-xs text-slate-600 bg-white border border-slate-200 rounded px-2 py-1 flex items-center justify-between gap-2">
+                                  <span className="truncate">{title}</span>
+                                  <span className="text-[11px] text-slate-400 flex-shrink-0">{issue.article_count} makale</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">Bu dergiye ait sayı bulunamadı.</p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
                   {issues.length > 0 ? (
                     <div className="bg-slate-50 border-t border-slate-100 divide-y divide-slate-100">
                       {issues.map((issue, ii) => {
@@ -424,23 +626,31 @@ const PLATFORM_COLORS: Record<string, string> = {
   ieee: 'from-blue-600 to-cyan-500',
   sciencedirect: 'from-emerald-600 to-teal-500',
   acm: 'from-amber-600 to-orange-500',
+  wiley: 'from-slate-600 to-slate-500',
+  springer: 'from-indigo-600 to-blue-600',
 };
 
 const PLATFORM_BG: Record<string, string> = {
   ieee: 'bg-blue-50 border-blue-200',
   sciencedirect: 'bg-emerald-50 border-emerald-200',
   acm: 'bg-amber-50 border-amber-200',
+  wiley: 'bg-slate-50 border-slate-200',
+  springer: 'bg-indigo-50 border-indigo-200',
 };
 
 export function JournalUrlScraper() {
   const [url, setUrl] = useState('');
   const [maxArticles, setMaxArticles] = useState(50);
   const [depth, setDepth] = useState(1);
+  const [maxTabs, setMaxTabs] = useState(3);
   const [flowState, setFlowState] = useState<FlowState>('idle');
   const [frontendPlatform, setFrontendPlatform] = useState<string | null>(null);
   const [backendValidation, setBackendValidation] = useState<JournalUrlValidateResponse | null>(null);
   const [existsInfo, setExistsInfo] = useState<JournalExistsResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [resolvedJournal, setResolvedJournal] = useState<Journal | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Scraper status (WebSocket + polling)
   const [scraperStatus, setScraperStatus] = useState<ScraperStatus | null>(null);
@@ -479,6 +689,9 @@ export function JournalUrlScraper() {
               const s = (event.data as Record<string, unknown>).status as string;
               if (['completed', 'stopped', 'error'].includes(s)) {
                 setFlowState(s === 'error' ? 'error' : 'done');
+              } else if (['running', 'starting', 'paused', 'stopping'].includes(s)) {
+                // New scrape has started — reset to scraping even if UI was stuck on 'done'.
+                setFlowState('scraping');
               }
             }
           }
@@ -500,6 +713,8 @@ export function JournalUrlScraper() {
         setScraperStatus(s);
         if (['completed', 'stopped', 'error'].includes(s.status)) {
           setFlowState(s.status === 'error' ? 'error' : 'done');
+        } else if (['running', 'starting', 'paused', 'stopping'].includes(s.status)) {
+          setFlowState('scraping');
         }
       } catch { /* ignore */ }
     }, 3000);
@@ -527,10 +742,54 @@ export function JournalUrlScraper() {
     setExistsInfo(null);
     setErrorMsg(null);
     setScraperStatus(null);
+    setResolvedJournal(null);
+    setDetailError(null);
+    setDetailLoading(false);
     if (pingRef.current) clearInterval(pingRef.current);
     if (wsRef.current) wsRef.current.close();
     if (pollRef.current) clearInterval(pollRef.current);
   }, []);
+
+  useEffect(() => {
+    if (flowState !== 'done') return;
+    let cancelled = false;
+
+    const resolveJournalDetail = async () => {
+      setDetailLoading(true);
+      setDetailError(null);
+
+      try {
+        const existsResult = await checkJournalExists(url.trim());
+        if (!existsResult.exists || !existsResult.journal?.id) {
+          if (!cancelled) {
+            setResolvedJournal(null);
+            setDetailError('Dergi detayı bulunamadı. Journals sayfasından arama yapabilirsiniz.');
+          }
+          return;
+        }
+
+        const fullJournal = await getJournal(existsResult.journal.id);
+        if (!cancelled) {
+          setResolvedJournal(fullJournal);
+        }
+      } catch {
+        if (!cancelled) {
+          setResolvedJournal(null);
+          setDetailError('Dergi detayları yüklenirken bir hata oluştu.');
+        }
+      } finally {
+        if (!cancelled) {
+          setDetailLoading(false);
+        }
+      }
+    };
+
+    resolveJournalDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [flowState, url]);
 
   // Ana "Kontrol Et" akışı
   const handleCheck = useCallback(async () => {
@@ -575,16 +834,19 @@ export function JournalUrlScraper() {
 
     setFlowState('scraping');
     setScraperStatus(null);
+    setResolvedJournal(null);
+    setDetailError(null);
 
     try {
-      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false);
+      const force = existsInfo?.exists ?? false;
+      await startSingleJournalScraper(url.trim(), scraperType, maxArticles, depth, false, maxTabs, force);
       startTracking(scraperType);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Scraper başlatılamadı';
       setErrorMsg(msg);
       setFlowState('error');
     }
-  }, [url, backendValidation, maxArticles, depth, startTracking]);
+  }, [url, backendValidation, maxArticles, depth, maxTabs, startTracking]);
 
   const platform = frontendPlatform ?? backendValidation?.scraper_type;
   const platformCfg = platform ? URL_PATTERNS[platform] : null;
@@ -613,7 +875,9 @@ export function JournalUrlScraper() {
               platform ? (
                 platform === 'ieee' ? 'text-blue-500' :
                 platform === 'sciencedirect' ? 'text-emerald-500' :
-                'text-amber-500'
+                platform === 'acm' ? 'text-amber-500' :
+                platform === 'wiley' ? 'text-slate-500' :
+                'text-indigo-500'
               ) : 'text-slate-400'
             }`} />
           </div>
@@ -633,7 +897,11 @@ export function JournalUrlScraper() {
                   ? 'border-blue-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100'
                   : platform === 'sciencedirect'
                   ? 'border-emerald-300 focus:border-emerald-500 focus:ring-4 focus:ring-emerald-100'
-                  : 'border-amber-300 focus:border-amber-500 focus:ring-4 focus:ring-amber-100'
+                  : platform === 'acm'
+                  ? 'border-amber-300 focus:border-amber-500 focus:ring-4 focus:ring-amber-100'
+                  : platform === 'springer'
+                  ? 'border-indigo-300 focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100'
+                  : 'border-slate-300 focus:border-slate-500 focus:ring-4 focus:ring-slate-100'
                 : 'border-slate-200 focus:border-slate-400 focus:ring-4 focus:ring-slate-100'
             }`}
           />
@@ -658,20 +926,24 @@ export function JournalUrlScraper() {
 
         {/* URL Format Hints */}
         {!platform && url.length === 0 && (
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
             {Object.entries(URL_PATTERNS).map(([key, cfg]) => (
               <button
                 key={key}
                 onClick={() => setUrl(
                   key === 'ieee' ? 'https://ieeexplore.ieee.org/xpl/RecentIssue.jsp?punumber=' :
                   key === 'sciencedirect' ? 'https://www.sciencedirect.com/journal/' :
-                  'https://dl.acm.org/journal/'
+                  key === 'acm' ? 'https://dl.acm.org/journal/' :
+                  key === 'wiley' ? 'https://onlinelibrary.wiley.com/journal/' :
+                  'https://link.springer.com/journal/'
                 )}
                 className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs text-left transition-all
                   hover:shadow-sm active:scale-[0.98]
                   ${key === 'ieee' ? 'border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100' :
                     key === 'sciencedirect' ? 'border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100' :
-                    'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
+                    key === 'acm' ? 'border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100' :
+                    key === 'wiley' ? 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100' :
+                    'border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-100'}`}
               >
                 <Zap className="h-3 w-3 flex-shrink-0" />
                 <span>{cfg.label}</span>
@@ -682,9 +954,9 @@ export function JournalUrlScraper() {
         )}
 
         {/* Parameters Row */}
-        <div className="flex flex-wrap items-center gap-4">
-          <div className="flex items-center gap-2">
-            <label htmlFor="jus-max-articles" className="text-sm text-slate-600 whitespace-nowrap">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="jus-max-articles" className="text-xs text-slate-600 whitespace-nowrap">
               Makale limiti:
             </label>
             <input
@@ -695,11 +967,11 @@ export function JournalUrlScraper() {
               value={maxArticles}
               onChange={(e) => setMaxArticles(parseInt(e.target.value) || 50)}
               disabled={flowState === 'scraping'}
-              className="w-20 px-2 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
+              className="w-14 px-1.5 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="jus-depth" className="text-sm text-slate-600 whitespace-nowrap">
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="jus-depth" className="text-xs text-slate-600 whitespace-nowrap">
               Issue derinliği:
             </label>
             <input
@@ -710,8 +982,24 @@ export function JournalUrlScraper() {
               value={depth}
               onChange={(e) => setDepth(parseInt(e.target.value) || 1)}
               disabled={flowState === 'scraping'}
-              className="w-16 px-2 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
               title="Kaç issue işlenecek (1 = sadece en yeni)"
+            />
+          </div>
+          <div className="flex items-center gap-1.5">
+            <label htmlFor="jus-max-tabs" className="text-xs text-slate-600 whitespace-nowrap">
+              Max Tab:
+            </label>
+            <input
+              id="jus-max-tabs"
+              type="number"
+              min={1}
+              max={10}
+              value={maxTabs}
+              onChange={(e) => setMaxTabs(parseInt(e.target.value) || 3)}
+              disabled={flowState === 'scraping'}
+              className="w-12 px-1.5 py-1 text-xs border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400 disabled:opacity-50"
+              title="Makale listesi çıkarıldıktan sonra aynı anda çalışacak tab sayısı"
             />
           </div>
 
@@ -764,7 +1052,7 @@ export function JournalUrlScraper() {
       {flowState === 'validating' && (
         <div className="flex items-center gap-3 px-4 py-3 bg-slate-50 rounded-xl border border-slate-200 animate-pulse">
           <Loader2 className="h-4 w-4 text-slate-400 animate-spin flex-shrink-0" />
-          <span className="text-sm text-slate-500">URL doğrulanıyor ve veritabanı kontrol ediliyor...</span>
+          <span className="text-sm text-slate-500">URL doğrulanıyor ve veri tabanı kontrol ediliyor...</span>
         </div>
       )}
 
@@ -855,6 +1143,46 @@ export function JournalUrlScraper() {
 
           {/* Inline Journal Queue */}
           <InlineJournalQueue scraper={scraperStatus} />
+
+          {flowState === 'done' && (
+            <div className="space-y-3 pt-2">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-indigo-800">Scrape Edilen Dergi Detayı</p>
+                  <p className="text-xs text-indigo-600">OpenAlex, amaç-kapsam, sayılar ve makale listesi aşağıda görüntülenir.</p>
+                </div>
+                {resolvedJournal && (
+                  <Link
+                    href={`/journals?journal_id=${resolvedJournal.id}`}
+                    className="inline-flex items-center justify-center rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white hover:bg-indigo-700"
+                  >
+                    Journals Detayına Git
+                  </Link>
+                )}
+              </div>
+
+              {detailLoading && (
+                <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Dergi detayları yükleniyor...
+                </div>
+              )}
+
+              {!detailLoading && detailError && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+                  {detailError}
+                </div>
+              )}
+
+              {!detailLoading && resolvedJournal && (
+                <JournalCard
+                  journal={resolvedJournal}
+                  getFullUrl={getFullUrl}
+                  enableJournalsDeepLinks
+                />
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

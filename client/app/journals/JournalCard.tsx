@@ -1,11 +1,11 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { ExternalLink, BookOpen, FileText, ChevronDown, ChevronUp, Unlock, Star, Presentation, Activity, BarChart3 } from 'lucide-react';
+import { ExternalLink, BookOpen, FileText, ChevronDown, ChevronUp, Unlock, Star, Presentation, Activity, BarChart3, Trash2, Loader2, AlertTriangle } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { Card, CardContent } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import type { Journal, Issue, Article, PaginatedResponse, JournalCitationMetrics } from '@/lib/types';
-import { getJournalIssues, getArticles, getJournalCitationMetrics } from '@/lib/api';
+import { getJournalIssues, getArticles, getJournalCitationMetrics, deleteJournal } from '@/lib/api';
 import Link from 'next/link';
 
 interface JournalCardProps {
@@ -13,9 +13,11 @@ interface JournalCardProps {
   getFullUrl: (url: string, source: string) => string;
   defaultExpandedIssueId?: string | null;
   highlightArticleId?: string | null;
+  enableJournalsDeepLinks?: boolean;
+  onDelete?: (journalId: string) => void;
 }
 
-export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highlightArticleId }: JournalCardProps) {
+export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highlightArticleId, enableJournalsDeepLinks = false, onDelete }: JournalCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [aimsExpanded, setAimsExpanded] = useState(false);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -25,7 +27,23 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
   const [loadingArticles, setLoadingArticles] = useState<Record<string, boolean>>({});
   const [citationMetrics, setCitationMetrics] = useState<JournalCitationMetrics | null>(null);
   const [citationLoading, setCitationLoading] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const processedIssueId = useRef<string | null>(null);
+
+  const handleDelete = async () => {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteJournal(journal.id);
+      onDelete?.(journal.id);
+    } catch (err: unknown) {
+      setDeleteError(err instanceof Error ? err.message : 'Silme işlemi başarısız');
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  };
 
   useEffect(() => {
     if (!defaultExpandedIssueId) return;
@@ -118,31 +136,97 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
       <CardContent className="pt-6">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-slate-900 line-clamp-2">{journal.name}</h3>
+            <Link href={`/journals?journal_id=${journal.id}`} className="group/title block min-w-0">
+              <h3 className="font-semibold text-slate-900 line-clamp-2 transition-colors group-hover/title:text-indigo-700 group-hover/title:underline decoration-indigo-300 underline-offset-2">
+                {journal.name}
+              </h3>
+            </Link>
             <div className="flex items-center gap-2 mt-2">
-              <Badge variant={journal.source_website === 'ieeexplore' ? 'info' : journal.source_website === 'acm' ? 'warning' : 'success'}>
-                {journal.source_website === 'ieeexplore' ? 'IEEE' : journal.source_website === 'acm' ? 'ACM' : 'ScienceDirect'}
+              <Badge
+                variant={
+                  journal.source_website === 'ieeexplore'
+                    ? 'info'
+                    : journal.source_website === 'acm'
+                    ? 'warning'
+                    : journal.source_website === 'wiley'
+                    ? 'default'
+                    : journal.source_website === 'springer'
+                    ? 'info'
+                    : 'success'
+                }
+              >
+                {journal.source_website === 'ieeexplore'
+                  ? 'IEEE'
+                  : journal.source_website === 'acm'
+                  ? 'ACM'
+                  : journal.source_website === 'wiley'
+                  ? 'Wiley'
+                  : journal.source_website === 'springer'
+                  ? 'Springer'
+                  : 'ScienceDirect'}
               </Badge>
               {journal.open_access && (
-                <div className="flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200" title="Açık Erişim Dergi">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-200" title="Açık Erişim Dergi">
                   <Unlock className="h-3.5 w-3.5" />
                   <span>Açık Erişim</span>
                 </div>
               )}
             </div>
           </div>
-          {journal.url && (
-            <a
-              href={getFullUrl(journal.url, journal.source_website)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-slate-400 hover:text-emerald-600"
-            >
-              <ExternalLink className="h-4 w-4" />
-            </a>
-          )}
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            {journal.url && (
+              <a
+                href={getFullUrl(journal.url, journal.source_website)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-slate-400 hover:text-indigo-600 transition-colors"
+              >
+                <ExternalLink className="h-4 w-4" />
+              </a>
+            )}
+            {onDelete && (
+              <button
+                onClick={() => { setConfirmDelete(true); setDeleteError(null); }}
+                className="text-slate-300 hover:text-red-500 transition-colors"
+                title="Dergiyi sil"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </div>
-        
+
+        {/* Silme onay paneli */}
+        {confirmDelete && (
+          <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 flex flex-col gap-2 animate-in slide-in-from-top-1 duration-200">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <p className="text-xs text-red-700 leading-snug">
+                <span className="font-semibold">{journal.name}</span> dergisi ve tüm makaleleri, sayıları, embedding&apos;leri kalıcı olarak silinecek. Bu işlem geri alınamaz.
+              </p>
+            </div>
+            {deleteError && (
+              <p className="text-xs text-red-600 font-medium">{deleteError}</p>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => { setConfirmDelete(false); setDeleteError(null); }}
+                disabled={deleting}
+                className="px-3 py-1 text-xs rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50 transition-colors disabled:opacity-50"
+              >
+                Vazgeç
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting}
+                className="px-3 py-1 text-xs rounded-md bg-red-600 text-white hover:bg-red-700 transition-colors disabled:opacity-50 flex items-center gap-1"
+              >
+                {deleting ? <><Loader2 className="h-3 w-3 animate-spin" /> Siliniyor…</> : 'Evet, Sil'}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex flex-col gap-3 mt-4 pt-4 border-t border-slate-100">
           <div className="flex items-center justify-between flex-wrap gap-4">
             <div className="flex items-center gap-4">
@@ -244,25 +328,37 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
                   
                   return (
                     <div key={issue.id} className="border border-slate-200 rounded-lg overflow-hidden bg-slate-50">
-                      <button 
-                        onClick={() => handleExpandIssue(issue.id)}
-                        className="w-full flex items-center justify-between p-3 bg-white hover:bg-slate-50 transition-colors text-left"
-                      >
-                        <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-4 flex-1">
-                          <span className="font-semibold text-slate-700 text-sm">{issueName}</span>
-                          {(issue.year || issue.month) && (
-                            <span className="text-xs text-slate-500">
-                              {issue.month ? `${issue.month}/` : ''}{issue.year}
-                            </span>
-                          )}
-                          {issue.article_count > 0 && (
-                            <Badge variant="default" className="w-fit text-xs bg-slate-100 text-slate-600 border-none">
-                              {issue.article_count} Makale
-                           </Badge>
-                          )}
-                        </div>
-                        {isIssueExpanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
-                      </button>
+                      <div className="w-full flex items-center gap-2 p-3 bg-white hover:bg-slate-50 transition-colors">
+                        <button
+                          onClick={() => handleExpandIssue(issue.id)}
+                          className="flex items-center justify-between text-left flex-1"
+                        >
+                          <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-4 flex-1">
+                            <span className="font-semibold text-slate-700 text-sm">{issueName}</span>
+                            {(issue.year || issue.month) && (
+                              <span className="text-xs text-slate-500">
+                                {issue.month ? `${issue.month}/` : ''}{issue.year}
+                              </span>
+                            )}
+                            {issue.article_count > 0 && (
+                              <Badge variant="default" className="w-fit text-xs bg-slate-100 text-slate-600 border-none">
+                                {issue.article_count} Makale
+                             </Badge>
+                            )}
+                          </div>
+                          {isIssueExpanded ? <ChevronUp className="h-4 w-4 text-slate-400" /> : <ChevronDown className="h-4 w-4 text-slate-400" />}
+                        </button>
+
+                        {enableJournalsDeepLinks && (
+                          <Link
+                            href={`/journals?journal_id=${journal.id}&issue_id=${issue.id}`}
+                            className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800 whitespace-nowrap"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            Detay
+                          </Link>
+                        )}
+                      </div>
                       
                       {isIssueExpanded && (
                         <div className="p-3 bg-slate-50 border-t border-slate-200">
@@ -291,9 +387,17 @@ export function JournalCard({ journal, getFullUrl, defaultExpandedIssueId, highl
                                         </p>
                                       )}
                                       {article.citation_count > 0 && (
-                                        <span className="text-[10px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                        <span className="text-[10px] font-medium text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded flex items-center gap-1">
                                           <Star className="h-3 w-3" /> {article.citation_count}
                                         </span>
+                                      )}
+                                      {enableJournalsDeepLinks && (
+                                        <Link
+                                          href={`/journals?journal_id=${journal.id}&issue_id=${issue.id}&article_id=${article.id}`}
+                                          className="text-[11px] font-medium text-indigo-600 hover:text-indigo-800"
+                                        >
+                                          Journals Detayı
+                                        </Link>
                                       )}
                                     </div>
                                   </div>

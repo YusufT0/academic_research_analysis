@@ -3,11 +3,10 @@ Page navigation functions for IEEE Xplore scraper
 """
 
 import sys
-import time
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException
 
 sys.path.insert(0, str(__file__).rsplit('ieee_xplore', 1)[0])
 from utils.logger import get_logger
@@ -39,50 +38,38 @@ class PageNavigator:
             }
         """
         try:
-            # Pagination bar'ı bul
-            pagination_div = self.driver.find_element(
-                By.CSS_SELECTOR, 
-                "div.pagination-bar ul"
-            )
-            
-            # Aktif sayfa numarasını bul (class="active" olan button)
-            active_button = pagination_div.find_element(
-                By.CSS_SELECTOR, 
-                "button.active"
-            )
-            current_page = int(active_button.text.strip())
-            
-            # Tüm sayfa butonlarını bul
-            page_buttons = pagination_div.find_elements(
-                By.CSS_SELECTOR, 
-                "li:not(.prev-btn):not(.next-btn) button"
-            )
-            
-            # Toplam sayfa sayısını bul (en büyük sayfa numarası)
-            total_pages = current_page
-            for button in page_buttons:
-                try:
-                    page_num = int(button.text.strip())
-                    if page_num > total_pages:
-                        total_pages = page_num
-                except ValueError:
-                    continue
-            
-            # Previous button var mı kontrol et
-            has_previous = False
-            try:
-                prev_btn = pagination_div.find_element(By.CSS_SELECTOR, "li.prev-btn")
-                has_previous = True
-            except NoSuchElementException:
-                has_previous = False
-            
-            # Next button var mı kontrol et
-            has_next = False
-            try:
-                next_btn = pagination_div.find_element(By.CSS_SELECTOR, "li.next-btn")
-                has_next = True
-            except NoSuchElementException:
-                has_next = False
+            # Not: Driver'da implicit_wait(10) açık olduğu için opsiyonel elementler
+            # (ör. ilk sayfada prev-btn) find_element ile sorgulanırsa her seferinde
+            # 10 sn gecikme yaratır. Bu yüzden tek seferde JS ile anlık DOM okuyoruz.
+            dom_info = self.driver.execute_script("""
+                const ul = document.querySelector('div.pagination-bar ul');
+                if (!ul) {
+                    return { current_page: 1, total_pages: 1, has_next: false, has_previous: false };
+                }
+
+                const active = ul.querySelector('button.active');
+                const current = parseInt((active?.textContent || '1').trim(), 10) || 1;
+
+                const pageButtons = Array.from(
+                    ul.querySelectorAll('li:not(.prev-btn):not(.next-btn) button')
+                );
+                const pages = pageButtons
+                    .map(btn => parseInt((btn.textContent || '').trim(), 10))
+                    .filter(Number.isFinite);
+                const total = pages.length ? Math.max(...pages) : current;
+
+                return {
+                    current_page: current,
+                    total_pages: total,
+                    has_previous: !!ul.querySelector('li.prev-btn'),
+                    has_next: !!ul.querySelector('li.next-btn')
+                };
+            """)
+
+            current_page = int(dom_info.get('current_page', 1))
+            total_pages = int(dom_info.get('total_pages', current_page))
+            has_previous = bool(dom_info.get('has_previous', False))
+            has_next = bool(dom_info.get('has_next', False))
             
             page_info = {
                 'current_page': current_page,
@@ -112,7 +99,90 @@ class PageNavigator:
                 'has_next': False, 
                 'has_previous': False
             }
+
+    def _get_current_page_number_fast(self) -> int:
+        """Log üretmeden mevcut aktif sayfa numarasını döner."""
+        try:
+            return int(self.driver.execute_script("""
+                const active = document.querySelector('div.pagination-bar ul button.active');
+                return parseInt((active?.textContent || '1').trim(), 10) || 1;
+            """))
+        except Exception:
+            return 1
+
+    def _get_first_result_key_fast(self) -> str:
+        """İlk sonuç kartını tanımlamak için hızlı bir anahtar üretir."""
+        try:
+            return str(self.driver.execute_script("""
+                const a = document.querySelector('xpl-browse-results-item h2 a');
+                if (!a) return '';
+                const href = (a.getAttribute('href') || '').trim();
+                const text = (a.textContent || '').trim();
+                return `${href}|${text}`;
+            """))
+        except Exception:
+            return ""
     
+    def _wait_for_page_load(self, expected_page: int = None, previous_first_key: str = "", timeout: int = 12):
+        """
+        Tıklama sonrası sayfanın tamamen yüklenmesini bekler.
+        Strateji:
+          Tek bir birleşik koşulda bekleyerek timeout birikmesini engeller.
+        """
+        def _page_ready(_driver):
+            state = _driver.execute_script("""
+                const active = document.querySelector('div.pagination-bar ul button.active');
+                const currentPage = parseInt((active?.textContent || '1').trim(), 10) || 1;
+
+                // Only check content-area spinners; AI-search and generic spinners
+                // can remain active in the background after content has loaded.
+                const spinner = document.querySelector(
+                    'xpl-browse-results-list .List-results-message i.fa-spinner.fa-spin, ' +
+                    '.progress-spinner-container-normal .fa-spinner.fa-spin, ' +
+                    '.progress-spinner-container-small .fa-spinner.fa-spin'
+                );
+                const spinnerVisible = !!(spinner && spinner.offsetParent !== null);
+
+                const first = document.querySelector('xpl-browse-results-item h2 a');
+                const firstKey = first
+                    ? `${(first.getAttribute('href') || '').trim()}|${(first.textContent || '').trim()}`
+                    : '';
+
+                const hasResults = !!document.querySelector('xpl-browse-results-item');
+
+                return {
+                    currentPage,
+                    spinnerVisible,
+                    hasResults,
+                    firstKey
+                };
+            """)
+
+            page_ok = (expected_page is None) or (int(state.get('currentPage', 1)) == expected_page)
+            spinner_ok = not bool(state.get('spinnerVisible', False))
+            results_ok = bool(state.get('hasResults', False))
+
+            if previous_first_key and expected_page is None:
+                first_changed = str(state.get('firstKey', '')) and str(state.get('firstKey', '')) != previous_first_key
+                return results_ok and first_changed
+
+            # Content is ready when we're on the correct page and results are present.
+            # Don't block on background spinners that persist after content loads.
+            if page_ok and results_ok:
+                return True
+            return page_ok and spinner_ok and results_ok
+
+        try:
+            WebDriverWait(self.driver, timeout, poll_frequency=0.2).until(_page_ready)
+        except TimeoutException:
+            # Fallback: en azından sonuçlar ve pagination görünür olsun
+            try:
+                WebDriverWait(self.driver, 3).until(
+                    EC.presence_of_element_located((By.TAG_NAME, 'xpl-browse-results-item'))
+                )
+            except TimeoutException:
+                pass
+
     def go_to_next_page(self) -> bool:
         """
         Sonraki sayfaya gider
@@ -122,6 +192,9 @@ class PageNavigator:
         """
         try:
             logger.info("Sonraki sayfaya gidiliyor...")
+            current_page = self._get_current_page_number_fast()
+            expected_page = current_page + 1
+            previous_first_key = self._get_first_result_key_fast()
             
             # Next butonunu bul (li.next-btn içindeki button)
             next_button = WebDriverWait(self.driver, 10).until(
@@ -134,8 +207,11 @@ class PageNavigator:
             # Butona tıkla
             next_button.click()
             
-            # Sayfanın yüklenmesini bekle
-            time.sleep(3)
+            # Sayfa tamamen yüklenene kadar bekle
+            self._wait_for_page_load(
+                expected_page=expected_page,
+                previous_first_key=previous_first_key,
+            )
             
             logger.success("Sonraki sayfaya geçildi")
             return True
@@ -156,6 +232,9 @@ class PageNavigator:
         """
         try:
             logger.info("Önceki sayfaya gidiliyor...")
+            current_page = self._get_current_page_number_fast()
+            expected_page = max(1, current_page - 1)
+            previous_first_key = self._get_first_result_key_fast()
             
             # Previous butonunu bul (li.prev-btn içindeki button)
             prev_button = WebDriverWait(self.driver, 10).until(
@@ -168,8 +247,11 @@ class PageNavigator:
             # Butona tıkla
             prev_button.click()
             
-            # Sayfanın yüklenmesini bekle
-            time.sleep(3)
+            # Sayfa tamamen yüklenene kadar bekle
+            self._wait_for_page_load(
+                expected_page=expected_page,
+                previous_first_key=previous_first_key,
+            )
             
             logger.success("Önceki sayfaya geçildi")
             return True
@@ -193,6 +275,7 @@ class PageNavigator:
         """
         try:
             logger.info(f"Sayfa {page_number}'e gidiliyor...")
+            previous_first_key = self._get_first_result_key_fast()
             
             # İlgili sayfa butonunu bul
             page_button = WebDriverWait(self.driver, 10).until(
@@ -205,8 +288,11 @@ class PageNavigator:
             # Butona tıkla
             page_button.click()
             
-            # Sayfanın yüklenmesini bekle
-            time.sleep(3)
+            # Sayfa tamamen yüklenene kadar bekle
+            self._wait_for_page_load(
+                expected_page=page_number,
+                previous_first_key=previous_first_key,
+            )
             
             logger.success(f"Sayfa {page_number}'e geçildi")
             return True

@@ -17,7 +17,7 @@ async def get_openalex_status():
 @router.post("/start", summary="OpenAlex taramasını başlat")
 async def start_openalex_scan():
     """
-    Veritabanındaki OpenAlex verisi eksik makale ve dergiler için 
+    Veri tabanındaki OpenAlex verisi eksik makale ve dergiler için 
     arka planda tarama işlemini başlatır.
     """
     success = openalex_manual_scanner.start_scan()

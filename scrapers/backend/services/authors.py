@@ -21,7 +21,7 @@ class AuthorsService:
         min_articles: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Geleneksel veritabanı aggregation kullanarak yazar listesi döndürür.
+        Geleneksel veri tabanı aggregation kullanarak yazar listesi döndürür.
         Redis'te önbelleklenir. Arama, filtreleme ve sıralama destekler.
         """
         # Cache anahtarını dinamik üretiyoruz
@@ -190,7 +190,7 @@ class AuthorsService:
         openalex_data = None
         target_author_id = None
         
-        # 2.1 Anchor Matching: Kendi veritabanımızdaki makalesinden DOI üzerinden yazar profili ID'si ayıklama
+        # 2.1 Anchor Matching: Kendi veri tabanımızdaki makalesinden DOI üzerinden yazar profili ID'si ayıklama
         # Başarı oranını artırmak için, tek bir makale yerine maksimum 3 farklı DOI dener
         anchor_dois = [a.get("doi") for a in articles if a.get("doi")][:3]
         
@@ -278,7 +278,7 @@ class AuthorsService:
 
     async def get_author_articles(self, name: str, page: int = 1, page_size: int = 15) -> Dict[str, Any]:
         """
-        Geleneksel veritabanından yazarın makale listesini paginated olarak döner.
+        Geleneksel veri tabanından yazarın makale listesini paginated olarak döner.
         """
         cache_key = f"{name}_p{page}_s{page_size}"
         redis_key = cache_service._make_key("author_articles", cache_key)

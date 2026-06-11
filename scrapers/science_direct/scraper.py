@@ -5,7 +5,9 @@ Main scraper class for Science Direct
 import os
 import sys
 import time
-from typing import Optional
+import queue
+import threading
+from typing import Optional, List, Dict, Any
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -21,10 +23,21 @@ from .navigation import PageNavigator
 from .parsers import JournalParser, ArticleParser
 from .rate_limiter import RateLimiter
 from .utils import handle_cookie_consent, print_article_summary
+from backend.core.config import settings
+from utils.network_probe import effective_page_load_timeout
+from utils.adaptive_concurrency import controller as concurrency_controller
 
 
 class ScraperStoppedException(Exception):
     """Scraper durdurulduğunda fırlatılır"""
+    pass
+
+class RateLimitException(Exception):
+    """Rate limit hatası olduğunda fırlatılır"""
+    pass
+
+class CloudflareBlockedException(Exception):
+    """Cloudflare engeli aşılamadığında fırlatılır"""
     pass
 
 
@@ -39,7 +52,7 @@ class ScienceDirectScraper:
         Args:
             use_proxy: Proxy kullanılsın mı (None ise .env'den okunur)
             headless: Tarayıcı görünmez modda çalışsın mı
-            use_undetected: undetected-chromedriver kullan (Cloudflare bypass)
+            use_undetected: (yoksayılır) Geriye dönük uyumluluk — SeleniumBase kullanılır
             stop_flag: threading.Event - durdurma sinyali için
             pause_flag: threading.Event - duraklatma sinyali için
         """
@@ -76,7 +89,12 @@ class ScienceDirectScraper:
         # Yardımcı sınıflar
         self.navigator = None
         self.rate_limiter = None
-    
+
+        # Oturum boyunca yaşayan paralel worker driver havuzu.
+        # Bir kez açılır; tüm journal/issue'larda yeniden kullanılır,
+        # geçişlerde KAPATILMAZ. Yalnızca close() ile kapanır.
+        self._worker_pool: List[SeleniumDriver] = []
+
     def initialize(self):
         """Scraper'ı başlatır"""
         logger.header("Science Direct Scraper Başlatılıyor...")
@@ -86,7 +104,71 @@ class ScienceDirectScraper:
         self.rate_limiter = RateLimiter(self.driver, selenium_driver=self.selenium_driver)
         
         logger.success(f"Hedef URL: {self.config.base_url}")
-    
+
+    def _ensure_worker_pool(self, max_tabs: int, on_ready=None) -> List[SeleniumDriver]:
+        """
+        Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
+
+        İlk ihtiyaçta bir kez açılır; tüm journal ve issue'larda yeniden
+        kullanılır. Journal/issue geçişlerinde KAPATILMAZ. Tekil driver
+        hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
+        kendi get()/restart() mantığıyla iyileşir; havuz korunur. Havuz
+        yalnızca scraper.close() ile (oturum sonu) kapatılır.
+
+        on_ready: Her driver açıldığında çağrılan callback (ör. pool_container.append).
+        """
+        if max_tabs <= 1:
+            return []
+        needed = max_tabs - len(self._worker_pool)
+        if needed <= 0:
+            if self._worker_pool:
+                logger.info(
+                    f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                    f"(journal/issue boyunca yeniden kullanılır)"
+                )
+            return self._worker_pool
+
+        start_index = len(self._worker_pool)
+        _new: list = [None] * needed
+
+        def _open_one(slot_i: int):
+            worker_id = start_index + slot_i + 1
+            wd = SeleniumDriver(
+                self.proxy_config,
+                headless=getattr(self.selenium_driver, 'headless', False),
+                use_undetected=getattr(self.selenium_driver, 'use_undetected', True),
+            )
+            try:
+                if wd.start():
+                    _new[slot_i] = wd
+                    logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                    if on_ready:
+                        on_ready(wd)
+                else:
+                    logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+            except Exception:
+                logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+
+        open_threads = [
+            threading.Thread(target=_open_one, args=(i,), daemon=True)
+            for i in range(needed)
+        ]
+        for t in open_threads:
+            t.start()
+        for t in open_threads:
+            t.join()
+
+        for wd in _new:
+            if wd is not None:
+                self._worker_pool.append(wd)
+
+        if self._worker_pool:
+            logger.info(
+                f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                f"(journal/issue boyunca yeniden kullanılır)"
+            )
+        return self._worker_pool
+
     def check_stop_flag(self):
         """Stop flag kontrol et, set ise exception fırlat"""
         if self.stop_flag and self.stop_flag.is_set():
@@ -106,6 +188,48 @@ class ScienceDirectScraper:
             if remaining <= 0:
                 break
             time.sleep(min(0.3, remaining))
+
+    def _restart_single_worker(self, worker_id: int, pool_index: int, reason: str = "unknown"):
+        """
+        Hata durumunda tek bir worker'ı (tarayıcı) kapatıp yeniden açar.
+        Diğer worker'lar çalışmaya devam eder.
+        
+        Args:
+            worker_id: Worker'ın ID'si (loglama için)
+            pool_index: Worker pool'da index
+            reason: Restart nedeni (loglama için)
+        """
+        if pool_index < 0 or pool_index >= len(self._worker_pool):
+            logger.warning(f"Worker-{worker_id}: havuzda geçersiz index {pool_index}, atlanıyor")
+            return False
+        
+        old_driver = self._worker_pool[pool_index]
+        logger.warning(f"Worker-{worker_id}: yeniden başlatılıyor (neden: {reason})")
+        
+        try:
+            old_driver.close()
+            logger.info(f"Worker-{worker_id}: eski tarayıcı kapatıldı")
+        except Exception as e:
+            logger.warning(f"Worker-{worker_id}: eski tarayıcı kapatma hatası: {e}")
+        
+        try:
+            new_driver = SeleniumDriver(
+                self.proxy_config,
+                headless=getattr(self.selenium_driver, 'headless', False),
+                use_undetected=getattr(self.selenium_driver, 'use_undetected', True),
+            )
+            if new_driver.start():
+                self._worker_pool[pool_index] = new_driver
+                logger.success(f"Worker-{worker_id}: yeni tarayıcı başlatıldı ve havuza kondu")
+                return True
+            else:
+                logger.error(f"Worker-{worker_id}: yeni tarayıcı başlatılamadı")
+                self._worker_pool[pool_index] = None  # slot'u null yap
+                return False
+        except Exception as e:
+            logger.error(f"Worker-{worker_id}: yeni tarayıcı oluşturma hatası: {e}")
+            self._worker_pool[pool_index] = None
+            return False
     
     def navigate_to_journals(self, max_retries: int = 2) -> bool:
         """
@@ -134,29 +258,45 @@ class ScienceDirectScraper:
                     logger.info(f"Yeniden deneniyor ({attempt}/{max_retries})...")
                 
                 logger.step(1, 3, f"Sayfa açılıyor: {self.config.base_url}")
-                self.driver.get(self.config.base_url)
-                
-                # Cloudflare kontrolünü bekle
+                try:
+                    self.driver.get(self.config.base_url)
+                except TimeoutException:
+                    pass  # eager/none stratejisinde timeout normal, devam et
+
+                # readyState'in interactive/complete olmasını bekle — 30s'de kes
                 logger.loading("Cloudflare kontrolü bekleniyor")
-                self._interruptible_sleep(5)  # Cloudflare challenge için ek süre
-                
-                # Sayfanın yüklenmesini bekle
-                WebDriverWait(self.driver, self.config.timeout).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
+                try:
+                    WebDriverWait(self.driver, 30, poll_frequency=0.5).until(
+                        lambda d: d.execute_script("return document.readyState") in ("interactive", "complete")
+                    )
+                except Exception:
+                    # execute_script timeout veya readyState hiç gelmedi — yine de devam et
+                    pass
+
+                # Cloudflare challenge görünüyorsa max 20s bekle (Türkçe dahil çok dilli)
+                if self.rate_limiter and self.rate_limiter.check_cloudflare():
+                    self.rate_limiter.wait_for_cloudflare(timeout=20)
                 
                 logger.success("Sayfa başarıyla yüklendi")
                 logger.info(f"  - Sayfa başlığı: {self.driver.title}")
                 logger.info(f"  - URL: {self.driver.current_url}")
-                
-                # Cloudflare challenge kontrolü
-                if "challenge" in self.driver.current_url.lower() or "captcha" in self.driver.page_source.lower():
-                    logger.warning("Cloudflare challenge algılandı, bekleniyor...")
-                    self._interruptible_sleep(10)  # Challenge'ın geçmesi için bekle
 
-                # Kısa bekleme (sayfa tamamen render olsun)
-                self._interruptible_sleep(2)
-                
+                # Liste/arama alanı için hızlı, birleşik hazır olma kontrolü
+                try:
+                    WebDriverWait(self.driver, 4, poll_frequency=0.2).until(
+                        lambda d: d.execute_script("""
+                            return !!(
+                                document.querySelector('#publications-list') ||
+                                document.querySelector('div.publications-list') ||
+                                document.querySelector('ul.publications-list') ||
+                                document.querySelector('span.pagination-pages-label')
+                            );
+                        """)
+                    )
+                except TimeoutException:
+                    # Bloklayıcı bir hata değil; parse aşamasında yeniden kontrol edilecek
+                    pass
+
                 # Cookie popup'ını kapat
                 handle_cookie_consent(self.driver)
                 
@@ -234,18 +374,25 @@ class ScienceDirectScraper:
             
             logger.url(search_url, "Arama URL'si")
             self.driver.get(search_url)
-            
-            # Sayfanın yüklenmesini bekle
+
+            # publications-list yüklenene kadar bekle (hızlı/uyarlanabilir)
             logger.loading("Sayfa yükleniyor")
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 8, poll_frequency=0.2).until(
+                    lambda d: d.execute_script("""
+                        return !!(
+                            document.querySelector('#publications-list') ||
+                            document.querySelector('div.publications-list') ||
+                            document.querySelector('ul.publications-list')
+                        );
+                    """)
+                )
+            except TimeoutException:
+                pass
 
             # Cookie popup'ını kapat
             handle_cookie_consent(self.driver)
 
-            # Arama sonuçlarının yüklenmesini bekle
-            logger.loading("Arama sonuçları bekleniyor")
-            self._interruptible_sleep(2)
-            
             # Sonuçları kontrol et
             logger.info("Sonuçlar kontrol ediliyor...")
             
@@ -312,16 +459,23 @@ class ScienceDirectScraper:
             journal_url: Journal'ın ana sayfası URL'i
 
         Returns:
-            dict: {'aims_and_scope': html_str veya None}
+            dict: {'aims_and_scope': html_str veya None, 'journal_name': str veya None}
         """
         try:
             full_url = f"https://www.sciencedirect.com{journal_url}" if journal_url.startswith('/') else journal_url
             logger.info(f"Journal about bilgileri alınıyor: {full_url}")
             self.driver.get(full_url)
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "main"))
+                )
+            except Exception:
+                pass
+            time.sleep(0.5)
             handle_cookie_consent(self.driver)
 
             page_source = self.driver.page_source
+            journal_name = JournalParser.extract_journal_name_from_journal_page(page_source)
             has_about = JournalParser.has_about_nav_item(page_source)
 
             aims_and_scope = None
@@ -329,7 +483,13 @@ class ScienceDirectScraper:
                 about_url = full_url.rstrip('/') + '/about/aims-and-scope'
                 logger.info(f"About sekmesi bulundu, aims-and-scope sayfasına gidiliyor: {about_url}")
                 self.driver.get(about_url)
-                self._interruptible_sleep(3)
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.TAG_NAME, "main"))
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
                 handle_cookie_consent(self.driver)
                 aims_and_scope = JournalParser.extract_aims_scope_from_about_page(self.driver.page_source)
             else:
@@ -341,13 +501,13 @@ class ScienceDirectScraper:
             else:
                 logger.warning("Aims & scope bulunamadı")
 
-            return {'aims_and_scope': aims_and_scope}
+            return {'aims_and_scope': aims_and_scope, 'journal_name': journal_name}
 
         except Exception as e:
             logger.failed("Journal about info çıkarma hatası", e)
             import traceback
             traceback.print_exc()
-            return {'aims_and_scope': None}
+            return {'aims_and_scope': None, 'journal_name': None}
 
     def _navigate_to_last_issues_page(self) -> None:
         """Issues sayfasının son sayfasına gider (oldest_first için)."""
@@ -358,7 +518,13 @@ class ScienceDirectScraper:
                 By.CSS_SELECTOR, "button[aria-label='Last page']:not([disabled])"
             )
             self.driver.execute_script("arguments[0].click();", last_btn)
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                )
+            except Exception:
+                pass
+            time.sleep(0.5)
             handle_cookie_consent(self.driver)
             logger.info("Son sayfaya gidildi (Last page butonu)")
             return
@@ -378,7 +544,13 @@ class ScienceDirectScraper:
             if last_page and last_page > 1:
                 base_url = self.driver.current_url.split('?')[0]
                 self.driver.get(f"{base_url}?page={last_page}")
-                self._interruptible_sleep(3)
+                try:
+                    WebDriverWait(self.driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                    )
+                except Exception:
+                    pass
+                time.sleep(0.5)
                 handle_cookie_consent(self.driver)
                 logger.info(f"Son sayfaya gidildi: page={last_page}")
                 return
@@ -430,7 +602,13 @@ class ScienceDirectScraper:
 
             logger.info(f"Issues sayfasına gidiliyor: {issues_url}")
             self.driver.get(issues_url)
-            self._interruptible_sleep(3)
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues"))
+                )
+            except Exception:
+                pass
+            time.sleep(0.5)
             handle_cookie_consent(self.driver)
 
             # oldest_first: son sayfadan başla, geriye doğru git
@@ -465,35 +643,84 @@ class ScienceDirectScraper:
                         if depth and _count_new(all_issues) + _count_new(current_page_issues) >= depth:
                             break
 
+                        panel_id = None
+                        btn_text = ""
                         try:
                             panel_id = btn.get_attribute('aria-controls')
-                            # Butonu görünür alana kaydır, JS click ile tıkla
-                            # (sticky header/overlay nedeniyle normal click çalışmıyor)
+                            btn_text = btn.text or ""
                             self.driver.execute_script(
                                 "arguments[0].scrollIntoView({block:'center'});", btn
                             )
                             time.sleep(0.3)
                             self.driver.execute_script("arguments[0].click();", btn)
 
-                            # Önce butonun aria-expanded=true olmasını bekle (hızlı),
-                            # ardından panel içeriğinin yüklenmesini bekle
                             WebDriverWait(self.driver, 10).until(
                                 lambda d: btn.get_attribute("aria-expanded") == "true"
                             )
+
                             if panel_id:
-                                WebDriverWait(self.driver, 30).until(
-                                    EC.presence_of_element_located((
-                                        By.CSS_SELECTOR,
-                                        f"[id='{panel_id}'] section.js-issue-list-content"
-                                    ))
+                                # Esnek selector: issue link, item veya herhangi bir section içeriği
+                                flexible_sel = (
+                                    f"[id='{panel_id}'] a.js-issue-item-link, "
+                                    f"[id='{panel_id}'] .issue-item, "
+                                    f"[id='{panel_id}'] section"
                                 )
+                                try:
+                                    WebDriverWait(self.driver, 15).until(
+                                        EC.presence_of_element_located((By.CSS_SELECTOR, flexible_sel))
+                                    )
+                                except TimeoutException:
+                                    # AJAX başarısız — button metninden yılı çıkar, ?year= fallback
+                                    import re as _re
+                                    year_match = _re.search(r'\b(20\d{2})\b', btn_text)
+                                    if year_match:
+                                        year = year_match.group(1)
+                                        year_url = f"{issues_url}?year={year}"
+                                        logger.warning(
+                                            f"Accordion AJAX başarısız ({btn_text.strip()[:40]}), "
+                                            f"fallback: {year_url}"
+                                        )
+                                        try:
+                                            self.driver.get(year_url)
+                                            WebDriverWait(self.driver, 15).until(
+                                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues"))
+                                            )
+                                            time.sleep(0.5)
+                                            handle_cookie_consent(self.driver)
+                                            # Year sayfasındaki issue'ları al ve toplam listeye ekle
+                                            year_issues = JournalParser.parse_issues_from_issues_page(
+                                                self.driver.page_source
+                                            )
+                                            if year_issues:
+                                                logger.info(f"  Fallback ile {len(year_issues)} issue alındı ({year})")
+                                                all_issues.extend(year_issues)
+                                            # Ana /issues sayfasına dön
+                                            self.driver.get(issues_url)
+                                            WebDriverWait(self.driver, 10).until(
+                                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues"))
+                                            )
+                                            time.sleep(0.5)
+                                            handle_cookie_consent(self.driver)
+                                            # Yeniden açık olan accordion'ları bul
+                                            closed_buttons = self.driver.find_elements(
+                                                By.CSS_SELECTOR,
+                                                "#all-issues li.accordion-panel button.accordion-panel-title[aria-expanded='false']"
+                                            )
+                                            if issues_order == "oldest_first":
+                                                closed_buttons = list(reversed(closed_buttons))
+                                        except Exception as fe:
+                                            logger.warning(f"Fallback yıl sayfası hatası ({year}): {fe}")
+                                    else:
+                                        logger.warning(
+                                            f"Accordion içeriği yüklenemedi (AJAX timeout), "
+                                            f"yıl tespit edilemedi: {btn_text.strip()[:40]}"
+                                        )
                             else:
                                 self._interruptible_sleep(2)
 
                         except TimeoutException:
                             logger.warning(
-                                f"Accordion içeriği yüklenemedi: "
-                                f"{btn.get_attribute('id') or '?'}, atlanıyor"
+                                f"Accordion genişletilemedi: {btn.get_attribute('id') or '?'}"
                             )
                         except Exception as e:
                             logger.warning(f"Accordion açma hatası: {e}")
@@ -522,7 +749,13 @@ class ScienceDirectScraper:
                             "button[aria-label='Previous page']:not([disabled])"
                         )
                         page_btn.click()
-                        self._interruptible_sleep(3)
+                        try:
+                            WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                            )
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
                         handle_cookie_consent(self.driver)
                     else:
                         page_btn = self.driver.find_element(
@@ -530,7 +763,13 @@ class ScienceDirectScraper:
                             "button[aria-label='Next page']:not([disabled])"
                         )
                         page_btn.click()
-                        self._interruptible_sleep(3)
+                        try:
+                            WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "#all-issues li.accordion-panel"))
+                            )
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
                         handle_cookie_consent(self.driver)
                 except Exception:
                     logger.info("Issues sayfasında ilk/son sayfaya ulaşıldı")
@@ -545,14 +784,67 @@ class ScienceDirectScraper:
             traceback.print_exc()
             return []
 
+    def _fetch_issue_page(
+        self,
+        issue_stub: dict,
+        issue_idx: int = 0,
+        total_issues: int = 0,
+    ) -> tuple:
+        """
+        Ana tab ile issue sayfasına gider, issue bilgilerini ve makale stub listesini döndürür.
+
+        Paralel pipeline'da worker'lar mevcut issue'yu işlerken bu metot ayrı bir thread'den
+        çağrılarak bir sonraki issue önceden yüklenir; worker'lar biter bitmez makalelere
+        anında başlayabilirler.
+
+        Returns:
+            (issue_info: dict, article_stubs: list)  —  hata durumunda exception fırlatır
+        """
+        issue_url = issue_stub['url']
+        full_issue_url = (
+            f"https://www.sciencedirect.com{issue_url}"
+            if issue_url.startswith('/') else issue_url
+        )
+        if issue_idx and total_issues:
+            logger.section(
+                f"Issue {issue_idx}/{total_issues} yükleniyor: "
+                f"{issue_stub.get('title', issue_url)}"
+            )
+        logger.info(f"  Issue URL: {full_issue_url}")
+
+        self.driver.get(full_issue_url)
+        if self.rate_limiter.check_cloudflare():
+            self.rate_limiter.wait_for_cloudflare(timeout=20)
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "main"))
+            )
+        except Exception:
+            pass
+        time.sleep(0.5)
+        handle_cookie_consent(self.driver)
+
+        issue_info = ArticleParser.extract_issue_info(self.driver.page_source)
+        issue_info['url'] = self.driver.current_url
+        logger.success(
+            f"  Issue bilgisi alındı: "
+            f"{issue_info.get('issue_number')} | {issue_info.get('date')}"
+        )
+
+        article_stubs = ArticleParser.extract_article_urls_from_issue(self.driver.page_source)
+        logger.info(f"  {len(article_stubs)} makale linki bulundu")
+        return issue_info, article_stubs
+
     def _process_single_issue(
         self,
         issue_stub: dict,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         issue_idx: int = 1,
         total_issues: int = 1,
+        reusable_drivers=None,
     ) -> dict:
         """
         Tek bir issue sayfasına gider, makale URL'lerini ve issue bilgilerini çıkarır,
@@ -576,7 +868,15 @@ class ScienceDirectScraper:
         logger.info(f"  Issue URL: {full_issue_url}")
 
         self.driver.get(full_issue_url)
-        self._interruptible_sleep(3)
+        if self.rate_limiter.check_cloudflare():
+            self.rate_limiter.wait_for_cloudflare(timeout=20)
+        try:
+            WebDriverWait(self.driver, 15).until(
+                EC.presence_of_element_located((By.TAG_NAME, "main"))
+            )
+        except Exception:
+            pass
+        time.sleep(0.5)
         handle_cookie_consent(self.driver)
 
         # Issue bilgilerini al
@@ -602,57 +902,338 @@ class ScienceDirectScraper:
             except Exception:
                 pass
 
-        articles = []
-        for idx, article_stub in enumerate(article_stubs, 1):
-            article_url = article_stub['url']
-            self.check_stop_flag()
+        if max_tabs > 1:
+            articles, failed_stubs = self._process_issue_articles_parallel(
+                article_stubs=article_stubs,
+                max_tabs=max_tabs,
+                article_progress_callback=article_progress_callback,
+                reusable_drivers=reusable_drivers,
+            )
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(idx, len(article_stubs), None)
-                except Exception:
-                    pass
+            if failed_stubs:
+                logger.info(f"{len(failed_stubs)} makale paralel aşamada alınamadı, tekli retry yapılıyor...")
+                for article_stub in failed_stubs:
+                    self.check_stop_flag()
+                    article_url = article_stub.get('url', '')
+                    article_details = self.extract_article_details(article_url, retry_attempt=1)
+                    if article_details:
+                        article_details['journal_name'] = None
+                        article_details['issue_number'] = issue_info.get('issue_number')
+                        article_details['issue_date'] = issue_info.get('date')
+                        articles.append(article_details)
 
-            logger.section(f"  Makale {idx}/{len(article_stubs)}")
-            article_details = self.extract_article_details(article_url)
+            if self.rate_limiter.retry_queue:
+                retry_results = self._process_retry_queue()
+                for r in retry_results:
+                    r['issue_number'] = issue_info.get('issue_number')
+                    r['issue_date'] = issue_info.get('date')
+                articles.extend(retry_results)
+        else:
+            articles = []
+            for idx, article_stub in enumerate(article_stubs, 1):
+                article_url = article_stub['url']
+                self.check_stop_flag()
 
-            if article_details:
-                article_details['journal_name'] = None  # caller fills this
-                article_details['issue_number'] = issue_info.get('issue_number')
-                article_details['issue_date'] = issue_info.get('date')
-                articles.append(article_details)
-                self.rate_limiter.reset_consecutive_failures()
-            else:
-                logger.warning("  Makale detayları alınamadı")
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_stubs), None)
+                    except Exception:
+                        pass
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(
-                        idx, len(article_stubs),
-                        article_details.get('title') if article_details else None
-                    )
-                except Exception:
-                    pass
+                stub_title = article_stub.get('title', '')
+                logger.info(f"[{idx}/{len(article_stubs)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else article_url}")
+                article_details = self.extract_article_details(article_url)
 
-            if self.rate_limiter.should_wait_for_failures():
-                self.rate_limiter.wait_for_failures()
+                if article_details:
+                    article_details['journal_name'] = None  # caller fills this
+                    article_details['issue_number'] = issue_info.get('issue_number')
+                    article_details['issue_date'] = issue_info.get('date')
+                    articles.append(article_details)
+                    self.rate_limiter.reset_consecutive_failures()
+                else:
+                    logger.warning("  Makale detayları alınamadı")
+
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(
+                            idx, len(article_stubs),
+                            article_details.get('title') if article_details else None
+                        )
+                    except Exception:
+                        pass
+
+                if self.rate_limiter.should_wait_for_failures():
+                    self.rate_limiter.wait_for_failures()
+                    retry_results = self._process_retry_queue()
+                    for r in retry_results:
+                        r['issue_number'] = issue_info.get('issue_number')
+                        r['issue_date'] = issue_info.get('date')
+                    articles.extend(retry_results)
+
+                self.rate_limiter.random_wait()
+
+            # Kalan retry queue
+            if self.rate_limiter.retry_queue:
                 retry_results = self._process_retry_queue()
                 for r in retry_results:
                     r['issue_number'] = issue_info.get('issue_number')
                     r['issue_date'] = issue_info.get('date')
                 articles.extend(retry_results)
 
-            self.rate_limiter.random_wait()
-
-        # Kalan retry queue
-        if self.rate_limiter.retry_queue:
-            retry_results = self._process_retry_queue()
-            for r in retry_results:
-                r['issue_number'] = issue_info.get('issue_number')
-                r['issue_date'] = issue_info.get('date')
-            articles.extend(retry_results)
-
+        logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
+
+    def _process_issue_articles_parallel(
+        self,
+        article_stubs: List[Dict[str, Any]],
+        max_tabs: int,
+        article_progress_callback=None,
+        reusable_drivers=None,
+        pool_bg: Optional[threading.Thread] = None,
+        lookahead_jobs: Optional[queue.Queue] = None,
+        lookahead_feed_thread: Optional[threading.Thread] = None,
+        lookahead_holder: Optional[dict] = None,
+    ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        total = len(article_stubs)
+        # Adaptif eşzamanlılık: yavaş/dengesiz hatta worker havuzunu kısıtla
+        adaptive_tabs = concurrency_controller.effective_max_tabs('sciencedirect', max_tabs)
+        worker_count = max(1, min(adaptive_tabs, total))
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(article_stubs, 1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        failed_stubs: List[Dict[str, Any]] = []
+        lock = threading.Lock()
+        processed_count = 0
+        _cf_retry_counts: Dict[str, int] = {}  # URL → CF nedeniyle kaç kez yeniden denendi
+
+        # Worker'ları havuzdan al; havuz henüz yükleniyorsa supervisor ile dinamik başlat
+        _started: set = set()
+        _all_threads: list = []
+
+        def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int):
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    _is_lookahead = False
+                    try:
+                        idx, article_stub = jobs.get_nowait()
+                    except queue.Empty:
+                        if lookahead_jobs is None:
+                            return
+                        article_stub = None
+                        while True:
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            try:
+                                article_stub = lookahead_jobs.get_nowait()
+                                _is_lookahead = True
+                                idx = None
+                                break
+                            except queue.Empty:
+                                feed_alive = (
+                                    lookahead_feed_thread is not None
+                                    and lookahead_feed_thread.is_alive()
+                                )
+                                if not feed_alive:
+                                    # Thread öldü; son koyduğu itemları drain et
+                                    try:
+                                        article_stub = lookahead_jobs.get_nowait()
+                                        _is_lookahead = True
+                                        idx = None
+                                        break
+                                    except queue.Empty:
+                                        return
+                                time.sleep(0.05)
+
+                    article_url = article_stub.get('url', '')
+                    full_url = (
+                        f"https://www.sciencedirect.com{article_url}"
+                        if article_url.startswith('/') else article_url
+                    )
+                    article_data = None
+
+                    try:
+                        local_driver.get(full_url, wait_after=2)
+
+                        # Cloudflare JS challenge kontrolü ("Bir dakika lütfen...")
+                        try:
+                            title = (local_driver.driver.execute_script("return document.title") or "").lower()
+                            cf_title_kws = ["just a moment", "bir dakika lütfen", "lütfen bekleyin",
+                                            "checking your browser", "please wait", "attention required"]
+                            if any(kw in title for kw in cf_title_kws):
+                                logger.warning(f"Worker-{worker_id}: Cloudflare challenge tespit edildi, 20s bekleniyor...")
+                                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                                from selenium.common.exceptions import TimeoutException as _TE
+                                try:
+                                    _WDW(local_driver.driver, 20, poll_frequency=0.5).until(
+                                        lambda d: not any(
+                                            kw in (d.execute_script("return document.title") or "").lower()
+                                            for kw in cf_title_kws
+                                        )
+                                    )
+                                    logger.success(f"Worker-{worker_id}: Cloudflare geçildi")
+                                except (_TE, Exception):
+                                    logger.warning(f"Worker-{worker_id}: Cloudflare 20s'de geçilemedi")
+                                    with lock:
+                                        _cf_retry_counts[article_url] = _cf_retry_counts.get(article_url, 0) + 1
+                                        _cf_count = _cf_retry_counts[article_url]
+                                    if _cf_count >= 3:
+                                        logger.error(f"Worker-{worker_id}: {article_url} CF nedeniyle {_cf_count}x başarısız, atlanıyor")
+                                        if not _is_lookahead:
+                                            failed_stubs.append(article_stub)
+                                        raise
+                                    logger.warning(f"Worker-{worker_id}: CF deneme {_cf_count}/3, restart")
+                                    if pool_index >= 0:
+                                        self._restart_single_worker(worker_id, pool_index, "cloudflare_challenge")
+                                    else:
+                                        local_driver.restart()
+                                    if not _is_lookahead:
+                                        jobs.put((idx, article_stub))
+                                        continue
+                                    raise  # lookahead: propagate to outer except Exception
+                        except Exception:
+                            pass
+
+                        try:
+                            WebDriverWait(local_driver.driver, 8).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
+                            )
+                        except Exception:
+                            pass
+
+                        article_data = ArticleParser.extract_article_details(
+                            local_driver.driver.page_source,
+                            article_url,
+                        )
+                    except RateLimitException as e:
+                        logger.warning(f"Worker-{worker_id}: rate limit hatası")
+                        if pool_index >= 0:
+                            self._restart_single_worker(worker_id, pool_index, "rate_limit_error")
+                        else:
+                            local_driver.restart()
+                        if not _is_lookahead:
+                            jobs.put((idx, article_stub))  # retry kuyruğuna geri koy
+                            continue
+                        article_data = None
+                    except CloudflareBlockedException as e:
+                        logger.warning(f"Worker-{worker_id}: Cloudflare bloklama hatası")
+                        if pool_index >= 0:
+                            self._restart_single_worker(worker_id, pool_index, "cloudflare_blocked")
+                        else:
+                            local_driver.restart()
+                        if not _is_lookahead:
+                            jobs.put((idx, article_stub))  # retry kuyruğuna geri koy
+                            continue
+                        article_data = None
+                    except Exception as e:
+                        logger.debug(f"Worker-{worker_id}: makale yükleme hatası: {e}")
+                        article_data = None
+
+                    article_ok = bool(article_data and article_data.get('title'))
+
+                    with lock:
+                        nonlocal processed_count
+                        if _is_lookahead:
+                            if lookahead_holder is not None:
+                                if article_ok:
+                                    article_data['journal_name'] = None
+                                    lookahead_holder['articles'].append(article_data)
+                                    lookahead_holder['success_stubs'].add(article_stub.get('url', ''))
+                                else:
+                                    lookahead_holder['failed'].append(article_stub)
+                        else:
+                            processed_count += 1
+                            if article_ok:
+                                article_data['journal_name'] = None
+                                results_by_index[idx] = article_data
+                            else:
+                                failed_stubs.append(article_stub)
+
+                            if article_progress_callback:
+                                try:
+                                    article_progress_callback(
+                                        processed_count,
+                                        total,
+                                        article_data.get('title') if article_data else None,
+                                    )
+                                except Exception:
+                                    pass
+
+                    # Adaptif eşzamanlılık geri beslemesi (lock dışında — kendi lock'lı)
+                    _fetch = getattr(local_driver, 'last_fetch', None)
+                    concurrency_controller.record(
+                        'sciencedirect',
+                        ok=article_ok,
+                        duration_s=getattr(_fetch, 'duration_s', 0.0) if _fetch else 0.0,
+                        recovered=getattr(_fetch, 'recovered', False) if _fetch else False,
+                    )
+            finally:
+                if owns_driver:
+                    local_driver.close()
+
+        def _spawn_ready():
+            for i, drv in enumerate((reusable_drivers or [])[:worker_count]):
+                if i not in _started:
+                    _started.add(i)
+                    t = threading.Thread(target=_worker, args=(i + 1, drv, False, i), daemon=True)
+                    t.start()
+                    _all_threads.append(t)
+
+        if reusable_drivers is not None:
+            # Supervisor: havuz yüklenirken driver hazır olunca hemen başlat
+            while pool_bg is not None and pool_bg.is_alive():
+                _spawn_ready()
+                time.sleep(0.05)
+            _spawn_ready()  # Son kontrol
+        else:
+            # Havuz yok: lokal driver'lar oluştur
+            for worker_id in range(1, worker_count + 1):
+                local_driver = SeleniumDriver(
+                    self.proxy_config,
+                    headless=getattr(self.selenium_driver, 'headless', False),
+                    use_undetected=getattr(self.selenium_driver, 'use_undetected', True),
+                )
+                try:
+                    local_driver.start()
+                    _started.add(worker_id - 1)
+                    t = threading.Thread(target=_worker, args=(worker_id, local_driver, True, -1), daemon=True)
+                    t.start()
+                    _all_threads.append(t)
+                except Exception:
+                    logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+
+        if not _all_threads:
+            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
+            while not jobs.empty():
+                try:
+                    _, stub = jobs.get_nowait()
+                    failed_stubs.append(stub)
+                except queue.Empty:
+                    break
+            return [], failed_stubs
+
+        for t in _all_threads:
+            t.join()
+
+        ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        logger.info(
+            "issue_fetch_summary",
+            total=total,
+            ok=len(ordered_articles),
+            failed=len(failed_stubs),
+            effective_tabs=worker_count,
+        )
+        return ordered_articles, failed_stubs
 
     def extract_article_details(self, article_url: str, retry_attempt: int = 0) -> dict:
         """
@@ -672,8 +1253,62 @@ class ScienceDirectScraper:
             
             # Makale sayfasına git
             full_url = f"https://www.sciencedirect.com{article_url}" if article_url.startswith('/') else article_url
-            self.driver.get(full_url)
-            self._interruptible_sleep(3)
+            # Sayfa yükleme zaman aşımı: ağ hızına göre adaptif (hardcoded 10/30 yerine)
+            _nc = getattr(self.selenium_driver, 'network_class', 'fast')
+            _eff = effective_page_load_timeout(settings.sd_timeout, _nc)
+            self.driver.set_page_load_timeout(_eff)
+            try:
+                self.driver.get(full_url)
+            except TimeoutException:
+                # Timeout aştıktan sonra DOM içeriği erişilebilir, devam et
+                pass
+            # Cloudflare JS challenge bekleme ("Bir dakika lütfen..." / "Just a moment...")
+            if self.rate_limiter.check_cloudflare():
+                resolved = self.rate_limiter.wait_for_cloudflare(timeout=20)
+                if not resolved:
+                    # Otomatik geçemedi — captcha'ya dönüşmüş olabilir, restart dene
+                    logger.warning("Cloudflare otomatik geçilemedi, tarayıcı yeniden başlatılıyor...")
+                    if self.rate_limiter.handle_captcha(full_url, wait_time=5):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        self.rate_limiter.add_to_retry_queue(article_url)
+                        return None
+
+            try:
+                WebDriverWait(self.driver, 8).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "main, article, #article-content, .article-content"))
+                )
+            except Exception:
+                pass
+
+            # Captcha kontrolü ("Are you a robot?")
+            if self.rate_limiter.check_captcha():
+                if retry_attempt == 0:
+                    logger.info("İlk captcha - Yeni User Agent ile tarayıcı yeniden başlatılıyor (30 saniye bekleme)...")
+                    if self.rate_limiter.handle_captcha(full_url, wait_time=30):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        logger.warning(f"  Makale retry listesine eklendi: {article_url}")
+                        self.rate_limiter.add_to_retry_queue(article_url)
+                        return None
+                elif retry_attempt == 1:
+                    logger.info("İkinci captcha - Yeni User Agent ile yeniden başlatılıyor (60 saniye bekleme)...")
+                    if self.rate_limiter.handle_captcha(full_url, wait_time=60):
+                        self._update_driver_references()
+                        self.rate_limiter.reset_consecutive_failures()
+                    else:
+                        self._update_driver_references()
+                        logger.error(f"  Makale failed listesine eklendi: {article_url}")
+                        self.rate_limiter.add_to_failed(article_url)
+                        return None
+                else:
+                    logger.error(f"  Kalıcı captcha: {article_url}")
+                    self.rate_limiter.add_to_failed(article_url)
+                    return None
 
             # Content Error kontrolü ("There was a problem providing the content")
             if self.rate_limiter.check_content_error():
@@ -769,8 +1404,10 @@ class ScienceDirectScraper:
         journal_info: dict,
         depth: int = 1,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
+        journal_name_callback=None,
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
@@ -800,6 +1437,14 @@ class ScienceDirectScraper:
             # 1. Journal about bilgilerini (aims & scope) çıkar
             about_info = self.extract_journal_about_info(journal_info['url'])
             journal_info.update(about_info)
+            if journal_info.get('resolve_name_from_url') and about_info.get('journal_name'):
+                journal_info['name'] = about_info['journal_name']
+                if journal_name_callback:
+                    try:
+                        journal_name_callback(about_info['journal_name'])
+                    except Exception:
+                        pass
+                logger.success(f"ScienceDirect journal adı çözümlendi: {journal_info['name']}")
 
             # 2. /issues sayfasından issue listesini al
             # existing_issue_urls geçilir → yalnızca yeni issue'lar depth'e sayılır
@@ -836,8 +1481,30 @@ class ScienceDirectScraper:
                 f"{len(issues_to_process)} tanesi işlenecek (depth={depth})"
             )
 
-            # 3. Her issue'yu işle
+            # 3. Worker havuzunu arka planda başlat; ilk issue yüklenirken tarayıcılar açılır
+            _pool_container: list = []
+            _pool_bg: Optional[threading.Thread] = None
+            if max_tabs > 1:
+                _pool_bg = threading.Thread(
+                    target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
+                    daemon=True,
+                )
+                _pool_bg.start()
+                logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
+            parallel_drivers = _pool_container
+
+            # 4. Her issue'yu işle
+            # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
+            # Worker tablar mevcut issue'nun makalelerini işlerken ana tab bir sonraki
+            # issue sayfasına gider ve makale linklerini hazırlar; worker'lar bitince
+            # bekleme olmadan hemen başlarlar.
             issue_results = []
+
+            # Prefetch pipeline durumu (yalnızca parallel_drivers varsa aktif)
+            _pf_thread: Optional[threading.Thread] = None  # şu an çalışan prefetch thread
+            _pf_next_idx: int = -1                         # hangi issue_idx'i çekiyor
+            _pf_holder: dict = {}                          # {'data': (issue_info, stubs)}
+            _prev_lookahead_res: Optional[dict] = None     # önceki issue'dan lookahead sonuçları
 
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
@@ -857,14 +1524,177 @@ class ScienceDirectScraper:
                     except Exception:
                         pass
 
-                result = self._process_single_issue(
-                    issue_stub=issue_stub,
-                    max_articles=max_articles,
-                    article_progress_callback=article_progress_callback,
-                    article_list_callback=article_list_callback,
-                    issue_idx=issue_idx,
-                    total_issues=len(issues_to_process),
-                )
+                if (parallel_drivers or _pool_bg) and max_tabs > 1:
+                    # ── Pipeline modu ──────────────────────────────────────────────
+
+                    # 4a. Issue verilerini al: önceden yüklendiyse hazır, yoksa şimdi çek
+                    if _pf_next_idx == issue_idx:
+                        if _pf_thread and _pf_thread.is_alive():
+                            _pf_thread.join()
+                        if _pf_holder.get('data'):
+                            issue_info, article_stubs = _pf_holder['data']
+                            logger.info(f"Issue {issue_idx}: önceden yüklenmiş veri kullanılıyor")
+                        else:
+                            logger.warning(f"Issue {issue_idx}: prefetch başarısız, şimdi yükleniyor")
+                            issue_info, article_stubs = self._fetch_issue_page(
+                                issue_stub, issue_idx, len(issues_to_process)
+                            )
+                    else:
+                        issue_info, article_stubs = self._fetch_issue_page(
+                            issue_stub, issue_idx, len(issues_to_process)
+                        )
+
+                    # Prefetch durumunu sıfırla; aşağıda yeniden set edilecek
+                    _pf_thread = None
+                    _pf_next_idx = -1
+                    _pf_holder = {}
+
+                    if not article_stubs:
+                        logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
+                        result = {'issue_info': issue_info, 'articles': []}
+                        _prev_lookahead_res = None
+                    else:
+                        # Önceki issue sırasında lookahead ile önden işlenen makaleleri uygula
+                        pre_articles: List[Dict[str, Any]] = []
+                        if _prev_lookahead_res and _prev_lookahead_res.get('success_stubs'):
+                            pre_articles = _prev_lookahead_res.get('articles', [])
+                            success_stubs = _prev_lookahead_res['success_stubs']
+                            if pre_articles:
+                                logger.info(
+                                    f"Issue {issue_idx}: {len(pre_articles)} makale önceki "
+                                    f"issue sırasında önden işlendi, atlanıyor"
+                                )
+                            article_stubs = [
+                                s for s in article_stubs
+                                if s.get('url', '') not in success_stubs
+                            ]
+                        _prev_lookahead_res = None
+
+                        if max_articles:
+                            remaining_limit = max(0, max_articles - len(pre_articles))
+                            article_stubs = article_stubs[:remaining_limit]
+                            if not pre_articles:
+                                logger.info(f"  İlk {max_articles} makale işlenecek")
+
+                        if article_list_callback:
+                            try:
+                                article_list_callback([a.get('title', '') for a in article_stubs])
+                            except Exception:
+                                pass
+
+                        # 4b. Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                        _lookahead_q: Optional[queue.Queue] = None
+                        _lookahead_res: Optional[dict] = None
+
+                        next_idx = issue_idx + 1
+                        if next_idx <= len(issues_to_process):
+                            next_stub = issues_to_process[next_idx - 1]
+                            holder_ref: dict = {}
+                            _pf_holder = holder_ref
+                            _pf_next_idx = next_idx
+                            total_count = len(issues_to_process)
+                            _lookahead_q = queue.Queue()
+                            _lookahead_res = {'articles': [], 'failed': [], 'success_stubs': set()}
+
+                            def _do_prefetch(
+                                stub=next_stub, idx=next_idx,
+                                h=holder_ref, total=total_count,
+                                lq=_lookahead_q, ma=max_articles,
+                            ):
+                                try:
+                                    self.check_stop_flag()
+                                    ni, ns = self._fetch_issue_page(stub, idx, total)
+                                    h['data'] = (ni, ns)
+                                    ns_limited = ns[:ma] if ma else ns
+                                    for s in ns_limited:
+                                        lq.put(s)
+                                    logger.info(
+                                        f"Issue {idx} prefetch tamamlandı "
+                                        f"({len(ns_limited)} stub lookahead kuyruğuna eklendi)"
+                                    )
+                                except ScraperStoppedException:
+                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Issue {idx} prefetch hatası: {e}")
+
+                            _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
+                            _pf_thread.start()
+
+                        if article_stubs:
+                            # 4c. Bu issue'nun makalelerini worker tablarla işle
+                            # (_process_issue_articles_parallel self.driver kullanmaz → prefetch ile çakışmaz)
+                            # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                            articles, failed_stubs = self._process_issue_articles_parallel(
+                                article_stubs=article_stubs,
+                                max_tabs=max_tabs,
+                                article_progress_callback=article_progress_callback,
+                                reusable_drivers=parallel_drivers,
+                                pool_bg=_pool_bg,
+                                lookahead_jobs=_lookahead_q,
+                                lookahead_feed_thread=_pf_thread,
+                                lookahead_holder=_lookahead_res,
+                            )
+                            _pool_bg = None  # join zaten içeride yapıldı
+                        else:
+                            articles = []
+                            failed_stubs = []
+
+                        # lookahead sonuçlarını bir sonraki iterasyon için sakla
+                        _prev_lookahead_res = _lookahead_res
+
+                        # 4d. Retry öncesi prefetch thread'ini bekle
+                        # (retry self.driver kullanır; prefetch de self.driver kullanır → çakışma önlenir)
+                        if _pf_thread and _pf_thread.is_alive():
+                            logger.info(
+                                f"Issue {issue_idx + 1} prefetch bitmesini bekleniyor "
+                                f"(retry için ana tab gerekiyor)..."
+                            )
+                            _pf_thread.join()
+                            _pf_thread = None
+
+                        # 4e. Başarısız makaleleri tekli retry (ana tab)
+                        if failed_stubs:
+                            logger.info(
+                                f"{len(failed_stubs)} makale paralel aşamada alınamadı, "
+                                f"tekli retry yapılıyor..."
+                            )
+                            for article_stub in failed_stubs:
+                                self.check_stop_flag()
+                                article_url = article_stub.get('url', '')
+                                article_details = self.extract_article_details(
+                                    article_url, retry_attempt=1
+                                )
+                                if article_details:
+                                    article_details['journal_name'] = None
+                                    article_details['issue_number'] = issue_info.get('issue_number')
+                                    article_details['issue_date'] = issue_info.get('date')
+                                    articles.append(article_details)
+
+                        if self.rate_limiter.retry_queue:
+                            retry_results = self._process_retry_queue()
+                            for r in retry_results:
+                                r['issue_number'] = issue_info.get('issue_number')
+                                r['issue_date'] = issue_info.get('date')
+                            articles.extend(retry_results)
+
+                        # Önden işlenen makaleleri son listeye ekle
+                        articles.extend(pre_articles)
+
+                        logger.found(len(articles), f"makale (issue {issue_idx})")
+                        result = {'issue_info': issue_info, 'articles': articles}
+
+                else:
+                    # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
+                    result = self._process_single_issue(
+                        issue_stub=issue_stub,
+                        max_articles=max_articles,
+                        max_tabs=1,
+                        article_progress_callback=article_progress_callback,
+                        article_list_callback=article_list_callback,
+                        issue_idx=issue_idx,
+                        total_issues=len(issues_to_process),
+                        reusable_drivers=None,
+                    )
 
                 # Journal bilgilerini makalelere ekle
                 for article in result['articles']:
@@ -1017,7 +1847,13 @@ class ScienceDirectScraper:
                     last_page_urls.clear()
                     
                     self.driver.get(self.config.base_url)
-                    self._interruptible_sleep(3)
+                    try:
+                        WebDriverWait(self.driver, 15).until(
+                            EC.presence_of_element_located((By.ID, "publications-list"))
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(0.5)
                     handle_cookie_consent(self.driver)
                     # update navigator info
                     self.navigator = PageNavigator(self.driver, selenium_driver=self.selenium_driver)
@@ -1061,6 +1897,12 @@ class ScienceDirectScraper:
         return all_journals
     
     def close(self):
-        """Scraper'ı kapatır"""
+        """Scraper'ı kapatır (oturum sonu — worker havuzu dahil)"""
         logger.separator()
+        for wd in self._worker_pool:
+            try:
+                wd.close()
+            except Exception as close_err:
+                logger.warning(f"Worker driver kapatma hatası: {close_err}")
+        self._worker_pool = []
         self.selenium_driver.close()

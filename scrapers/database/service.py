@@ -506,6 +506,66 @@ class DatabaseService:
         """En çok makale yazan yazarları getir"""
         return await self.article_repo.get_top_authors(limit, source_website)
 
+    async def delete_journal_data(self, journal_id) -> Dict[str, int]:
+        """
+        Dergiye ait tüm verileri sil: issues, articles, embeddings.
+        Journal kaydının kendisi korunur, sayılar sıfırlanır.
+        OpenAlex alanları da temizlenir (article silme yoluyla).
+        """
+        from .models import ArticleEmbedding
+
+        # Article ID'lerini topla (embedding silme için)
+        article_ids = [
+            a.id
+            for a in await Article.find({"journal_id": journal_id}).to_list()
+        ]
+
+        # Embedding'leri sil
+        embeddings_deleted = 0
+        if article_ids:
+            result = await ArticleEmbedding.find(
+                {"article_id": {"$in": article_ids}}
+            ).delete()
+            embeddings_deleted = result.deleted_count if result else 0
+
+        # ES'ten makaleleri sil
+        _es = _get_es()
+        if _es and _es.is_connected and article_ids:
+            try:
+                await _es.delete_by_journal_id(str(journal_id))
+            except Exception:
+                pass
+
+        # Makaleleri ve issue'ları sil
+        articles_deleted = await self.article_repo.delete_by_journal(journal_id)
+        issues_deleted = await self.issue_repo.delete_by_journal(journal_id)
+
+        # Journal sayılarını sıfırla
+        journal = await Journal.get(journal_id)
+        if journal:
+            journal.issue_count = 0
+            journal.article_count = 0
+            journal.touch()
+            await journal.save()
+
+        _cache = _get_cache()
+        if _cache:
+            await _cache.invalidate_pattern("stats:*")
+            await _cache.invalidate_pattern("search:*")
+            await _cache.invalidate_pattern("articles_search_*")
+            await _cache.invalidate_pattern("es_search_*")
+            await _cache.invalidate_journal(str(journal_id))
+
+        logger.info(
+            f"Journal verisi temizlendi — "
+            f"{articles_deleted} makale, {issues_deleted} sayı, {embeddings_deleted} embedding silindi"
+        )
+        return {
+            "articles_deleted": articles_deleted,
+            "issues_deleted": issues_deleted,
+            "embeddings_deleted": embeddings_deleted,
+        }
+
 
 # Singleton instance
 _service: Optional[DatabaseService] = None

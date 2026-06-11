@@ -6,6 +6,8 @@ import os
 import sys
 import time
 import random
+import queue
+import threading
 from typing import Optional, List, Dict, Any
 from pathlib import Path
 
@@ -17,6 +19,7 @@ logger = get_logger('acm')
 
 from .config import ProxyConfig, ACMConfig
 from .driver import SeleniumDriver
+from utils.adaptive_concurrency import controller as concurrency_controller
 from .utils import handle_cookie_consent, handle_open_access_modal, wait_for_page_load
 from .parsers import JournalParser, ArticleParser, ArticleDetailParser, IssueListParser
 from .navigation import PageNavigator
@@ -24,6 +27,10 @@ from .navigation import PageNavigator
 
 class ScraperStoppedException(Exception):
     """Scraper durdurulduğunda fırlatılır"""
+    pass
+
+class RateLimitException(Exception):
+    """Rate limit hatası olduğunda fırlatılır"""
     pass
 
 class CloudflareBlockedException(Exception):
@@ -61,7 +68,10 @@ class ACMScraper:
         
         if self.proxy_config.use_proxy:
             if self.proxy_config.is_configured():
-                logger.success("Proxy yapılandırması yüklendi")
+                logger.success("Proxy yapılandırması yüklendi:")
+                logger.info(f"  - Host: {self.proxy_config.host}")
+                logger.info(f"  - Port: {self.proxy_config.port}")
+                logger.info(f"  - User: {self.proxy_config.user}")
             else:
                 logger.warning("Uyarı: USE_PROXY=true ama proxy bilgileri eksik!")
         else:
@@ -74,7 +84,12 @@ class ACMScraper:
             page_load_timeout=self.config.page_load_timeout,
         )
         self.headless = headless
-        
+
+        # Oturum boyunca yaşayan paralel worker driver havuzu.
+        # Bir kez açılır; tüm journal/issue'larda yeniden kullanılır,
+        # geçişlerde KAPATILMAZ. Yalnızca close() ile kapanır.
+        self._worker_pool: List[SeleniumDriver] = []
+
         # Journal listesi
         self.all_journals = []
         
@@ -104,9 +119,106 @@ class ACMScraper:
         
         if not self.selenium_driver.start():
             raise Exception("WebDriver başlatılamadı!")
-        
+
         logger.success(f"Hedef URL: {self.config.base_url}")
-    
+
+    def _ensure_worker_pool(self, max_tabs: int, on_ready=None) -> List[SeleniumDriver]:
+        """
+        Oturum boyunca yaşayan paralel worker driver havuzunu döndür.
+
+        İlk ihtiyaçta bir kez açılır; tüm journal ve issue'larda yeniden
+        kullanılır. Journal/issue geçişlerinde KAPATILMAZ. Tekil driver
+        hataları (rate limit / erişim / tarayıcı çökmesi) ilgili driver'ın
+        kendi get()/restart() mantığıyla iyileşir; havuz korunur.
+
+        on_ready: Her driver açıldığında çağrılan callback (ör. pool_container.append).
+        """
+        if max_tabs <= 1:
+            return []
+        needed = max_tabs - len(self._worker_pool)
+        if needed <= 0:
+            if self._worker_pool:
+                logger.info(
+                    f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                    f"(journal/issue boyunca yeniden kullanılır)"
+                )
+            return self._worker_pool
+
+        start_index = len(self._worker_pool)
+        _new: list = [None] * needed
+
+        def _open_one(slot_i: int):
+            worker_id = start_index + slot_i + 1
+            wd = SeleniumDriver(self.proxy_config, headless=self.headless)
+            try:
+                if wd.start():
+                    _new[slot_i] = wd
+                    logger.info(f"Worker-{worker_id}: oturum havuzuna eklendi")
+                    if on_ready:
+                        on_ready(wd)
+                else:
+                    logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+            except Exception:
+                logger.warning(f"Worker-{worker_id}: havuz driver'ı başlatılamadı")
+
+        open_threads = [
+            threading.Thread(target=_open_one, args=(i,), daemon=True)
+            for i in range(needed)
+        ]
+        for t in open_threads:
+            t.start()
+        for t in open_threads:
+            t.join()
+
+        for wd in _new:
+            if wd is not None:
+                self._worker_pool.append(wd)
+
+        if self._worker_pool:
+            logger.info(
+                f"Oturum worker havuzu hazır: {len(self._worker_pool)} driver "
+                f"(journal/issue boyunca yeniden kullanılır)"
+            )
+        return self._worker_pool
+
+    def _restart_single_worker(self, worker_id: int, pool_index: int, reason: str = "unknown"):
+        """
+        Hata durumunda tek bir worker'ı (tarayıcı) kapatıp yeniden açar.
+        Diğer worker'lar çalışmaya devam eder.
+        
+        Args:
+            worker_id: Worker'ın ID'si (loglama için)
+            pool_index: Worker pool'da index
+            reason: Restart nedeni (loglama için)
+        """
+        if pool_index < 0 or pool_index >= len(self._worker_pool):
+            logger.warning(f"Worker-{worker_id}: havuzda geçersiz index {pool_index}, atlanıyor")
+            return False
+        
+        old_driver = self._worker_pool[pool_index]
+        logger.warning(f"Worker-{worker_id}: yeniden başlatılıyor (neden: {reason})")
+        
+        try:
+            old_driver.close()
+            logger.info(f"Worker-{worker_id}: eski tarayıcı kapatıldı")
+        except Exception as e:
+            logger.warning(f"Worker-{worker_id}: eski tarayıcı kapatma hatası: {e}")
+        
+        try:
+            new_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+            if new_driver.start():
+                self._worker_pool[pool_index] = new_driver
+                logger.success(f"Worker-{worker_id}: yeni tarayıcı başlatıldı ve havuza kondu")
+                return True
+            else:
+                logger.error(f"Worker-{worker_id}: yeni tarayıcı başlatılamadı")
+                self._worker_pool[pool_index] = None  # slot'u null yap
+                return False
+        except Exception as e:
+            logger.error(f"Worker-{worker_id}: yeni tarayıcı oluşturma hatası: {e}")
+            self._worker_pool[pool_index] = None
+            return False
+
     def _close_modals(self):
         """Cookie ve Open Access modallarını kapat"""
         handle_cookie_consent(self.selenium_driver, timeout=5)
@@ -463,14 +575,68 @@ class ACMScraper:
         logger.success(f"Toplam {len(all_issues)} issue bulundu ({count_new()} yeni)")
         return all_issues
 
+    def _fetch_issue_page(
+        self,
+        issue_stub: dict,
+        issue_idx: int = 0,
+        total_issues: int = 0,
+    ) -> tuple:
+        """
+        Ana tab ile issue sayfasına gider, issue bilgilerini ve makale stub listesini döndürür.
+
+        Paralel pipeline'da worker'lar mevcut issue'yu işlerken bu metot ayrı bir thread'den
+        çağrılarak bir sonraki issue önceden yüklenir; worker'lar biter bitmez makalelere
+        anında başlayabilirler.
+
+        Returns:
+            (issue_info: dict, article_stubs: list)  —  hata durumunda exception fırlatır
+        """
+        issue_url = issue_stub['url']
+        full_issue_url = (
+            f"{self.ACM_BASE}{issue_url}" if issue_url.startswith('/') else issue_url
+        )
+        if issue_idx and total_issues:
+            logger.section(
+                f"Issue {issue_idx}/{total_issues} yükleniyor: "
+                f"{issue_stub.get('title', issue_url)}"
+            )
+        logger.info(f"  Issue URL: {full_issue_url}")
+
+        if not self.selenium_driver.get(full_issue_url, wait_after=5):
+            raise Exception(f"Issue sayfası yüklenemedi: {full_issue_url}")
+
+        self._close_modals()
+
+        title = self.selenium_driver.execute_script("return document.title") or ""
+        if "just a moment" in title.lower() or "cloudflare" in title.lower():
+            raise CloudflareBlockedException("Cloudflare engeli algılandı (issue sayfası)")
+
+        current_url = self.selenium_driver.current_url
+        issue_info = self._extract_issue_info_from_url(current_url)
+
+        stub_title = issue_stub.get('title', '').strip()
+        if stub_title:
+            issue_info['issue_number'] = stub_title
+
+        logger.success(
+            f"  Issue bilgisi alındı: "
+            f"{issue_info.get('issue_number')} | {issue_info.get('date')}"
+        )
+
+        article_stubs = ArticleParser.extract_article_urls(self.selenium_driver.page_source)
+        logger.info(f"  {len(article_stubs)} makale linki bulundu")
+        return issue_info, article_stubs
+
     def _process_single_issue(
         self,
         issue_stub: dict,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
         issue_idx: int = 1,
         total_issues: int = 1,
+        reusable_drivers=None,
     ) -> dict:
         """
         Tek bir ACM issue sayfasına gidip makale detaylarını toplar.
@@ -531,77 +697,90 @@ class ACMScraper:
             except Exception:
                 pass
 
-        articles = []
-        retry_queue = []
-        consecutive_failures = 0
+        if max_tabs > 1:
+            articles, retry_queue = self._process_issue_articles_parallel(
+                article_list=article_list,
+                max_tabs=max_tabs,
+                article_progress_callback=article_progress_callback,
+                reusable_drivers=reusable_drivers,
+            )
+            consecutive_failures = 0
+        else:
+            articles = []
+            retry_queue = []
+            consecutive_failures = 0
 
-        for idx, article_stub in enumerate(article_list, 1):
-            self.check_stop_flag()
+            for idx, article_stub in enumerate(article_list, 1):
+                self.check_stop_flag()
 
-            if article_progress_callback:
-                try:
-                    article_progress_callback(idx, len(article_list), None)
-                except Exception:
-                    pass
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(idx, len(article_list), None)
+                    except Exception:
+                        pass
 
-            article_url = article_stub.get('url', '')
-            full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
-            logger.info(f"  [{idx}/{len(article_list)}] {full_url}")
+                article_url = article_stub.get('url', '')
+                full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+                stub_title = article_stub.get('title', '')
+                logger.info(f"[{idx}/{len(article_list)}] Makale detayı alınıyor: {stub_title[:60] if stub_title else full_url}")
 
-            article_data = None
-            success = False
+                article_data = None
+                success = False
 
-            for attempt in range(2):
-                if attempt > 0:
-                    self._interruptible_sleep(2)
+                for attempt in range(2):
+                    if attempt > 0:
+                        self._interruptible_sleep(2)
 
-                if not self.selenium_driver.get(full_url, wait_after=3):
-                    continue
+                    if not self.selenium_driver.get(full_url, wait_after=3):
+                        continue
 
-                self._close_modals()
-                # Modal etkileşimleri sonrası sayfa settle olana kadar bekle
-                wait_for_page_load(self.selenium_driver)
+                    self._close_modals()
+                    # Modal etkileşimleri sonrası sayfa settle olana kadar bekle
+                    wait_for_page_load(self.selenium_driver)
 
-                article_data = ArticleDetailParser.extract_article_details(
-                    self.selenium_driver.page_source, full_url
-                )
-
-                if article_data and article_data.get('title'):
-                    success = True
-                    break
-
-            if success and article_data:
-                articles.append(article_data)
-                logger.success(f"  Makale eklendi: {article_data['title'][:50]}...")
-                consecutive_failures = 0
-            else:
-                retry_queue.append(full_url)
-                consecutive_failures += 1
-
-            if article_progress_callback:
-                try:
-                    article_progress_callback(
-                        idx, len(article_list),
-                        article_data.get('title') if (success and article_data) else None
+                    article_data = ArticleDetailParser.extract_article_details(
+                        self.selenium_driver.page_source, full_url
                     )
-                except Exception:
-                    pass
 
-            if consecutive_failures >= 3:
-                logger.error("Üst üste 3 makale hatası! Tarayıcı yeniden başlatılıyor...")
-                self.selenium_driver.restart()
-                self._interruptible_sleep(60)
-                consecutive_failures = 0
+                    if article_data and article_data.get('title'):
+                        success = True
+                        break
 
-            self._random_wait()
+                if success and article_data:
+                    articles.append(article_data)
+                    logger.success(f"Makale eklendi: {article_data['title'][:50]}...")
+                    consecutive_failures = 0
+                else:
+                    retry_queue.append(full_url)
+                    consecutive_failures += 1
+
+                if article_progress_callback:
+                    try:
+                        article_progress_callback(
+                            idx, len(article_list),
+                            article_data.get('title') if (success and article_data) else None
+                        )
+                    except Exception:
+                        pass
+
+                if consecutive_failures >= 3:
+                    logger.error("Üst üste 3 makale hatası! Tarayıcı yeniden başlatılıyor...")
+                    self.selenium_driver.restart()
+                    self._interruptible_sleep(60)
+                    consecutive_failures = 0
+
+                self._random_wait()
 
         # Retry kuyruğu
         if retry_queue:
-            logger.section(f"KUYRUK: {len(retry_queue)} başarısız makale tekrar deneniyor...")
-            for r_url in retry_queue:
+            logger.info(f"{len(retry_queue)} makale yüklenemedi, yeniden deneniyor...")
+            logger.info(f"Retry başlıyor ({len(retry_queue)} makale)...")
+            for retry_idx, r_url in enumerate(retry_queue, 1):
                 self.check_stop_flag()
                 try:
+                    logger.info(f"[Retry {retry_idx}/{len(retry_queue)}] {r_url}")
                     if not self.selenium_driver.get(r_url, wait_after=3):
+                        logger.warning(f"Retry başarısız, makale atlanıyor: {r_url}")
                         continue
                     self._close_modals()
                     wait_for_page_load(self.selenium_driver)
@@ -611,16 +790,237 @@ class ACMScraper:
                     )
                     if article_data and article_data.get('title'):
                         articles.append(article_data)
-                        logger.success(f"  Kurtarıldı: {article_data['title'][:50]}...")
+                        logger.success(f"Retry başarılı: {article_data['title'][:50]}...")
+                    else:
+                        logger.warning(f"Retry: makale detayları alınamadı ({r_url})")
 
                     self._random_wait()
                 except (ScraperStoppedException, CloudflareBlockedException):
                     raise
                 except Exception as e:
-                    logger.warning(f"  Kuyruk hatası: {e}")
+                    logger.warning(f"Retry hatası ({r_url}): {e}")
 
         logger.found(len(articles), f"makale (issue {issue_idx})")
         return {'issue_info': issue_info, 'articles': articles}
+
+    def _process_issue_articles_parallel(
+        self,
+        article_list: List[Dict[str, Any]],
+        max_tabs: int,
+        article_progress_callback=None,
+        reusable_drivers=None,
+        pool_bg: Optional[threading.Thread] = None,
+        lookahead_jobs: Optional[queue.Queue] = None,
+        lookahead_feed_thread: Optional[threading.Thread] = None,
+        lookahead_holder: Optional[dict] = None,
+    ) -> tuple[List[Dict[str, Any]], List[str]]:
+        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        total = len(article_list)
+        # Adaptif eşzamanlılık: yavaş/dengesiz hatta worker havuzunu kısıtla
+        adaptive_tabs = concurrency_controller.effective_max_tabs('acm', max_tabs)
+        worker_count = max(1, min(adaptive_tabs, total))
+        jobs: queue.Queue[tuple[int, Dict[str, Any]]] = queue.Queue()
+        for idx, stub in enumerate(article_list, 1):
+            jobs.put((idx, stub))
+
+        results_by_index: Dict[int, Dict[str, Any]] = {}
+        retry_urls: List[str] = []
+        lock = threading.Lock()
+        processed_count = 0
+
+        # Worker'ları havuzdan al; havuz yükleniyorsa supervisor ile dinamik başlat
+        # (Aşağıdaki _worker tanımlandıktan sonra supervisor bloğunda kullanılır)
+
+        def _worker(worker_id: int, local_driver, owns_driver: bool, pool_index: int = -1):
+            """
+            Worker thread: article'ları paralel işler.
+            Hata durumunda:
+              - Pool worker (owns_driver=False): _restart_single_worker() çağrılır
+              - Local worker (owns_driver=True): driver'ı restart etmeye çalışır
+            """
+            try:
+                while True:
+                    if self.stop_flag and self.stop_flag.is_set():
+                        return
+                    if self.pause_flag and self.pause_flag.is_set():
+                        while self.pause_flag.is_set():
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            time.sleep(0.2)
+
+                    _is_lookahead = False
+                    try:
+                        idx, article_stub = jobs.get_nowait()
+                    except queue.Empty:
+                        if lookahead_jobs is None:
+                            return
+                        article_stub = None
+                        while True:
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            try:
+                                article_stub = lookahead_jobs.get_nowait()
+                                _is_lookahead = True
+                                idx = None
+                                break
+                            except queue.Empty:
+                                feed_alive = (
+                                    lookahead_feed_thread is not None
+                                    and lookahead_feed_thread.is_alive()
+                                )
+                                if not feed_alive:
+                                    # Thread öldü; son koyduğu itemları drain et
+                                    try:
+                                        article_stub = lookahead_jobs.get_nowait()
+                                        _is_lookahead = True
+                                        idx = None
+                                        break
+                                    except queue.Empty:
+                                        return
+                                time.sleep(0.05)
+
+                    article_url = article_stub.get('url', '')
+                    full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+                    article_data = None
+
+                    for attempt in range(2):
+                        if attempt > 0:
+                            time.sleep(1)
+                        try:
+                            if not local_driver.get(full_url, wait_after=3):
+                                continue
+                            page_source = local_driver.page_source
+                            article_data = ArticleDetailParser.extract_article_details(page_source, full_url)
+                            if article_data and article_data.get('title'):
+                                break
+                        except RateLimitException:
+                            # Rate limit hatasında worker'ı restart et
+                            logger.warning(f"Worker-{worker_id}: Rate limit hatası, tarayıcı yeniden başlatılıyor")
+                            if not owns_driver and pool_index >= 0:
+                                # Pool worker: havuzda restart et
+                                self._restart_single_worker(worker_id, pool_index, "rate_limit")
+                                # Tarayıcı yenilendikten sonra retry
+                                if pool_index < len(self._worker_pool):
+                                    local_driver = self._worker_pool[pool_index]
+                            else:
+                                # Local worker: restart etmeye çalış
+                                try:
+                                    local_driver.restart()
+                                except Exception as restart_err:
+                                    logger.warning(f"Worker-{worker_id}: Restart hatası: {restart_err}")
+                            article_data = None
+                        except CloudflareBlockedException:
+                            # Cloudflare engelinde worker'ı restart et
+                            logger.warning(f"Worker-{worker_id}: Cloudflare engeli, tarayıcı yeniden başlatılıyor")
+                            if not owns_driver and pool_index >= 0:
+                                self._restart_single_worker(worker_id, pool_index, "cloudflare")
+                                if pool_index < len(self._worker_pool):
+                                    local_driver = self._worker_pool[pool_index]
+                            else:
+                                try:
+                                    local_driver.restart()
+                                except Exception as restart_err:
+                                    logger.warning(f"Worker-{worker_id}: Restart hatası: {restart_err}")
+                            article_data = None
+                        except Exception:
+                            article_data = None
+
+                    article_ok = bool(article_data and article_data.get('title'))
+                    callback_payload = None
+
+                    with lock:
+                        nonlocal processed_count
+                        if _is_lookahead:
+                            if lookahead_holder is not None:
+                                if article_ok:
+                                    lookahead_holder['articles'].append(article_data)
+                                    lookahead_holder['success_stubs'].add(article_stub.get('url', ''))
+                                else:
+                                    lookahead_holder['failed'].append(article_stub)
+                        else:
+                            processed_count += 1
+                            if article_ok:
+                                results_by_index[idx] = article_data
+                            else:
+                                retry_urls.append(full_url)
+
+                            if article_progress_callback:
+                                callback_payload = (
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
+
+                    if callback_payload:
+                        try:
+                            article_progress_callback(*callback_payload)
+                        except Exception:
+                            pass
+
+                    # Adaptif eşzamanlılık geri beslemesi (lock dışında — kendi lock'lı)
+                    _fetch = getattr(local_driver, 'last_fetch', None)
+                    concurrency_controller.record(
+                        'acm',
+                        ok=article_ok,
+                        duration_s=getattr(_fetch, 'duration_s', 0.0) if _fetch else 0.0,
+                        recovered=getattr(_fetch, 'recovered', False) if _fetch else False,
+                    )
+            finally:
+                if owns_driver:
+                    local_driver.close()
+
+        _started: set = set()
+        _all_threads: list = []
+
+        def _spawn_ready():
+            if reusable_drivers is not None:
+                for i, drv in enumerate(reusable_drivers[:worker_count]):
+                    if i not in _started:
+                        _started.add(i)
+                        t = threading.Thread(target=_worker, args=(i + 1, drv, False, i), daemon=True)
+                        t.start()
+                        _all_threads.append(t)
+            else:
+                if not _started:
+                    _started.add(0)
+                    for worker_id in range(1, worker_count + 1):
+                        local_driver = SeleniumDriver(self.proxy_config, headless=self.headless)
+                        if local_driver.start():
+                            t = threading.Thread(target=_worker, args=(worker_id, local_driver, True, -1), daemon=True)
+                            t.start()
+                            _all_threads.append(t)
+                        else:
+                            logger.warning(f"Worker-{worker_id}: local driver başlatılamadı")
+
+        while pool_bg is not None and pool_bg.is_alive():
+            _spawn_ready()
+            time.sleep(0.05)
+        _spawn_ready()
+
+        if not _all_threads:
+            logger.warning("Parallel mod için kullanılabilir worker yok, retry kuyruğuna alınıyor")
+            while not jobs.empty():
+                try:
+                    _, stub = jobs.get_nowait()
+                    article_url = stub.get('url', '')
+                    full_url = f"{self.ACM_BASE}{article_url}" if article_url.startswith('/') else article_url
+                    retry_urls.append(full_url)
+                except queue.Empty:
+                    break
+            return [], retry_urls
+
+        for t in _all_threads:
+            t.join()
+
+        ordered_articles = [results_by_index[idx] for idx in sorted(results_by_index.keys())]
+        logger.info(
+            "issue_fetch_summary",
+            total=total,
+            ok=len(ordered_articles),
+            failed=len(retry_urls),
+            effective_tabs=worker_count,
+        )
+        return ordered_articles, retry_urls
 
     def _extract_issue_info_from_url(self, url: str) -> dict:
         """
@@ -658,8 +1058,10 @@ class ACMScraper:
         journal: Dict[str, Any],
         depth: int = 1,
         max_articles: int = None,
+        max_tabs: int = 1,
         article_progress_callback=None,
         article_list_callback=None,
+        journal_name_callback=None,
         existing_issue_urls: set = None,
         issue_start_callback=None,
         issue_complete_callback=None,
@@ -695,6 +1097,30 @@ class ACMScraper:
         if not journal_code:
             logger.warning(f"{journal_name}: Journal kodu bulunamadı")
             return []
+
+        # Tekil URL analizi akışında gerçek journal adını sayfadan çözümle
+        if journal.get('resolve_name_from_url'):
+            journal_page_url = f"{self.ACM_BASE}/journal/{journal_code}"
+            try:
+                if self.selenium_driver.get(journal_page_url, wait_after=3):
+                    self._close_modals()
+                    wait_for_page_load(self.selenium_driver)
+                    resolved_name = JournalParser.extract_journal_name_from_journal_page(
+                        self.selenium_driver.page_source
+                    )
+                    if resolved_name:
+                        journal['name'] = resolved_name
+                        journal_name = resolved_name
+                        if journal_name_callback:
+                            try:
+                                journal_name_callback(resolved_name)
+                            except Exception:
+                                pass
+                        logger.success(f"ACM journal adı çözümlendi: {resolved_name}")
+                    else:
+                        logger.warning("ACM journal adı çözümlenemedi, mevcut isim kullanılacak")
+            except Exception as e:
+                logger.warning(f"ACM journal adı çözümleme hatası: {e}")
 
         logger.header(f"JOURNAL TARANMAYA BAŞLANIYOR: {journal_name} ({journal_code})")
 
@@ -737,8 +1163,27 @@ class ACMScraper:
                 f"(depth={depth})"
             )
 
-            # 4) Her issue'yu işle
+            # 4) Worker havuzunu arka planda başlat; ilk issue yüklenirken tarayıcılar açılır
+            _pool_container: list = []
+            _pool_bg: Optional[threading.Thread] = None
+            if max_tabs > 1:
+                _pool_bg = threading.Thread(
+                    target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
+                    daemon=True,
+                )
+                _pool_bg.start()
+                logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
+            parallel_drivers = _pool_container
+
+            # 5) Her issue'yu işle
+            # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
             issue_results = []
+
+            _pf_thread: Optional[threading.Thread] = None
+            _pf_next_idx: int = -1
+            _pf_holder: dict = {}
+            _prev_lookahead_res: Optional[dict] = None  # önceki issue'dan lookahead sonuçları
+
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
 
@@ -757,14 +1202,189 @@ class ACMScraper:
                     except Exception:
                         pass
 
-                result = self._process_single_issue(
-                    issue_stub=issue_stub,
-                    max_articles=max_articles,
-                    article_progress_callback=article_progress_callback,
-                    article_list_callback=article_list_callback,
-                    issue_idx=issue_idx,
-                    total_issues=len(issues_to_process),
-                )
+                if (parallel_drivers or _pool_bg) and max_tabs > 1:
+                    # ── Pipeline modu ──────────────────────────────────────────────
+
+                    # Issue verilerini al: önceden yüklendiyse hazır, yoksa şimdi çek
+                    if _pf_next_idx == issue_idx:
+                        if _pf_thread and _pf_thread.is_alive():
+                            _pf_thread.join()
+                        if _pf_holder.get('data'):
+                            issue_info, article_list = _pf_holder['data']
+                            logger.info(f"Issue {issue_idx}: önceden yüklenmiş veri kullanılıyor")
+                        else:
+                            logger.warning(f"Issue {issue_idx}: prefetch başarısız, şimdi yükleniyor")
+                            try:
+                                issue_info, article_list = self._fetch_issue_page(
+                                    issue_stub, issue_idx, len(issues_to_process)
+                                )
+                            except Exception as fe:
+                                logger.warning(f"Issue {issue_idx} yüklenemedi: {fe}")
+                                result = {'issue_info': {'url': issue_stub['url']}, 'articles': []}
+                                issue_results.append(result)
+                                continue
+                    else:
+                        try:
+                            issue_info, article_list = self._fetch_issue_page(
+                                issue_stub, issue_idx, len(issues_to_process)
+                            )
+                        except Exception as fe:
+                            logger.warning(f"Issue {issue_idx} yüklenemedi: {fe}")
+                            result = {'issue_info': {'url': issue_stub['url']}, 'articles': []}
+                            issue_results.append(result)
+                            continue
+
+                    _pf_thread = None
+                    _pf_next_idx = -1
+                    _pf_holder = {}
+
+                    if not article_list:
+                        logger.warning(f"  Makale bulunamadı: {issue_stub.get('title')}")
+                        result = {'issue_info': issue_info, 'articles': []}
+                        _prev_lookahead_res = None
+                    else:
+                        # Önceki issue sırasında lookahead ile önden işlenen makaleleri uygula
+                        pre_articles: List[Dict[str, Any]] = []
+                        if _prev_lookahead_res and _prev_lookahead_res.get('success_stubs'):
+                            pre_articles = _prev_lookahead_res.get('articles', [])
+                            success_stubs = _prev_lookahead_res['success_stubs']
+                            if pre_articles:
+                                logger.info(
+                                    f"Issue {issue_idx}: {len(pre_articles)} makale önceki "
+                                    f"issue sırasında önden işlendi, atlanıyor"
+                                )
+                            article_list = [
+                                s for s in article_list
+                                if s.get('url', '') not in success_stubs
+                            ]
+                        _prev_lookahead_res = None
+
+                        if max_articles:
+                            remaining_limit = max(0, max_articles - len(pre_articles))
+                            if len(article_list) > remaining_limit:
+                                article_list = article_list[:remaining_limit]
+                        logger.info(f"  {len(article_list)} makale toplanacak...")
+
+                        if article_list_callback:
+                            try:
+                                article_list_callback([a.get('title', '') for a in article_list])
+                            except Exception:
+                                pass
+
+                        # Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                        _lookahead_q: Optional[queue.Queue] = None
+                        _lookahead_res: Optional[dict] = None
+
+                        next_idx = issue_idx + 1
+                        if next_idx <= len(issues_to_process):
+                            next_stub = issues_to_process[next_idx - 1]
+                            holder_ref: dict = {}
+                            _pf_holder = holder_ref
+                            _pf_next_idx = next_idx
+                            total_count = len(issues_to_process)
+                            _lookahead_q = queue.Queue()
+                            _lookahead_res = {'articles': [], 'failed': [], 'success_stubs': set()}
+
+                            def _do_prefetch(
+                                stub=next_stub, idx=next_idx,
+                                h=holder_ref, total=total_count,
+                                lq=_lookahead_q, ma=max_articles,
+                            ):
+                                try:
+                                    self.check_stop_flag()
+                                    ni, ns = self._fetch_issue_page(stub, idx, total)
+                                    h['data'] = (ni, ns)
+                                    ns_limited = ns[:ma] if ma else ns
+                                    for s in ns_limited:
+                                        lq.put(s)
+                                    logger.info(
+                                        f"Issue {idx} prefetch tamamlandı "
+                                        f"({len(ns_limited)} stub lookahead kuyruğuna eklendi)"
+                                    )
+                                except ScraperStoppedException:
+                                    pass
+                                except (ScraperStoppedException, CloudflareBlockedException):
+                                    pass
+                                except Exception as e:
+                                    logger.warning(f"Issue {idx} prefetch hatası: {e}")
+
+                            _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
+                            _pf_thread.start()
+
+                        if article_list:
+                            # Makaleleri worker tablarla işle
+                            # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                            articles, retry_queue = self._process_issue_articles_parallel(
+                                article_list=article_list,
+                                max_tabs=max_tabs,
+                                article_progress_callback=article_progress_callback,
+                                reusable_drivers=parallel_drivers,
+                                pool_bg=_pool_bg,
+                                lookahead_jobs=_lookahead_q,
+                                lookahead_feed_thread=_pf_thread,
+                                lookahead_holder=_lookahead_res,
+                            )
+                            _pool_bg = None  # join zaten içeride yapıldı
+                        else:
+                            articles = []
+                            retry_queue = []
+
+                        # lookahead sonuçlarını bir sonraki iterasyon için sakla
+                        _prev_lookahead_res = _lookahead_res
+
+                        # Retry öncesi prefetch thread'ini bekle (self.selenium_driver çakışmasını önle)
+                        if _pf_thread and _pf_thread.is_alive():
+                            logger.info(
+                                f"Issue {issue_idx + 1} prefetch bitmesini bekleniyor "
+                                f"(retry için ana tab gerekiyor)..."
+                            )
+                            _pf_thread.join()
+                            _pf_thread = None
+
+                        # Başarısız makaleleri retry (ana tab)
+                        if retry_queue:
+                            logger.info(f"{len(retry_queue)} makale yüklenemedi, yeniden deneniyor...")
+                            for retry_idx, r_url in enumerate(retry_queue, 1):
+                                self.check_stop_flag()
+                                try:
+                                    logger.info(f"[Retry {retry_idx}/{len(retry_queue)}] {r_url}")
+                                    if not self.selenium_driver.get(r_url, wait_after=3):
+                                        logger.warning(f"Retry başarısız, makale atlanıyor: {r_url}")
+                                        continue
+                                    self._close_modals()
+                                    wait_for_page_load(self.selenium_driver)
+                                    article_data = ArticleDetailParser.extract_article_details(
+                                        self.selenium_driver.page_source, r_url
+                                    )
+                                    if article_data and article_data.get('title'):
+                                        articles.append(article_data)
+                                        logger.success(f"Retry başarılı: {article_data['title'][:50]}...")
+                                    else:
+                                        logger.warning(f"Retry: makale detayları alınamadı ({r_url})")
+                                    self._random_wait()
+                                except (ScraperStoppedException, CloudflareBlockedException):
+                                    raise
+                                except Exception as e:
+                                    logger.warning(f"Retry hatası ({r_url}): {e}")
+
+                        # Önden işlenen makaleleri son listeye ekle
+                        articles.extend(pre_articles)
+
+                        logger.found(len(articles), f"makale (issue {issue_idx})")
+                        result = {'issue_info': issue_info, 'articles': articles}
+
+                else:
+                    # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
+                    result = self._process_single_issue(
+                        issue_stub=issue_stub,
+                        max_articles=max_articles,
+                        max_tabs=1,
+                        article_progress_callback=article_progress_callback,
+                        article_list_callback=article_list_callback,
+                        issue_idx=issue_idx,
+                        total_issues=len(issues_to_process),
+                        reusable_drivers=None,
+                    )
 
                 for article in result['articles']:
                     article['journal_name'] = journal_name
@@ -911,7 +1531,13 @@ class ACMScraper:
         return result
             
     def close(self):
-        """Tarayıcıyı kapat"""
+        """Tarayıcıyı kapat (oturum sonu — worker havuzu dahil)"""
+        for wd in self._worker_pool:
+            try:
+                wd.close()
+            except Exception as close_err:
+                logger.warning(f"Worker driver kapatma hatası: {close_err}")
+        self._worker_pool = []
         try:
             if self.selenium_driver:
                 self.selenium_driver.close()

@@ -36,7 +36,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
     const [lastEvent, setLastEvent] = useState<ScraperEvent | null>(null);
     const [events, setEvents] = useState<ScraperEvent[]>([]);
     const [reconnectCount, setReconnectCount] = useState(0);
-    const [subscribedScrapers, setSubscribedScrapers] = useState<string[]>(['ieee', 'sciencedirect', 'acm']);
+    const [subscribedScrapers, setSubscribedScrapers] = useState<string[]>(['ieee', 'sciencedirect', 'acm', 'wiley', 'springer']);
 
     const wsRef = useRef<WebSocket | null>(null);
     const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -103,7 +103,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
                     const event: ScraperEvent = JSON.parse(e.data);
                     if (event.type === 'pong') return; // heartbeat ack — ignore
                     setLastEvent(event);
-                    setEvents((prev) => [event, ...prev].slice(0, 100));
+                    setEvents((prev) => [event, ...prev].slice(0, 1000));
                 } catch {
                     // Invalid JSON — ignore
                 }
@@ -175,7 +175,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
     }, []);
 
     const subscribe = useCallback((scrapers: string[]) => {
-        const normalized = scrapers.length === 0 ? ['ieee', 'sciencedirect', 'acm'] : scrapers;
+        const normalized = scrapers.length === 0 ? ['ieee', 'sciencedirect', 'acm', 'wiley', 'springer'] : scrapers;
         setSubscribedScrapers(normalized);
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {

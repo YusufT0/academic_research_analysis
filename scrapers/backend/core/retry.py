@@ -50,3 +50,37 @@ http_retry = retry(
     before_sleep=before_sleep_log(logger, logging.WARNING),
     reraise=True,
 )
+
+# Selenium operasyonları: yavaş timeout'larda artan backoff ile tekrar dener.
+# selenium importu try/except ile sarılır ki backend selenium yokken de
+# import edilebilsin (ör. sadece API/analiz çalıştırılırken).
+try:
+    from selenium.common.exceptions import TimeoutException as _SeleniumTimeout
+
+    def make_selenium_retry(
+        max_attempts: int = 3,
+        backoff_base: float = 1.5,
+        backoff_cap: float = 30.0,
+    ):
+        """Settings'ten parametrelerle Selenium-aware retry dekoratörü üretir."""
+        return retry(
+            stop=stop_after_attempt(max_attempts),
+            wait=wait_random_exponential(multiplier=backoff_base, max=backoff_cap),
+            retry=retry_if_exception_type((_SeleniumTimeout,)),
+            before_sleep=before_sleep_log(logger, logging.WARNING),
+            reraise=True,
+        )
+
+    # Varsayılan parametrelerle hazır dekoratör
+    selenium_retry = make_selenium_retry()
+    SELENIUM_RETRY_AVAILABLE = True
+except ImportError:  # selenium kurulu değil — backend yine de import edilebilsin
+    SELENIUM_RETRY_AVAILABLE = False
+
+    def make_selenium_retry(*args, **kwargs):  # type: ignore[misc]
+        """selenium yokken no-op passthrough dekoratör."""
+        def _identity(fn):
+            return fn
+        return _identity
+
+    selenium_retry = make_selenium_retry()
