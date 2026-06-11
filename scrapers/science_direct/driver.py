@@ -15,6 +15,7 @@ scraper.py / rate_limiter.py / navigation.py hiçbir değişiklik gerektirmeden 
   WebDriverWait(self.driver, t).until(cond)   →  proxy interface ile çalışır
 """
 
+import concurrent.futures
 import sys
 import time
 from datetime import datetime
@@ -175,6 +176,82 @@ class SeleniumDriver:
         self.close()
 
     # ------------------------------------------------------------------ #
+    #  Stealth / Fingerprint patching
+    # ------------------------------------------------------------------ #
+
+    # CDP ile her yeni belge yüklenmeden önce çalışacak stealth JS.
+    # UC mode zaten navigator.webdriver'ı patch eder; bu script geri kalanları kapatır.
+    _STEALTH_SCRIPT = r"""
+(() => {
+    // 1. window.chrome runtime — yoksa otomasyona işaret eder
+    if (!window.chrome) {
+        window.chrome = {
+            app: { isInstalled: false, InstallState: { DISABLED:'disabled', INSTALLED:'installed', NOT_INSTALLED:'not_installed' }, RunningState: { CANNOT_RUN:'cannot_run', READY_TO_RUN:'ready_to_run', RUNNING:'running' } },
+            runtime: {
+                OnInstalledReason: { CHROME_UPDATE:'chrome_update', INSTALL:'install', SHARED_MODULE_UPDATE:'shared_module_update', UPDATE:'update' },
+                OnRestartRequiredReason: { APP_UPDATE:'app_update', OS_UPDATE:'os_update', PERIODIC:'periodic' },
+                PlatformArch: { ARM:'arm', ARM64:'arm64', MIPS:'mips', MIPS64:'mips64', X86_32:'x86-32', X86_64:'x86-64' },
+                PlatformOs: { ANDROID:'android', CROS:'cros', LINUX:'linux', MAC:'mac', OPENBSD:'openbsd', WIN:'win' },
+                RequestUpdateCheckStatus: { NO_UPDATE:'no_update', THROTTLED:'throttled', UPDATE_AVAILABLE:'update_available' },
+                connect: () => {}, sendMessage: () => {}, id: undefined,
+            },
+            loadTimes: function() { return { requestTime: Date.now()/1000, startLoadTime: Date.now()/1000, commitLoadTime: Date.now()/1000, finishDocumentLoadTime: Date.now()/1000, finishLoadTime: Date.now()/1000, firstPaintTime: Date.now()/1000, firstPaintAfterLoadTime: 0, navigationType:'Other', wasFetchedViaSpdy:false, wasNpnNegotiated:true, npnNegotiatedProtocol:'h2', wasAlternateProtocolAvailable:false, connectionInfo:'h2' }; },
+            csi: function() { return { startE: Date.now(), onloadT: Date.now(), pageT: 1000 + Math.random()*4000, tran: 15 }; },
+        };
+    }
+
+    // 2. navigator.languages — tutarlı locale
+    try {
+        Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
+    } catch(e) {}
+
+    // 3. navigator.hardwareConcurrency — gerçekçi
+    try {
+        if (!navigator.hardwareConcurrency || navigator.hardwareConcurrency < 2) {
+            Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8, configurable: true });
+        }
+    } catch(e) {}
+
+    // 4. navigator.deviceMemory — gerçekçi
+    try {
+        if (!navigator.deviceMemory) {
+            Object.defineProperty(navigator, 'deviceMemory', { get: () => 8, configurable: true });
+        }
+    } catch(e) {}
+
+    // 5. navigator.permissions — Notification.permission ile tutarlı
+    try {
+        const _origQuery = navigator.permissions.query.bind(navigator.permissions);
+        Object.defineProperty(navigator.permissions, 'query', {
+            value: (params) => {
+                if (params && params.name === 'notifications') {
+                    return Promise.resolve({ state: (typeof Notification !== 'undefined' ? Notification.permission : 'default'), onchange: null });
+                }
+                return _origQuery(params);
+            },
+            configurable: true,
+        });
+    } catch(e) {}
+})();
+"""
+
+    def _inject_stealth_scripts(self) -> None:
+        """
+        CDP üzerinden stealth JS'i her yeni belge öncesinde çalışacak şekilde ekler.
+        UC mode navigator.webdriver'ı patch eder; bu metot geri kalan sinyalleri kapatır.
+        """
+        if not self._raw_driver:
+            return
+        try:
+            self._raw_driver.execute_cdp_cmd(
+                'Page.addScriptToEvaluateOnNewDocument',
+                {'source': self._STEALTH_SCRIPT}
+            )
+            logger.debug("Stealth scripts injected via CDP")
+        except Exception as e:
+            logger.debug(f"Stealth script injection başarısız (devam): {e}")
+
+    # ------------------------------------------------------------------ #
     #  Cloudflare detection & solving
     # ------------------------------------------------------------------ #
 
@@ -185,47 +262,78 @@ class SeleniumDriver:
         except Exception:
             return False
 
-    def _solve_cloudflare(self) -> bool:
+    def _human_pause(self, lo: float = 1.5, hi: float = 4.0) -> None:
+        """Rastgele insan benzeri bekleme — CF davranış analizini geçmek için."""
+        import random
+        time.sleep(random.uniform(lo, hi))
+
+    def _solve_cloudflare(self, max_click_attempts: int = 3) -> bool:
         """
-        Cloudflare JS challenge veya CAPTCHA çözümü.
-        UC modda sb.solve_captcha() ve sb.uc_gui_click_captcha() çalışır.
+        Cloudflare Turnstile / JS challenge çözümü.
+
+        Sıra:
+          1. 10s otomatik geçiş bekle (ucmode bunu bazen kendisi halleder)
+          2. uc_gui_handle_captcha() — SB'nin kendi retry'lı CF handler'ı
+          3. uc_gui_click_cf() — CF Turnstile'a özel tıklayıcı (generic değil)
+             Her tıklamadan sonra sayfa yeniden yüklenebilir; max_click_attempts kez dene.
         """
         if not self._is_cloudflare():
             return True
 
-        logger.warning("Cloudflare challenge algılandı, 10s bekleniyor...")
+        logger.warning("Cloudflare challenge algılandı, otomatik geçiş bekleniyor (10s)...")
         time.sleep(10)
 
         if not self._is_cloudflare():
             logger.success("Cloudflare otomatik geçildi")
             return True
 
-        if self._sb:
-            # solve_captcha — bazı SB versiyonlarında mevcut değil, güvenli kontrol
-            for method_name in ("solve_captcha", "uc_gui_handle_captcha"):
-                if hasattr(self._sb, method_name):
-                    try:
-                        logger.info(f"{method_name}() deneniyor...")
-                        getattr(self._sb, method_name)()
-                        time.sleep(3)
-                        if not self._is_cloudflare():
-                            logger.success(f"Cloudflare {method_name}() ile çözüldü")
-                            return True
-                    except Exception as e:
-                        logger.warning(f"{method_name}() hatası: {e}")
-                    break  # sadece var olan ilk metodu dene
+        if not self._sb:
+            logger.warning("SB instance yok, CF çözülemiyor")
+            return False
 
+        # Adım 2: uc_gui_handle_captcha — SB'nin kendi retry'lı handler'ı (CF + reCAPTCHA)
+        if hasattr(self._sb, "uc_gui_handle_captcha"):
             try:
-                logger.info("uc_gui_click_captcha() deneniyor...")
-                self._sb.uc_gui_click_captcha()
-                time.sleep(5)
+                logger.info("uc_gui_handle_captcha() deneniyor...")
+                self._human_pause(1.0, 2.5)   # insan benzeri gecikme
+                self._sb.uc_gui_handle_captcha()
+                time.sleep(6)
                 if not self._is_cloudflare():
-                    logger.success("Cloudflare uc_gui_click_captcha() ile çözüldü")
+                    logger.success("Cloudflare uc_gui_handle_captcha() ile çözüldü")
                     return True
+                logger.warning("uc_gui_handle_captcha() sonrası CF hala mevcut")
             except Exception as e:
-                logger.warning(f"uc_gui_click_captcha() hatası: {e}")
+                logger.warning(f"uc_gui_handle_captcha() hatası: {e}")
 
-        logger.warning(f"Cloudflare geçilemedi (başlık: {(self._raw_driver.title or '')[:40]})")
+        # Adım 3: uc_gui_click_cf — CF Turnstile'a özel (generic detect adımı yok)
+        cf_click_fn = getattr(self._sb, "uc_gui_click_cf", None) or getattr(self._sb, "uc_gui_click_captcha", None)
+        if cf_click_fn is None:
+            logger.warning("CF tıklama metodu bulunamadı")
+            return False
+
+        method_name = "uc_gui_click_cf" if hasattr(self._sb, "uc_gui_click_cf") else "uc_gui_click_captcha"
+        for click_attempt in range(1, max_click_attempts + 1):
+            try:
+                logger.info(f"{method_name}() deneniyor (tık {click_attempt}/{max_click_attempts})...")
+                self._human_pause(0.8, 2.0)   # tıklamadan önce kısa insan gecikmesi
+                cf_click_fn()
+                # Sayfa yeniden yüklenebilir — yeterli süre bekle
+                time.sleep(8)
+                if not self._is_cloudflare():
+                    logger.success(f"Cloudflare {method_name}() ile çözüldü (tık {click_attempt})")
+                    return True
+                logger.warning(f"Tık {click_attempt}/{max_click_attempts}: CF hala mevcut")
+                if click_attempt < max_click_attempts:
+                    backoff = 12 * click_attempt
+                    logger.warning(f"{backoff}s bekleniyor...")
+                    time.sleep(backoff)
+            except Exception as e:
+                logger.warning(f"{method_name}() hatası (tık {click_attempt}): {e}")
+                if click_attempt < max_click_attempts:
+                    time.sleep(5)
+
+        logger.warning(f"Cloudflare {max_click_attempts} tıklamada geçilemedi "
+                       f"(başlık: {(self._raw_driver.title or '')[:40]})")
         return False
 
     def _handle_cookie_consent(self) -> bool:
@@ -330,8 +438,14 @@ class SeleniumDriver:
                 network_class=self.network_class,
             )
 
-            self._raw_driver.set_window_size(1920, 1080)
+            import random
+            w = random.choice([1920, 1440, 1536, 1280])
+            h = random.choice([1080, 900, 864, 800])
+            self._raw_driver.set_window_size(w, h)
             maybe_emulate_slow_network(self._raw_driver, settings)
+
+            # Her yeni belge yüklenmeden önce stealth JS çalışsın (CF fingerprint bypass)
+            self._inject_stealth_scripts()
 
             logger.success(
                 f"SeleniumBase WebDriver başlatıldı {'(proxy ile)' if use_proxy else '(proxy yok)'}"
@@ -349,7 +463,20 @@ class SeleniumDriver:
         if self._sb_context:
             try:
                 logger.info("WebDriver kapatılıyor...")
-                self._sb_context.__exit__(None, None, None)
+                # SB context exit triggers asyncio cleanup; run in isolated thread
+                # to avoid "event loop is already running" from FastAPI/CDP loops.
+                ctx = self._sb_context
+                def _exit():
+                    import asyncio
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                    ctx.__exit__(None, None, None)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
+                    executor.submit(_exit).result(timeout=15)
+                except Exception:
+                    pass
+                finally:
+                    executor.shutdown(wait=False)
             except OSError:
                 pass
             except Exception as e:
@@ -465,7 +592,9 @@ class SeleniumDriver:
                 if wait_after > 0:
                     time.sleep(min(wait_after, 3))
 
-                self._solve_cloudflare()
+                cf_solved = self._solve_cloudflare()
+                if not cf_solved:
+                    logger.warning(f"fetch_cf_unsolved scraper=sciencedirect url={url}")
                 self._handle_cookie_consent()
 
                 logger.success("Sayfa yüklendi")

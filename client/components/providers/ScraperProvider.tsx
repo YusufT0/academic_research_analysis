@@ -103,7 +103,7 @@ export function ScraperProvider({ children, url }: { children: React.ReactNode; 
                     const event: ScraperEvent = JSON.parse(e.data);
                     if (event.type === 'pong') return; // heartbeat ack — ignore
                     setLastEvent(event);
-                    setEvents((prev) => [event, ...prev].slice(0, 100));
+                    setEvents((prev) => [event, ...prev].slice(0, 1000));
                 } catch {
                     // Invalid JSON — ignore
                 }

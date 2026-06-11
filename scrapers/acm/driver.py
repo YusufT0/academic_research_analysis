@@ -220,23 +220,30 @@ class SeleniumDriver:
         if self._sb_context:
             try:
                 logger.info("WebDriver kapatılıyor...")
-                self._sb_context.__exit__(None, None, None)
+                # SB context exit triggers asyncio cleanup; run in isolated thread
+                # to avoid "event loop is already running" from FastAPI/CDP loops.
+                ctx = self._sb_context
+                def _exit():
+                    import asyncio
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                    ctx.__exit__(None, None, None)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
+                    executor.submit(_exit).result(timeout=15)
+                except Exception:
+                    pass
+                finally:
+                    executor.shutdown(wait=False)
+            except OSError:
+                pass
+            except Exception as e:
+                logger.warning(f"WebDriver kapatma hatası: {e}")
+            finally:
                 self._sb = None
                 self._sb_context = None
                 self.driver = None
                 self._cdp_active = False
                 logger.success("WebDriver kapatıldı")
-            except OSError:
-                self._sb = None
-                self._sb_context = None
-                self.driver = None
-                self._cdp_active = False
-            except Exception as e:
-                logger.warning(f"WebDriver kapatma hatası: {e}")
-                self._sb = None
-                self._sb_context = None
-                self.driver = None
-                self._cdp_active = False
         elif self.driver:
             try:
                 self.driver.quit()

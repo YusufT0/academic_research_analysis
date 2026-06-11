@@ -815,8 +815,18 @@ class IEEEXploreScraper:
         reusable_drivers: Optional[List[SeleniumDriver]] = None,
         article_progress_callback=None,
         pool_bg: Optional[threading.Thread] = None,
+        lookahead_jobs: Optional[queue.Queue] = None,
+        lookahead_feed_thread: Optional[threading.Thread] = None,
+        lookahead_holder: Optional[dict] = None,
     ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        """Issue içindeki makaleleri worker havuzu ile paralel işler."""
+        """Issue içindeki makaleleri worker havuzu ile paralel işler.
+
+        lookahead_jobs / lookahead_feed_thread / lookahead_holder:
+          Opsiyonel çapraz-issue iş çalma. Ana kuyruk boşaldığında worker'lar
+          lookahead_feed_thread canlıyken (prefetch devam ederken) lookahead_jobs
+          kuyruğunu bekler ve dolar dolmaz işlemeye başlar. Sonuçlar
+          lookahead_holder'a yazılır (ana issue sayaçlarına dahil edilmez).
+        """
         total = len(article_stubs)
         # Adaptif eşzamanlılık: yavaş/dengesiz hatta worker havuzunu kısıtla
         adaptive_tabs = concurrency_controller.effective_max_tabs('ieee', max_tabs)
@@ -848,10 +858,37 @@ class IEEEXploreScraper:
                                 return
                             time.sleep(0.2)
 
+                    _is_lookahead = False
                     try:
                         idx, article_stub = jobs.get_nowait()
                     except queue.Empty:
-                        return
+                        if lookahead_jobs is None:
+                            return
+                        # Ana kuyruk bitti; sonraki issue'nun stubs'larını işle
+                        article_stub = None
+                        while True:
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            try:
+                                article_stub = lookahead_jobs.get_nowait()
+                                _is_lookahead = True
+                                idx = None
+                                break
+                            except queue.Empty:
+                                feed_alive = (
+                                    lookahead_feed_thread is not None
+                                    and lookahead_feed_thread.is_alive()
+                                )
+                                if not feed_alive:
+                                    # Thread öldü; son koyduğu itemları drain et
+                                    try:
+                                        article_stub = lookahead_jobs.get_nowait()
+                                        _is_lookahead = True
+                                        idx = None
+                                        break
+                                    except queue.Empty:
+                                        return
+                                time.sleep(0.05)
 
                     article_url = article_stub.get('url', '')
                     full_url = (
@@ -904,18 +941,27 @@ class IEEEXploreScraper:
 
                     with lock:
                         nonlocal processed_count
-                        processed_count += 1
-                        if article_ok:
-                            results_by_index[idx] = article_data
+                        if _is_lookahead:
+                            if lookahead_holder is not None:
+                                stub_url = article_stub.get('url', '')
+                                if article_ok:
+                                    lookahead_holder['articles'].append(article_data)
+                                    lookahead_holder['success_stubs'].add(stub_url)
+                                else:
+                                    lookahead_holder['failed'].append(article_stub)
                         else:
-                            failed_stubs.append(article_stub)
+                            processed_count += 1
+                            if article_ok:
+                                results_by_index[idx] = article_data
+                            else:
+                                failed_stubs.append(article_stub)
 
-                        if article_progress_callback:
-                            callback_payload = (
-                                processed_count,
-                                total,
-                                article_data.get('title') if article_data else None,
-                            )
+                            if article_progress_callback:
+                                callback_payload = (
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
 
                     if callback_payload:
                         try:
@@ -1105,6 +1151,7 @@ class IEEEXploreScraper:
             _pf_thread: Optional[threading.Thread] = None
             _pf_next_idx: int = -1
             _pf_holder: dict = {}
+            _prev_lookahead_res: Optional[dict] = None  # önceki issue'dan lookahead sonuçları
 
             for issue_idx, issue_stub in enumerate(issues_to_process, 1):
                 self.check_stop_flag()
@@ -1163,9 +1210,27 @@ class IEEEXploreScraper:
                     if not article_stubs:
                         logger.warning(f"  Issue için makale bulunamadı: {issue_stub.get('title')}")
                         result = {'issue_info': issue_info, 'articles': []}
+                        _prev_lookahead_res = None
                     else:
+                        # Önceki issue sırasında lookahead ile önden işlenen makaleleri uygula
+                        pre_articles: List[Dict[str, Any]] = []
+                        if _prev_lookahead_res and _prev_lookahead_res.get('success_stubs'):
+                            pre_articles = _prev_lookahead_res.get('articles', [])
+                            success_stubs = _prev_lookahead_res['success_stubs']
+                            if pre_articles:
+                                logger.info(
+                                    f"Issue {issue_idx}: {len(pre_articles)} makale önceki "
+                                    f"issue sırasında önden işlendi, atlanıyor"
+                                )
+                            article_stubs = [
+                                s for s in article_stubs
+                                if s.get('url', '') not in success_stubs
+                            ]
+                        _prev_lookahead_res = None
+
                         if max_articles:
-                            article_stubs = article_stubs[:max_articles]
+                            remaining_limit = max(0, max_articles - len(pre_articles))
+                            article_stubs = article_stubs[:remaining_limit]
 
                         if article_list_callback:
                             try:
@@ -1174,6 +1239,9 @@ class IEEEXploreScraper:
                                 pass
 
                         # Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                        _lookahead_q: Optional[queue.Queue] = None
+                        _lookahead_res: Optional[dict] = None
+
                         next_idx = issue_idx + 1
                         if next_idx <= len(issues_to_process):
                             next_stub = issues_to_process[next_idx - 1]
@@ -1181,18 +1249,24 @@ class IEEEXploreScraper:
                             _pf_holder = holder_ref
                             _pf_next_idx = next_idx
                             total_count = len(issues_to_process)
+                            _lookahead_q = queue.Queue()
+                            _lookahead_res = {'articles': [], 'failed': [], 'success_stubs': set()}
 
                             def _do_prefetch(
                                 stub=next_stub, idx=next_idx,
                                 h=holder_ref, total=total_count,
+                                lq=_lookahead_q, ma=max_articles,
                             ):
                                 try:
                                     self.check_stop_flag()
                                     ni, ns = self._fetch_issue_page(stub, idx, total)
                                     h['data'] = (ni, ns)
+                                    ns_limited = ns[:ma] if ma else ns
+                                    for s in ns_limited:
+                                        lq.put(s)
                                     logger.info(
                                         f"Issue {idx} prefetch tamamlandı "
-                                        f"({len(ns)} makale linki worker'lar için hazır)"
+                                        f"({len(ns_limited)} stub lookahead kuyruğuna eklendi)"
                                     )
                                 except ScraperStoppedException:
                                     pass
@@ -1202,16 +1276,26 @@ class IEEEXploreScraper:
                             _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
                             _pf_thread.start()
 
-                        # Makaleleri worker tablarla işle
-                        # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
-                        articles, failed_stubs = self._process_issue_articles_parallel(
-                            article_stubs=article_stubs,
-                            max_tabs=max_tabs,
-                            reusable_drivers=parallel_drivers,
-                            article_progress_callback=article_progress_callback,
-                            pool_bg=_pool_bg,
-                        )
-                        _pool_bg = None  # join zaten içeride yapıldı
+                        if article_stubs:
+                            # Makaleleri worker tablarla işle
+                            # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                            articles, failed_stubs = self._process_issue_articles_parallel(
+                                article_stubs=article_stubs,
+                                max_tabs=max_tabs,
+                                reusable_drivers=parallel_drivers,
+                                article_progress_callback=article_progress_callback,
+                                pool_bg=_pool_bg,
+                                lookahead_jobs=_lookahead_q,
+                                lookahead_feed_thread=_pf_thread,
+                                lookahead_holder=_lookahead_res,
+                            )
+                            _pool_bg = None  # join zaten içeride yapıldı
+                        else:
+                            articles = []
+                            failed_stubs = []
+
+                        # lookahead sonuçlarını bir sonraki iterasyon için sakla
+                        _prev_lookahead_res = _lookahead_res
 
                         # Retry öncesi prefetch thread'ini bekle (self.driver çakışmasını önle)
                         if _pf_thread and _pf_thread.is_alive():
@@ -1260,6 +1344,9 @@ class IEEEXploreScraper:
                                 except Exception as e:
                                     logger.warning(f"Retry hatası ({article_url}): {e}")
                                     continue
+
+                        # Önden işlenen makaleleri son listeye ekle
+                        articles.extend(pre_articles)
 
                         logger.found(len(articles), f"makale (issue {issue_idx})")
                         result = {'issue_info': issue_info, 'articles': articles}

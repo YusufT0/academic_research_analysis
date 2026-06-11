@@ -415,6 +415,7 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
 
   const isRunning = effectiveScraper.status === 'running';
   const isPaused = effectiveScraper.status === 'paused';
+  const isStarting = effectiveScraper.status === 'starting';
   const canStart = ['idle', 'stopped', 'completed', 'error'].includes(effectiveScraper.status);
 
   return (
@@ -630,6 +631,12 @@ function ScraperControl({ scraper, title, description, onStart, onStop, onPause,
           )}
 
           <div className="flex gap-3 w-full">
+            {isStarting && (
+              <Button variant="secondary" onClick={() => handleAction(onStop)} isLoading={actionLoading} className="flex-1">
+                <Square className="h-4 w-4 mr-2" />
+                Durdur
+              </Button>
+            )}
             {isRunning && (
               <>
                 <Button variant="warning" onClick={() => handleAction(onPause)} isLoading={actionLoading} className="flex-1">
@@ -839,15 +846,17 @@ function useSplitLogPanel(scraperType: string) {
     const loadHistory = async () => {
       try {
         const data = await getScraperLogs(scraperType, 500);
-        const entries: LogEntry[] = (data.logs || []).map((l: LogEntry & { scraper_type?: string }) => ({
-          ...l,
-          scraper_type: l.scraper_type ?? scraperType,
-        }));
+        const entries: LogEntry[] = (data.logs || [])
+          .filter((l: LogEntry & { scraper_type?: string }) => !l.scraper_type || l.scraper_type === scraperType)
+          .map((l: LogEntry & { scraper_type?: string }) => ({
+            ...l,
+            scraper_type: scraperType,
+          }));
         setLogs((prev) => {
-          // WS ile gelen yeniler + eski REST logları, duplike olmadan birleştir
-          const existing = new Set(prev.map((e) => `${e.timestamp}|${e.message}`));
-          const fresh = entries.filter((e) => !existing.has(`${e.timestamp}|${e.message}`));
-          return [...prev, ...fresh].sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 1000);
+          // REST loglarını öne koy, WS ile gelen mevcut loglarla birleştir, dedup yap
+          const allLogs = [...entries, ...prev];
+          const unique = allLogs.filter((e, i, arr) => arr.findIndex((x) => x.timestamp === e.timestamp && x.message === e.message) === i);
+          return unique.sort((a, b) => b.timestamp.localeCompare(a.timestamp)).slice(0, 1000);
         });
       } catch { /* ignore */ }
     };
@@ -871,6 +880,7 @@ function useSplitLogPanel(scraperType: string) {
           const event: ScraperEvent = JSON.parse(e.data);
           if (event.type === 'pong' || event.type === 'connected' || event.type === 'subscribed') return;
           if (event.type === 'log' || event.type === 'error') {
+            if (event.scraper_type !== scraperType) return;
             const entry = wsEventToLogEntry(event);
             if (clearedAtRef.current && entry.timestamp <= clearedAtRef.current) return;
             setLogs((prev) => [entry, ...prev].slice(0, 1000));
@@ -970,13 +980,13 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
       const scraperParam = subscribedScrapers.length === SCRAPER_OPTIONS.length ? 'all' : subscribedScrapers[0] ?? 'all';
       const data = await getScraperLogs(scraperParam, 500);
       setPolledLogs(prev => {
-        // Yeni logları mevcut loglarla birleştir, duplike olanları kaldır
-        const allLogs = [...prev, ...(data.logs || [])];
+        // REST'ten gelen yeni logları öne koy, sonra prev'deki eski logları ekle; dedup yap
+        const allLogs = [...(data.logs || []), ...prev];
         const unique = allLogs.filter(
           (l, i, arr) => arr.findIndex((x) => x.timestamp === l.timestamp && x.message === l.message) === i
         );
-        // Son 500'ü tut
-        return unique.slice(-500);
+        // En yeni 500'ü tut
+        return unique.slice(0, 500);
       });
     } catch (err) {
       console.error(err);
@@ -990,8 +1000,9 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
   }, [fetchLogs, viewMode]);
 
   useEffect(() => {
-    if (!isWsConnected && viewMode === 'combined') {
-      const interval = setInterval(fetchLogs, 5000);
+    if (viewMode === 'combined') {
+      // WS bağlıyken tarihsel buffer'ı taze tut (30s); bağlı değilse daha sık poll yap (5s)
+      const interval = setInterval(fetchLogs, isWsConnected ? 30000 : 5000);
       return () => clearInterval(interval);
     }
   }, [isWsConnected, fetchLogs, viewMode]);
@@ -1024,6 +1035,7 @@ function ScraperLogs({ wsEvents, isWsConnected }: { wsEvents: ScraperEvent[]; is
 
   const combinedLogs = [...wsLogEntries, ...polledLogs]
     .filter((l, i, arr) => arr.findIndex((x) => x.timestamp === l.timestamp && x.message === l.message) === i)
+    .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
     .slice(0, 500)
     .filter((l) => !search.trim() || l.message.toLowerCase().includes(search.toLowerCase()));
 

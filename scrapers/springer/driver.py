@@ -198,7 +198,20 @@ class SeleniumDriver:
         if self._sb_context:
             try:
                 logger.info("WebDriver kapatılıyor...")
-                self._sb_context.__exit__(None, None, None)
+                # SB context exit triggers asyncio cleanup; run in isolated thread
+                # to avoid "event loop is already running" from FastAPI/CDP loops.
+                ctx = self._sb_context
+                def _exit():
+                    import asyncio
+                    asyncio.set_event_loop(asyncio.new_event_loop())
+                    ctx.__exit__(None, None, None)
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
+                    executor.submit(_exit).result(timeout=15)
+                except Exception:
+                    pass
+                finally:
+                    executor.shutdown(wait=False)
             except OSError:
                 pass
             except Exception as e:
@@ -431,9 +444,15 @@ class SeleniumDriver:
 
                 if not self._cdp_active:
                     # İlk navigasyon — CDP modunu aktifleştir
+                    # Not: CDP çağrıları kendi asyncio loop'larını yönetir;
+                    # thread'e yeni bir event loop atayarak FastAPI loop'uyla çakışma önlenir.
+                    def _activate():
+                        import asyncio
+                        asyncio.set_event_loop(asyncio.new_event_loop())
+                        return self._sb.activate_cdp_mode(url)
                     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = executor.submit(self._sb.activate_cdp_mode, url)
+                        future = executor.submit(_activate)
                         try:
                             future.result(timeout=self.page_load_timeout)
                             self._cdp_active = True
@@ -443,9 +462,13 @@ class SeleniumDriver:
                         executor.shutdown(wait=False)
                 else:
                     # Sonraki navigasyonlar — CDP modunda kal
+                    def _cdp_get():
+                        import asyncio
+                        asyncio.set_event_loop(asyncio.new_event_loop())
+                        return self._sb.cdp.get(url)
                     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = executor.submit(self._sb.cdp.get, url)
+                        future = executor.submit(_cdp_get)
                         try:
                             future.result(timeout=self.page_load_timeout)
                         except concurrent.futures.TimeoutError:
@@ -475,6 +498,7 @@ class SeleniumDriver:
                         'ERR_TUNNEL_CONNECTION_FAILED', 'ERR_PROXY_CONNECTION_FAILED',
                         'ERR_CONNECTION_REFUSED', 'ERR_CONNECTION_TIMED_OUT',
                         'net::ERR_', 'timeout', 'timed out',
+                        'event loop is already running',  # CDP/asyncio çakışması — driver yeniden başlat
                     ]
                 )
 

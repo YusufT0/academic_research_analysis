@@ -682,6 +682,9 @@ class WileyScraper:
         article_progress_callback: Callable = None,
         reusable_drivers=None,
         pool_bg: Optional[threading.Thread] = None,
+        lookahead_jobs: Optional[queue.Queue] = None,
+        lookahead_feed_thread: Optional[threading.Thread] = None,
+        lookahead_holder: Optional[dict] = None,
     ) -> tuple[List[Dict[str, Any]], List[str]]:
         """Issue içindeki makaleleri worker havuzu ile paralel işler."""
         total = len(full_text_stubs)
@@ -719,10 +722,36 @@ class WileyScraper:
                                 return
                             time.sleep(0.2)
 
+                    _is_lookahead = False
                     try:
                         idx, stub = jobs.get_nowait()
                     except queue.Empty:
-                        return
+                        if lookahead_jobs is None:
+                            return
+                        stub = None
+                        while True:
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            try:
+                                stub = lookahead_jobs.get_nowait()
+                                _is_lookahead = True
+                                idx = None
+                                break
+                            except queue.Empty:
+                                feed_alive = (
+                                    lookahead_feed_thread is not None
+                                    and lookahead_feed_thread.is_alive()
+                                )
+                                if not feed_alive:
+                                    # Thread öldü; son koyduğu itemları drain et
+                                    try:
+                                        stub = lookahead_jobs.get_nowait()
+                                        _is_lookahead = True
+                                        idx = None
+                                        break
+                                    except queue.Empty:
+                                        return
+                                time.sleep(0.05)
 
                     article_url = _to_article_url(stub)
                     article_data = None
@@ -747,7 +776,8 @@ class WileyScraper:
                                 self._restart_single_worker(worker_id, pool_index, "rate_limit_error")
                             else:
                                 local_driver.restart()
-                            jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                            if not _is_lookahead:
+                                jobs.put((idx, stub))  # retry kuyruğuna geri koy
                             break  # attempt döngüsünden çık
                         except CloudflareBlockedException as e:
                             logger.warning(f"Worker-{worker_id}: Cloudflare bloklama hatası")
@@ -755,7 +785,8 @@ class WileyScraper:
                                 self._restart_single_worker(worker_id, pool_index, "cloudflare_blocked")
                             else:
                                 local_driver.restart()
-                            jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                            if not _is_lookahead:
+                                jobs.put((idx, stub))  # retry kuyruğuna geri koy
                             break  # attempt döngüsünden çık
                         except Exception:
                             article_data = None
@@ -765,18 +796,29 @@ class WileyScraper:
 
                     with lock:
                         nonlocal processed_count
-                        processed_count += 1
-                        if article_ok:
-                            results_by_index[idx] = article_data
+                        if _is_lookahead:
+                            if lookahead_holder is not None:
+                                if article_ok:
+                                    lookahead_holder['articles'].append(article_data)
+                                    # Wiley stubs use doi_url/doi, not url
+                                    _stub_key = stub.get('doi_url', '') or stub.get('doi', '')
+                                    if _stub_key:
+                                        lookahead_holder['success_stubs'].add(_stub_key)
+                                else:
+                                    lookahead_holder['failed'].append(stub)
                         else:
-                            retry_urls.append(article_url)
+                            processed_count += 1
+                            if article_ok:
+                                results_by_index[idx] = article_data
+                            else:
+                                retry_urls.append(article_url)
 
-                        if article_progress_callback:
-                            callback_payload = (
-                                processed_count,
-                                total,
-                                article_data.get('title') if article_data else None,
-                            )
+                            if article_progress_callback:
+                                callback_payload = (
+                                    processed_count,
+                                    total,
+                                    article_data.get('title') if article_data else None,
+                                )
 
                     if callback_payload:
                         try:
@@ -1106,17 +1148,20 @@ class WileyScraper:
 
             # ── 3a. Issue-based ───────────────────────────────────────────────
             if journal_type != 'article_based':
-                # Worker havuzunu arka planda başlat; issue listesi yüklenirken tarayıcılar açılır
-                _pool_container: list = []
+                # Worker havuzunu hazırla; ilk dergide arka planda aç, sonrakilerde zaten hazır.
+                # parallel_drivers doğrudan self._worker_pool'u gösterir — her dergi için
+                # ayrı yerel liste OLUŞTURMA, aksi hâlde 2. dergiden itibaren havuz boş görünür.
                 _pool_bg: Optional[threading.Thread] = None
-                if max_tabs > 1:
+                if max_tabs > 1 and len(self._worker_pool) < max_tabs:
                     _pool_bg = threading.Thread(
-                        target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
+                        target=lambda: self._ensure_worker_pool(max_tabs),
                         daemon=True,
                     )
                     _pool_bg.start()
                     logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
-                parallel_drivers = _pool_container
+                elif max_tabs > 1:
+                    logger.info(f"Worker havuzu zaten hazır: {len(self._worker_pool)} driver")
+                parallel_drivers = self._worker_pool  # canlı referans — dolu veya dolmakta
 
                 all_issues = self._extract_all_issues(
                     journal_id,
@@ -1177,6 +1222,7 @@ class WileyScraper:
                 _pf_thread: Optional[threading.Thread] = None
                 _pf_next_idx: int = -1
                 _pf_holder: dict = {}
+                _prev_lookahead_res: Optional[dict] = None  # önceki issue'dan lookahead sonuçları
 
                 for idx, issue in enumerate(issues_to_process, 1):
                     self.check_stop_flag()
@@ -1235,10 +1281,30 @@ class WileyScraper:
                         if not full_text_stubs:
                             logger.warning("  Full Text makale bulunamadı, issue atlanıyor")
                             result = {'issue_info': issue_obj, 'articles': []}
+                            _prev_lookahead_res = None
                         else:
-                            if max_articles and len(full_text_stubs) > max_articles:
-                                full_text_stubs = full_text_stubs[:max_articles]
-                                logger.info(f"  max_articles={max_articles} ile kırpıldı")
+                            # Önceki issue sırasında lookahead ile önden işlenen makaleleri uygula
+                            pre_articles: List[Dict[str, Any]] = []
+                            if _prev_lookahead_res and _prev_lookahead_res.get('success_stubs'):
+                                pre_articles = _prev_lookahead_res.get('articles', [])
+                                success_stubs = _prev_lookahead_res['success_stubs']
+                                if pre_articles:
+                                    logger.info(
+                                        f"Issue {idx}: {len(pre_articles)} makale önceki "
+                                        f"issue sırasında önden işlendi, atlanıyor"
+                                    )
+                                # Wiley stubs keyed by doi_url or doi (no url field)
+                                full_text_stubs = [
+                                    s for s in full_text_stubs
+                                    if (s.get('doi_url', '') or s.get('doi', '')) not in success_stubs
+                                ]
+                            _prev_lookahead_res = None
+
+                            if max_articles:
+                                remaining_limit = max(0, max_articles - len(pre_articles))
+                                if len(full_text_stubs) > remaining_limit:
+                                    full_text_stubs = full_text_stubs[:remaining_limit]
+                                    logger.info(f"  max_articles={max_articles} ile kırpıldı")
 
                             if article_list_callback:
                                 try:
@@ -1247,6 +1313,9 @@ class WileyScraper:
                                     pass
 
                             # Worker'lar bu issue'yu işlerken sonraki issue'yu önceden yükle
+                            _lookahead_q: Optional[queue.Queue] = None
+                            _lookahead_res: Optional[dict] = None
+
                             next_idx = idx + 1
                             if next_idx <= len(issues_to_process):
                                 next_issue = issues_to_process[next_idx - 1]
@@ -1254,18 +1323,24 @@ class WileyScraper:
                                 _pf_holder = holder_ref
                                 _pf_next_idx = next_idx
                                 total_count = len(issues_to_process)
+                                _lookahead_q = queue.Queue()
+                                _lookahead_res = {'articles': [], 'failed': [], 'success_stubs': set()}
 
                                 def _do_prefetch(
                                     iss=next_issue, i=next_idx,
                                     h=holder_ref, total=total_count,
+                                    lq=_lookahead_q, ma=max_articles,
                                 ):
                                     try:
                                         self.check_stop_flag()
                                         io, fs = self._fetch_issue_page(iss, i, total)
                                         h['data'] = (io, fs)
+                                        fs_limited = fs[:ma] if ma else fs
+                                        for s in fs_limited:
+                                            lq.put(s)
                                         logger.info(
                                             f"Issue {i} prefetch tamamlandı "
-                                            f"({len(fs)} full-text stub hazır)"
+                                            f"({len(fs_limited)} stub lookahead kuyruğuna eklendi)"
                                         )
                                     except ScraperStoppedException:
                                         pass
@@ -1277,16 +1352,26 @@ class WileyScraper:
                                 _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
                                 _pf_thread.start()
 
-                            # Makaleleri worker tablarla işle
-                            # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
-                            articles, retry_queue = self._process_issue_articles_parallel(
-                                full_text_stubs=full_text_stubs,
-                                max_tabs=max_tabs,
-                                article_progress_callback=article_progress_callback,
-                                reusable_drivers=parallel_drivers,
-                                pool_bg=_pool_bg,
-                            )
-                            _pool_bg = None  # join zaten içeride yapıldı
+                            if full_text_stubs:
+                                # Makaleleri worker tablarla işle
+                                # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                                articles, retry_queue = self._process_issue_articles_parallel(
+                                    full_text_stubs=full_text_stubs,
+                                    max_tabs=max_tabs,
+                                    article_progress_callback=article_progress_callback,
+                                    reusable_drivers=parallel_drivers,
+                                    pool_bg=_pool_bg,
+                                    lookahead_jobs=_lookahead_q,
+                                    lookahead_feed_thread=_pf_thread,
+                                    lookahead_holder=_lookahead_res,
+                                )
+                                _pool_bg = None  # join zaten içeride yapıldı
+                            else:
+                                articles = []
+                                retry_queue = []
+
+                            # lookahead sonuçlarını bir sonraki iterasyon için sakla
+                            _prev_lookahead_res = _lookahead_res
 
                             # Retry öncesi prefetch thread'ini bekle (self.selenium_driver çakışmasını önle)
                             if _pf_thread and _pf_thread.is_alive():
@@ -1322,6 +1407,9 @@ class WileyScraper:
                                         raise
                                     except Exception as e:
                                         logger.warning(f"Retry hatası ({r_url}): {e}")
+
+                            # Önden işlenen makaleleri son listeye ekle
+                            articles.extend(pre_articles)
 
                             result = {'issue_info': issue_obj, 'articles': articles}
 

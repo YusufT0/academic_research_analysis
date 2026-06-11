@@ -884,17 +884,36 @@ class ScraperManager:
         return False
 
 
+    # ==================== Lock Helper ====================
+
+    async def _acquire_lock_with_cleanup(self, scraper_type: str) -> bool:
+        """
+        Distributed lock almayı dene.
+        Aynı instance'ın önceki çalışmadan kalan stale lock'unu otomatik temizler.
+        Başka bir instance lock tutuyorsa False döner.
+        """
+        if await DistributedScraperLock.acquire(scraper_type):
+            return True
+        if await DistributedScraperLock.is_locked_by_other(scraper_type):
+            logger.warning(f"{scraper_type} distributed lock alınamadı — başka bir instance çalıştırıyor")
+            return False
+        # Bu instance'ın stale lock'u — önceki run lock'u bırakmadan kapandı
+        logger.info(f"{scraper_type} stale lock temizleniyor (aynı instance)")
+        await DistributedScraperLock.release(scraper_type)
+        acquired = await DistributedScraperLock.acquire(scraper_type)
+        if not acquired:
+            logger.warning(f"{scraper_type} lock temizleme sonrası hâlâ alınamadı")
+        return acquired
+
     # ==================== IEEE Scraper ====================
-    
+
     async def start_ieee(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """IEEE scraper'ı başlat (ayrı thread'de)"""
-        if self.ieee_progress.status == ScraperStatus.RUNNING:
+        if self.ieee_progress.status in [ScraperStatus.RUNNING, ScraperStatus.STARTING]:
             logger.warning("IEEE scraper already running")
             return False
 
-        # Distributed lock — başka bir instance zaten çalıştırıyorsa engelle
-        if not await DistributedScraperLock.acquire("ieee"):
-            logger.warning("IEEE scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+        if not await self._acquire_lock_with_cleanup("ieee"):
             return False
 
         self.ieee_headless = headless
@@ -1335,15 +1354,16 @@ class ScraperManager:
 
     async def stop_ieee(self) -> bool:
         """IEEE scraper'ı durdur"""
-        if self.ieee_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+        if self.ieee_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED, ScraperStatus.STARTING]:
             return False
 
         logger.info("IEEE scraper durduruluyor...")
         self._ieee_stop_flag.set()
+        self._ieee_pause_flag.clear()  # Duraklıysa devam ettir ki stop check'e ulaşsın
         self.ieee_progress.status = ScraperStatus.STOPPING
         self.ieee_progress.add_log("warning", "Durdurma sinyali gönderildi")
 
-        # Tarayıcıyı hemen kapat — cdp.get() gibi uzun beklemeleri keser
+        # Tarayıcıyı hemen kapat — uzun browser beklemelerini keser
         s = self._ieee_scraper
         if s:
             try:
@@ -1351,17 +1371,7 @@ class ScraperManager:
             except Exception:
                 pass
 
-        if self._ieee_future:
-            try:
-                self._ieee_future.result(timeout=10)
-                logger.success("IEEE scraper düzgün şekilde durduruldu")
-            except concurrent.futures.TimeoutError:
-                logger.warning("IEEE scraper stop timeout")
-                self.ieee_progress.status = ScraperStatus.STOPPED
-            except Exception as e:
-                logger.warning(f"IEEE scraper stop hatası: {e}")
-                self.ieee_progress.status = ScraperStatus.STOPPED
-
+        # Thread arka planda kapanacak; finally bloğu lock'u bırakır ve WS ile frontend'i günceller
         return True
     
     async def pause_ieee(self) -> bool:
@@ -1384,13 +1394,11 @@ class ScraperManager:
     
     async def start_sciencedirect(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """ScienceDirect scraper'ı başlat (ayrı thread'de)"""
-        if self.sciencedirect_progress.status == ScraperStatus.RUNNING:
+        if self.sciencedirect_progress.status in [ScraperStatus.RUNNING, ScraperStatus.STARTING]:
             logger.warning("ScienceDirect scraper already running")
             return False
 
-        # Distributed lock
-        if not await DistributedScraperLock.acquire("sciencedirect"):
-            logger.warning("ScienceDirect scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+        if not await self._acquire_lock_with_cleanup("sciencedirect"):
             return False
 
         self.sciencedirect_headless = headless
@@ -1829,32 +1837,21 @@ class ScraperManager:
 
     async def stop_sciencedirect(self) -> bool:
         """ScienceDirect scraper'ı durdur"""
-        if self.sciencedirect_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+        if self.sciencedirect_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED, ScraperStatus.STARTING]:
             return False
 
         logger.info("ScienceDirect scraper durduruluyor...")
         self._sciencedirect_stop_flag.set()
+        self._sciencedirect_pause_flag.clear()
         self.sciencedirect_progress.status = ScraperStatus.STOPPING
         self.sciencedirect_progress.add_log("warning", "Durdurma sinyali gönderildi")
 
-        # Tarayıcıyı hemen kapat
         s = self._sciencedirect_scraper
         if s:
             try:
                 s.selenium_driver.close()
             except Exception:
                 pass
-
-        if self._sciencedirect_future:
-            try:
-                self._sciencedirect_future.result(timeout=10)
-                logger.success("ScienceDirect scraper düzgün şekilde durduruldu")
-            except concurrent.futures.TimeoutError:
-                logger.warning("ScienceDirect scraper stop timeout")
-                self.sciencedirect_progress.status = ScraperStatus.STOPPED
-            except Exception as e:
-                logger.warning(f"ScienceDirect scraper stop hatası: {e}")
-                self.sciencedirect_progress.status = ScraperStatus.STOPPED
 
         return True
     
@@ -1879,13 +1876,11 @@ class ScraperManager:
     
     async def start_acm(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """ACM scraper'ı başlat (ayrı thread'de)"""
-        if self.acm_progress.status == ScraperStatus.RUNNING:
+        if self.acm_progress.status in [ScraperStatus.RUNNING, ScraperStatus.STARTING]:
             logger.warning("ACM scraper already running")
             return False
 
-        # Distributed lock
-        if not await DistributedScraperLock.acquire("acm"):
-            logger.warning("ACM scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+        if not await self._acquire_lock_with_cleanup("acm"):
             return False
 
         self.acm_headless = headless
@@ -2321,32 +2316,21 @@ class ScraperManager:
 
     async def stop_acm(self) -> bool:
         """ACM scraper'ı durdur"""
-        if self.acm_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+        if self.acm_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED, ScraperStatus.STARTING]:
             return False
 
         logger.info("ACM scraper durduruluyor...")
         self._acm_stop_flag.set()
+        self._acm_pause_flag.clear()
         self.acm_progress.status = ScraperStatus.STOPPING
         self.acm_progress.add_log("warning", "Durdurma sinyali gönderildi")
 
-        # Tarayıcıyı hemen kapat
         s = self._acm_scraper
         if s:
             try:
                 s.selenium_driver.close()
             except Exception:
                 pass
-
-        if self._acm_future:
-            try:
-                self._acm_future.result(timeout=10)
-                logger.success("ACM scraper düzgün şekilde durduruldu")
-            except concurrent.futures.TimeoutError:
-                logger.warning("ACM scraper stop timeout")
-                self.acm_progress.status = ScraperStatus.STOPPED
-            except Exception as e:
-                logger.warning(f"ACM scraper stop hatası: {e}")
-                self.acm_progress.status = ScraperStatus.STOPPED
 
         return True
     
@@ -2370,13 +2354,11 @@ class ScraperManager:
     
     async def start_wiley(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """Wiley scraper'ı başlat (ayrı thread'de)"""
-        if self.wiley_progress.status == ScraperStatus.RUNNING:
+        if self.wiley_progress.status in [ScraperStatus.RUNNING, ScraperStatus.STARTING]:
             logger.warning("Wiley scraper already running")
             return False
 
-        # Distributed lock
-        if not await DistributedScraperLock.acquire("wiley"):
-            logger.warning("Wiley scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+        if not await self._acquire_lock_with_cleanup("wiley"):
             return False
 
         self.wiley_headless = headless
@@ -2853,32 +2835,21 @@ class ScraperManager:
 
     async def stop_wiley(self) -> bool:
         """Wiley scraper'ı durdur"""
-        if self.wiley_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+        if self.wiley_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED, ScraperStatus.STARTING]:
             return False
 
         logger.info("Wiley scraper durduruluyor...")
         self._wiley_stop_flag.set()
+        self._wiley_pause_flag.clear()
         self.wiley_progress.status = ScraperStatus.STOPPING
         self.wiley_progress.add_log("warning", "Durdurma sinyali gönderildi")
 
-        # Tarayıcıyı hemen kapat
         s = self._wiley_scraper
         if s:
             try:
                 s.selenium_driver.close()
             except Exception:
                 pass
-
-        if self._wiley_future:
-            try:
-                self._wiley_future.result(timeout=10)
-                logger.success("Wiley scraper düzgün şekilde durduruldu")
-            except concurrent.futures.TimeoutError:
-                logger.warning("Wiley scraper stop timeout")
-                self.wiley_progress.status = ScraperStatus.STOPPED
-            except Exception as e:
-                logger.warning(f"Wiley scraper stop hatası: {e}")
-                self.wiley_progress.status = ScraperStatus.STOPPED
 
         return True
     
@@ -2901,13 +2872,11 @@ class ScraperManager:
     
     async def start_springer(self, headless: bool = True, max_articles: int = 100, depth: int = 1, max_tabs: int = 3, issues_order: str = "newest_first", continuous: bool = False) -> bool:
         """Springer scraper'ı başlat (ayrı thread'de)"""
-        if self.springer_progress.status == ScraperStatus.RUNNING:
+        if self.springer_progress.status in [ScraperStatus.RUNNING, ScraperStatus.STARTING]:
             logger.warning("Springer scraper already running")
             return False
 
-        # Distributed lock
-        if not await DistributedScraperLock.acquire("springer"):
-            logger.warning("Springer scraper distributed lock alınamadı — başka bir instance çalıştırıyor")
+        if not await self._acquire_lock_with_cleanup("springer"):
             return False
 
         self.springer_headless = headless
@@ -3377,33 +3346,22 @@ class ScraperManager:
                 )
 
     async def stop_springer(self) -> bool:
-        """Springer scraper'ı durdur"""
-        if self.springer_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED]:
+        """Springer scraper'ı durdur — anında döner, thread arka planda kapanır"""
+        if self.springer_progress.status not in [ScraperStatus.RUNNING, ScraperStatus.PAUSED, ScraperStatus.STARTING]:
             return False
 
         logger.info("Springer scraper durduruluyor...")
         self._springer_stop_flag.set()
+        self._springer_pause_flag.clear()
         self.springer_progress.status = ScraperStatus.STOPPING
         self.springer_progress.add_log("warning", "Durdurma sinyali gönderildi")
 
-        # Tarayıcıyı hemen kapat
         s = self._springer_scraper
         if s:
             try:
                 s.selenium_driver.close()
             except Exception:
                 pass
-
-        if self._springer_future:
-            try:
-                self._springer_future.result(timeout=10)
-                logger.success("Springer scraper düzgün şekilde durduruldu")
-            except concurrent.futures.TimeoutError:
-                logger.warning("Springer scraper stop timeout")
-                self.springer_progress.status = ScraperStatus.STOPPED
-            except Exception as e:
-                logger.warning(f"Springer scraper stop hatası: {e}")
-                self.springer_progress.status = ScraperStatus.STOPPED
 
         return True
     

@@ -85,6 +85,8 @@ class Settings(BaseSettings):
 
     sd_timeout: int = Field(default=90, alias="SD_TIMEOUT", description="Science Direct sayfa yükleme timeout (sn)")
     sd_implicit_wait: int = Field(default=90, alias="SD_IMPLICIT_WAIT", description="Science Direct implicit wait (sn)")
+    sd_min_wait: float = Field(default=2.0, alias="SD_MIN_WAIT", description="ScienceDirect scraper minimum bekleme süresi (sn)")
+    sd_max_wait: float = Field(default=5.0, alias="SD_MAX_WAIT", description="ScienceDirect scraper maksimum bekleme süresi (sn)")
     
     # ACM Timeouts & Delays
     acm_base_url: str = Field(default="https://dl.acm.org/journals", alias="ACM_BASE_URL", description="ACM Digital Library base URL")

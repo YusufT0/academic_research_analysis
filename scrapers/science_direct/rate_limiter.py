@@ -10,6 +10,8 @@ sys.path.insert(0, str(__file__).rsplit('science_direct', 1)[0])
 from utils.logger import get_logger
 logger = get_logger('science_direct')
 
+from backend.core.config import settings
+
 
 class RateLimiter:
     """Rate limiting ve retry yönetimi sınıfı"""
@@ -27,9 +29,9 @@ class RateLimiter:
         self.retry_queue = []  # Tekrar denenecek makaleler
         self.browser_restart_count = 0  # Tarayıcı yeniden başlatma sayısı (bilgi amaçlı)
         
-        # Random wait ayarları (saniye)
-        self.min_wait = 2.0
-        self.max_wait = 5.0
+        # Random wait ayarları — .env SD_MIN_WAIT / SD_MAX_WAIT'den okunur
+        self.min_wait = float(settings.sd_min_wait)
+        self.max_wait = float(settings.sd_max_wait)
     
     def random_wait(self, min_wait: float = None, max_wait: float = None):
         """

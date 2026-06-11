@@ -378,6 +378,9 @@ class SpringerScraper:
         existing_article_dois: set = None,
         reusable_drivers=None,
         pool_bg: Optional[threading.Thread] = None,
+        lookahead_jobs: Optional[queue.Queue] = None,
+        lookahead_feed_thread: Optional[threading.Thread] = None,
+        lookahead_holder: Optional[dict] = None,
     ) -> List[Dict[str, Any]]:
         """Issue icindeki makale detaylarini worker havuzu ile paralel toplar."""
         existing_article_dois = existing_article_dois or set()
@@ -415,10 +418,36 @@ class SpringerScraper:
                                 return
                             time.sleep(0.2)
 
+                    _is_lookahead = False
                     try:
                         idx, stub = jobs.get_nowait()
                     except queue.Empty:
-                        return
+                        if lookahead_jobs is None:
+                            return
+                        stub = None
+                        while True:
+                            if self.stop_flag and self.stop_flag.is_set():
+                                return
+                            try:
+                                stub = lookahead_jobs.get_nowait()
+                                _is_lookahead = True
+                                idx = None
+                                break
+                            except queue.Empty:
+                                feed_alive = (
+                                    lookahead_feed_thread is not None
+                                    and lookahead_feed_thread.is_alive()
+                                )
+                                if not feed_alive:
+                                    # Thread öldü; son koyduğu itemları drain et
+                                    try:
+                                        stub = lookahead_jobs.get_nowait()
+                                        _is_lookahead = True
+                                        idx = None
+                                        break
+                                    except queue.Empty:
+                                        return
+                                time.sleep(0.05)
 
                     detail_data: Dict[str, Any] = {}
                     article_url = stub.get("url", "")
@@ -433,16 +462,20 @@ class SpringerScraper:
                             self._restart_single_worker(worker_id, pool_index, "rate_limit_error")
                         else:
                             local_driver.restart()
-                        jobs.put((idx, stub))  # retry kuyruğuna geri koy
-                        continue
+                        if not _is_lookahead:
+                            jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                            continue
+                        detail_data = {}
                     except CloudflareBlockedException as e:
                         logger.warning(f"Worker-{worker_id}: Cloudflare bloklama hatası")
                         if pool_index >= 0:
                             self._restart_single_worker(worker_id, pool_index, "cloudflare_blocked")
                         else:
                             local_driver.restart()
-                        jobs.put((idx, stub))  # retry kuyruğuna geri koy
-                        continue
+                        if not _is_lookahead:
+                            jobs.put((idx, stub))  # retry kuyruğuna geri koy
+                            continue
+                        detail_data = {}
                     except Exception:
                         detail_data = {}
 
@@ -454,15 +487,21 @@ class SpringerScraper:
 
                     with lock:
                         nonlocal processed_count
-                        processed_count += 1
-                        results_by_index[idx] = merged
+                        if _is_lookahead:
+                            # Lookahead makale: sadece tam sonuçları tut (detail_data'sı olan)
+                            if article_ok and lookahead_holder is not None:
+                                lookahead_holder['articles'].append(merged)
+                                lookahead_holder['success_stubs'].add(stub.get('url', ''))
+                        else:
+                            processed_count += 1
+                            results_by_index[idx] = merged
 
-                        if article_progress_callback:
-                            callback_payload = (
-                                processed_count,
-                                total,
-                                merged.get("title") or stub.get("title"),
-                            )
+                            if article_progress_callback:
+                                callback_payload = (
+                                    processed_count,
+                                    total,
+                                    merged.get("title") or stub.get("title"),
+                                )
 
                     if callback_payload:
                         try:
@@ -598,17 +637,20 @@ class SpringerScraper:
         parallel_drivers: List[SeleniumDriver] = []
 
         try:
-            # Worker havuzunu arka planda başlat; ilk issue yüklenirken tarayıcılar açılır
-            _pool_container: list = []
+            # Worker havuzunu arka planda başlat; ilk issue yüklenirken tarayıcılar açılır.
+            # Pool dolu olduğunda _pool_container asla dolmaz (on_ready çağrılmaz), bu yüzden
+            # doğrudan self._worker_pool kullanılır — canlı referans, her zaman güncel.
             _pool_bg: Optional[threading.Thread] = None
-            if max_tabs > 1:
+            if max_tabs > 1 and len(self._worker_pool) < max_tabs:
                 _pool_bg = threading.Thread(
-                    target=lambda: self._ensure_worker_pool(max_tabs, on_ready=_pool_container.append),
+                    target=lambda: self._ensure_worker_pool(max_tabs),
                     daemon=True,
                 )
                 _pool_bg.start()
                 logger.info(f"Worker havuzu arka planda başlatılıyor ({max_tabs} tarayıcı)...")
-            parallel_drivers = _pool_container
+            elif max_tabs > 1:
+                logger.info(f"Worker havuzu zaten hazır: {len(self._worker_pool)} driver")
+            parallel_drivers = self._worker_pool
 
             # Paralel modda: ana tab sonraki issue'yu önceden yükler (prefetch pipeline).
             # _scrape_issue_articles_parallel içinde main-browser retry olmadığından
@@ -616,6 +658,7 @@ class SpringerScraper:
             _pf_thread: Optional[threading.Thread] = None
             _pf_next_idx: int = -1
             _pf_holder: dict = {}
+            _prev_lookahead_res: Optional[dict] = None  # önceki issue'dan lookahead sonuçları
 
             for idx, issue in enumerate(issues_to_process, start=1):
                 self.check_stop_flag()
@@ -648,6 +691,19 @@ class SpringerScraper:
                     _pf_next_idx = -1
                     _pf_holder = {}
 
+                    # Önceki issue sırasında lookahead ile önden işlenen makaleleri uygula
+                    pre_articles: List[Dict[str, Any]] = []
+                    if _prev_lookahead_res and _prev_lookahead_res.get('success_stubs'):
+                        pre_articles = _prev_lookahead_res.get('articles', [])
+                        success_stubs = _prev_lookahead_res['success_stubs']
+                        if pre_articles:
+                            logger.info(
+                                f"Issue {idx}: {len(pre_articles)} makale önceki "
+                                f"issue sırasında önden işlendi, atlanıyor"
+                            )
+                        stubs = [s for s in stubs if s.get('url', '') not in success_stubs]
+                    _prev_lookahead_res = None
+
                     logger.info(f"Issue stub makale sayisi: {len(stubs)}")
                     if article_list_callback:
                         try:
@@ -656,6 +712,9 @@ class SpringerScraper:
                             pass
 
                     # Worker'lar bu issue'yu işlerken sonraki issue'nun stub'larını önceden yükle
+                    _lookahead_q: Optional[queue.Queue] = None
+                    _lookahead_res: Optional[dict] = None
+
                     next_idx = idx + 1
                     if next_idx <= len(issues_to_process):
                         next_issue = issues_to_process[next_idx - 1]
@@ -663,18 +722,22 @@ class SpringerScraper:
                         _pf_holder = holder_ref
                         _pf_next_idx = next_idx
                         _ma = max_articles
+                        _lookahead_q = queue.Queue()
+                        _lookahead_res = {'articles': [], 'failed': [], 'success_stubs': set()}
 
                         def _do_prefetch(
                             iss=next_issue, i=next_idx,
-                            h=holder_ref, ma=_ma,
+                            h=holder_ref, ma=_ma, lq=_lookahead_q,
                         ):
                             try:
                                 self.check_stop_flag()
                                 ns = self._scrape_issue_articles(iss.get("url", ""), max_articles=ma)
                                 h['data'] = ns
+                                for s in ns:
+                                    lq.put(s)
                                 logger.info(
                                     f"Issue {i} prefetch tamamlandı "
-                                    f"({len(ns)} stub worker'lar için hazır)"
+                                    f"({len(ns)} stub lookahead kuyruğuna eklendi)"
                                 )
                             except ScraperStoppedException:
                                 pass
@@ -684,18 +747,30 @@ class SpringerScraper:
                         _pf_thread = threading.Thread(target=_do_prefetch, daemon=True)
                         _pf_thread.start()
 
-                    # Makaleleri worker tablarla işle
-                    # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
-                    issue_articles = self._scrape_issue_articles_parallel(
-                        stubs=stubs,
-                        journal_name=journal.get("name", ""),
-                        max_tabs=max_tabs,
-                        article_progress_callback=article_progress_callback,
-                        existing_article_dois=existing_article_dois,
-                        reusable_drivers=parallel_drivers,
-                        pool_bg=_pool_bg,
-                    )
-                    _pool_bg = None  # join zaten içeride yapıldı
+                    if stubs:
+                        # Makaleleri worker tablarla işle
+                        # pool_bg verilince her tarayıcı açılır açılmaz makaleye başlar
+                        issue_articles = self._scrape_issue_articles_parallel(
+                            stubs=stubs,
+                            journal_name=journal.get("name", ""),
+                            max_tabs=max_tabs,
+                            article_progress_callback=article_progress_callback,
+                            existing_article_dois=existing_article_dois,
+                            reusable_drivers=parallel_drivers,
+                            pool_bg=_pool_bg,
+                            lookahead_jobs=_lookahead_q,
+                            lookahead_feed_thread=_pf_thread,
+                            lookahead_holder=_lookahead_res,
+                        )
+                        _pool_bg = None  # join zaten içeride yapıldı
+                    else:
+                        issue_articles = []
+
+                    # lookahead sonuçlarını bir sonraki iterasyon için sakla
+                    _prev_lookahead_res = _lookahead_res
+
+                    # Önden işlenen makaleleri son listeye ekle
+                    issue_articles.extend(pre_articles)
 
                 else:
                     # ── Tekli tab modu (mevcut kod, değiştirilmedi) ────────────────
