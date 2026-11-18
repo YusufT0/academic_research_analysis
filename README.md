@@ -1,118 +1,118 @@
-# Yapay Zeka Destekli Bilimsel Dergilerin Trend Analiz Sistemi
+# AI-Powered Trend Analysis System for Scientific Journals
 
-**BM495-BM496 Bilgisayar Muhendisligi Projesi I-II - 2025-2026 Guz-Bahar**
-**Gazi Üniversitesi - Mühendislik Fakültesi - Bilgisayar Mühendisliği Bölümü**
+**BM495-BM496 Computer Engineering Project I-II - 2025-2026 Fall-Spring**
+**Gazi University - Faculty of Engineering - Department of Computer Engineering**
 
-IEEE Xplore, ScienceDirect ve ACM Digital Library platformlarindan bilimsel makale meta-verilerini toplayan, NLP/AI ile konu kumeleme ve benzerlik analizi yapan ve sonuclari interaktif grafiklerle gorselestiren bir sistemdir.
+A system that collects scientific article metadata from IEEE Xplore, ScienceDirect and the ACM Digital Library, performs topic clustering and similarity analysis with NLP/AI, and visualizes the results through interactive charts.
 
-## Ekip
+## Team
 
-| Isim | Numara |
-|------|--------|
+| Name | Student ID |
+|------|------------|
 | Emre Faruk Kucuk | 22118080039 |
 | Yusuf Taha Saritiken | 22118080058 |
 | Ali Burak Pekisik | 22118080062 |
 
 ---
 
-## Teknolojiler
+## Technologies
 
 ### Backend
-- **Python 3.11+** - Ana programlama dili
+- **Python 3.11+** - Main programming language
 - **FastAPI** - REST API framework
-- **MongoDB + Beanie** - NoSQL veri tabani ve ODM
+- **MongoDB + Beanie** - NoSQL database and ODM
 - **Redis** - Cache, WebSocket Pub/Sub, Streams
-- **Elasticsearch 8** - Full-text arama ve autocomplete
+- **Elasticsearch 8** - Full-text search and autocomplete
 - **Selenium / SeleniumBase** - Web scraping
 
 ### NLP / AI
-- **SentenceTransformers** - Makale embedding olusturma
-- **UMAP** - Boyut indirgeme
-- **HDBSCAN** - Konu kumeleme (clustering)
-- **KeyBERT** - Anahtar kelime cikarma
-- **spaCy** - Dogal dil isleme
+- **SentenceTransformers** - Article embedding generation
+- **UMAP** - Dimensionality reduction
+- **HDBSCAN** - Topic clustering
+- **KeyBERT** - Keyword extraction
+- **spaCy** - Natural language processing
 
 ### Frontend
 - **Next.js 15** - React framework (App Router)
 - **TypeScript** - Type-safe JavaScript
 - **Tailwind CSS v4** - Styling
-- **Recharts** - Grafik kutuphanesi
-- **react-force-graph-2d** - Interaktif atif haritasi
-- **Lucide React** - Ikonlar
+- **Recharts** - Charting library
+- **react-force-graph-2d** - Interactive citation map
+- **Lucide React** - Icons
 
-### Altyapi & Monitoring
+### Infrastructure & Monitoring
 - **Docker Compose** - MongoDB, Redis, Elasticsearch, Prometheus, Grafana
-- **Prometheus** - Metrik toplama
-- **Grafana** - Dashboard ve gorsellestime
+- **Prometheus** - Metrics collection
+- **Grafana** - Dashboards and visualization
 
 ---
 
-## Gereksinimler
+## Requirements
 
-| Yazilim | Versiyon | Indirme |
-|---------|----------|---------|
+| Software | Version | Download |
+|----------|---------|----------|
 | Python | 3.11+ | https://python.org |
 | Node.js | 20+ LTS | https://nodejs.org |
 | Docker Desktop | Latest | https://docker.com |
 | Git | Latest | https://git-scm.com |
-| Google Chrome | Latest | Scraper icin gerekli |
+| Google Chrome | Latest | Required for the scrapers |
 
 ---
 
-## Kurulum
+## Installation
 
-### 1. Repoyu Klonla
+### 1. Clone the Repository
 
 ```bash
 git clone https://github.com/emrefkucuk/academic_research_analysis.git
 cd academic_research_analysis
 ```
 
-### 2. Docker Servislerini Baslat
+### 2. Start the Docker Services
 
 ```bash
 cd scrapers
 docker compose up -d
 ```
 
-Bu komut asagidaki 7 servisi baslatir:
+This command starts the following 7 services:
 
-| Servis | Port | Aciklama |
-|--------|------|----------|
-| MongoDB | 27017 | Veri tabani |
+| Service | Port | Description |
+|---------|------|-------------|
+| MongoDB | 27017 | Database |
 | Redis | 6440 | Cache & Streams |
-| Elasticsearch | 9200 | Full-text arama motoru |
-| Prometheus | 9090 | Metrik toplama |
-| Grafana | 3001 | Monitoring dashboardlari |
+| Elasticsearch | 9200 | Full-text search engine |
+| Prometheus | 9090 | Metrics collection |
+| Grafana | 3001 | Monitoring dashboards |
 | Mongo Express | 8081 | MongoDB web UI |
 | Redis Commander | 8082 | Redis web UI |
 
-Servislerin hazir oldugundan emin olmak icin:
+To make sure the services are ready:
 
 ```bash
 docker compose ps
 ```
 
-Tum servislerin `running` veya `healthy` durumunda olmasini bekleyin. Elasticsearch'un baslamasi ~60 saniye surebilir.
+Wait until all services are in the `running` or `healthy` state. Elasticsearch may take ~60 seconds to start.
 
-### 3. Python Bagimliklarini Yukle
+### 3. Install Python Dependencies
 
 ```bash
 cd scrapers
 pip install -r requirements.txt
 ```
 
-> **Not:** Bazi NLP kutuphaneleri (sentence-transformers, torch vb.) buyuk olabilir. Ilk kurulum ~1-2 GB indirir.
+> **Note:** Some NLP libraries (sentence-transformers, torch, etc.) can be large. The first installation downloads ~1-2 GB.
 
-### 4. Backend .env Dosyasini Olustur
+### 4. Create the Backend .env File
 
-`scrapers/.env.example` dosyasini kopyalayarak baslayabilirsiniz:
+You can start by copying `scrapers/.env.example`:
 
 ```bash
 cp .env.example .env
 ```
 
-Veya `scrapers/.env` dosyasini asagidaki minimum ayarlarla olusturun:
+Or create `scrapers/.env` with the following minimum settings:
 
 ```env
 # MongoDB
@@ -127,7 +127,7 @@ REDIS_URL=redis://localhost:6440/0
 ELASTICSEARCH_URL=http://localhost:9200
 ELASTICSEARCH_AUTO_SYNC=false
 
-# Scraper Ayarlari
+# Scraper Settings
 AUTO_START_SCRAPERS=false
 SCRAPER_HEADLESS=true
 
@@ -136,18 +136,18 @@ NLP_LAZY_INIT=true
 NLP_EMBEDDER_MODEL=all-MiniLM-L6-v2
 ```
 
-Tum yapilandirma secenekleri icin `.env.example` dosyasina bakin.
+See `.env.example` for all configuration options.
 
-### 5. Frontend Bagimliklarini Yukle
+### 5. Install Frontend Dependencies
 
 ```bash
 cd client
 npm install
 ```
 
-### 6. Frontend .env Dosyasi
+### 6. Frontend .env File
 
-`client/.env` dosyasi zaten mevcut olmalidir. Yoksa olusturun:
+The `client/.env` file should already exist. If not, create it:
 
 ```env
 NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
@@ -155,11 +155,11 @@ NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
 
 ---
 
-## Calistirma
+## Running the Project
 
-Projeyi calistirmak icin **3 ayri terminal** gereklidir:
+Running the project requires **3 separate terminals**:
 
-### Terminal 1: Docker Servisleri
+### Terminal 1: Docker Services
 
 ```bash
 cd scrapers
@@ -173,7 +173,7 @@ cd scrapers
 python run_backend.py
 ```
 
-Basarili baslatmada su ciktiyi goreceksiniz:
+On a successful start you will see the following output:
 
 ```
 BACKEND HAZIR
@@ -183,14 +183,14 @@ Docs: http://localhost:8000/docs
 
 ### Terminal 3: Next.js Frontend
 
-**Gelistirme modu** (hot-reload, sayfa gecisleri biraz yavas):
+**Development mode** (hot reload, page transitions are a bit slower):
 
 ```bash
 cd client
 npm run dev
 ```
 
-**Production modu** (hizli sayfa gecisleri, hot-reload yok):
+**Production mode** (fast page transitions, no hot reload):
 
 ```bash
 cd client
@@ -198,14 +198,14 @@ npm run build
 npm start
 ```
 
-Frontend adresi: http://localhost:3000
+Frontend address: http://localhost:3000
 
 ---
 
-## Servis Adresleri
+## Service Addresses
 
-| Servis | URL | Kullanici / Sifre |
-|--------|-----|-------------------|
+| Service | URL | Username / Password |
+|---------|-----|---------------------|
 | Frontend | http://localhost:3000 | - |
 | Backend API | http://localhost:8000 | - |
 | Swagger API Docs | http://localhost:8000/docs | - |
@@ -216,146 +216,144 @@ Frontend adresi: http://localhost:3000
 
 ---
 
-## Onemli Kullanim Notlari
+## Important Usage Notes
 
-### Veri Toplama (Scraper)
+### Data Collection (Scrapers)
 
-Sistem bos veri tabani ile baslar. Makale toplamak icin:
+The system starts with an empty database. To collect articles:
 
-1. Frontend'de **Scraper** sayfasina gidin
-2. IEEE, ScienceDirect veya ACM scraperlarindan birini baslatin
-3. Scraper durumunu WebSocket ile canli takip edebilirsiniz
+1. Go to the **Scraper** page in the frontend
+2. Start one of the IEEE, ScienceDirect or ACM scrapers
+3. You can follow the scraper status live via WebSocket
 
-### AI / NLP Analizi
+### AI / NLP Analysis
 
-NLP modulu **ilk kullanim sirasinda otomatik egitilir**:
+The NLP module is **trained automatically on first use**:
 
-1. **Arama** sayfasina gidin
-2. Bir anahtar kelime girin (ornegin "machine learning")
-3. **AI Analiz** butonuna basin
-4. Eger model daha once egitilmemisse, otomatik egitim baslar (30sn - 5dk)
-5. Egitim bittiginde cluster bilgisi, 3 grafik ve eslesen makaleler gorunur
+1. Go to the **Search** page
+2. Enter a keyword (for example "machine learning")
+3. Click the **AI Analysis** button
+4. If the model has not been trained yet, training starts automatically (30 s - 5 min)
+5. When training finishes, the cluster information, 3 charts and matching articles are shown
 
-> **Not:** Egitim icin veri tabaninda en az ~20 abstract'li makale bulunmalidir. Yeterli makale yoksa once scraper calistirin.
+> **Note:** Training requires at least ~20 articles with abstracts in the database. If there are not enough articles, run a scraper first.
 
-### Atif Haritasi
+### Citation Map
 
-**Atif Haritasi** sayfasi, makaleler arasi atif iliskilerini interaktif bir ag grafigi olarak gosterir. Bu ozelligin calismasi icin OpenAlex uzerinden atif verilerinin cekilmis olmasi gerekir.
+The **Citation Map** page shows citation relationships between articles as an interactive network graph. This feature requires citation data to have been fetched from OpenAlex.
 
 ---
 
-## Proje Yapisi
+## Project Structure
 
 ```
 academic_research_analysis/
 |
 +-- client/                          # Frontend (Next.js 15)
-|   +-- app/                         # Sayfalar (App Router)
+|   +-- app/                         # Pages (App Router)
 |   |   +-- page.tsx                 # Dashboard
-|   |   +-- articles/                # Makale listesi & detay
-|   |   +-- journals/                # Dergi listesi & detay
-|   |   +-- authors/                 # Yazar profilleri
-|   |   +-- search/                  # Arama + AI Analiz
-|   |   +-- trends/                  # Trend grafikleri
-|   |   +-- citation-map/            # Interaktif atif haritasi
-|   |   +-- scrapers/                # Scraper kontrol paneli
-|   +-- components/                  # React componentleri
-|   |   +-- dashboard/               # Dashboard componentleri
-|   |   +-- layout/                  # Sidebar navigasyon
+|   |   +-- articles/                # Article list & detail
+|   |   +-- journals/                # Journal list & detail
+|   |   +-- authors/                 # Author profiles
+|   |   +-- search/                  # Search + AI analysis
+|   |   +-- trends/                  # Trend charts
+|   |   +-- citation-map/            # Interactive citation map
+|   |   +-- scrapers/                # Scraper control panel
+|   +-- components/                  # React components
+|   |   +-- dashboard/               # Dashboard components
+|   |   +-- layout/                  # Sidebar navigation
 |   |   +-- providers/               # WebSocket ScraperProvider
 |   |   +-- ui/                      # Card, Badge, Button, Input
 |   +-- lib/                         # API client, types, hooks
 |
 +-- scrapers/                        # Backend (Python)
-    +-- backend/                     # FastAPI uygulamasi
+    +-- backend/                     # FastAPI application
     |   +-- core/                    # Config & middleware
-    |   +-- routers/                 # API endpoint'leri
-    |   +-- services/                # NLP, cache, scraper servisleri
-    |   +-- schemas/                 # Pydantic response modelleri
+    |   +-- routers/                 # API endpoints
+    |   +-- services/                # NLP, cache, scraper services
+    |   +-- schemas/                 # Pydantic response models
     +-- database/                    # MongoDB
-    |   +-- models/                  # Beanie ODM modelleri
+    |   +-- models/                  # Beanie ODM models
     |   +-- repositories/            # Data access layer
     +-- ieee_xplore/                 # IEEE Xplore scraper
     +-- science_direct/              # ScienceDirect scraper
     +-- acm/                         # ACM Digital Library scraper
-    +-- docker/                      # Docker yapilandirmalari
+    +-- docker/                      # Docker configurations
     |   +-- prometheus/              # Prometheus config
-    |   +-- grafana/                 # Grafana dashboard & provisioning
-    +-- tests/                       # pytest testleri
-    +-- utils/                       # Logger ve yardimci moduller
+    |   +-- grafana/                 # Grafana dashboards & provisioning
+    +-- tests/                       # pytest tests
+    +-- utils/                       # Logger and helper modules
     +-- docker-compose.yml
     +-- requirements.txt
-    +-- run_backend.py               # Backend baslatma scripti
+    +-- run_backend.py               # Backend startup script
 ```
 
 ---
 
 ## API Endpoints
 
-Tam liste icin Swagger UI'a bakin: http://localhost:8000/docs
+See the Swagger UI for the full list: http://localhost:8000/docs
 
 ### Stats
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/stats` | Genel istatistikler |
-| GET | `/api/v1/stats/articles` | Makale istatistikleri |
-| GET | `/api/v1/stats/citations` | Atif istatistikleri |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/stats` | General statistics |
+| GET | `/api/v1/stats/articles` | Article statistics |
+| GET | `/api/v1/stats/citations` | Citation statistics |
 
 ### Journals
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/journals` | Dergi listesi (paginated, filtreli) |
-| GET | `/api/v1/journals/{id}` | Dergi detayi |
-| GET | `/api/v1/journals/{id}/issues` | Derginin sayilari |
-| GET | `/api/v1/journals/{id}/articles` | Derginin makaleleri |
-| GET | `/api/v1/journals/{id}/citation-metrics` | Dergi atif metrikleri ve tarihsel grafik |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/journals` | Journal list (paginated, filterable) |
+| GET | `/api/v1/journals/{id}` | Journal detail |
+| GET | `/api/v1/journals/{id}/issues` | Issues of the journal |
+| GET | `/api/v1/journals/{id}/articles` | Articles of the journal |
+| GET | `/api/v1/journals/{id}/citation-metrics` | Journal citation metrics and historical chart |
 
 ### Articles
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/articles` | Makale listesi (paginated, filtreli) |
-| GET | `/api/v1/articles/{id}` | Makale detayi |
-| GET | `/api/v1/articles/{id}/citation-metrics` | Makale atif metrikleri |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/articles` | Article list (paginated, filterable) |
+| GET | `/api/v1/articles/{id}` | Article detail |
+| GET | `/api/v1/articles/{id}/citation-metrics` | Article citation metrics |
 
 ### Search
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/search?q=...` | Elasticsearch full-text arama |
-| GET | `/api/v1/search/suggest?q=...` | Autocomplete onerileri |
-| GET | `/api/v1/search/facets` | Arama facet'leri (kaynak, yil, dergi) |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/search?q=...` | Elasticsearch full-text search |
+| GET | `/api/v1/search/suggest?q=...` | Autocomplete suggestions |
+| GET | `/api/v1/search/facets` | Search facets (source, year, journal) |
 
 ### NLP / AI
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/nlp/status` | NLP model durumu |
-| GET | `/api/v1/nlp/search?query=...` | Semantik benzerlik aramasi |
-| GET | `/api/v1/nlp/get_bar_chart_input` | Yil bazli makale dagilimi |
-| GET | `/api/v1/nlp/get_pie_chart_input` | Konu dagilimi |
-| GET | `/api/v1/nlp/get_scatter_chart_input` | 2D UMAP scatter verisi |
-| POST | `/api/v1/nlp/train` | Manuel model egitimi |
-| GET | `/api/v1/nlp/clusters` | Tum cluster'lari listele |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/nlp/status` | NLP model status |
+| GET | `/api/v1/nlp/search?query=...` | Semantic similarity search |
+| GET | `/api/v1/nlp/get_bar_chart_input` | Article distribution by year |
+| GET | `/api/v1/nlp/get_pie_chart_input` | Topic distribution |
+| GET | `/api/v1/nlp/get_scatter_chart_input` | 2D UMAP scatter data |
+| POST | `/api/v1/nlp/train` | Manual model training |
+| GET | `/api/v1/nlp/clusters` | List all clusters |
 
 ### Scrapers
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/scrapers/status` | Tum scraper durumlari |
-| POST | `/api/v1/scrapers/ieee/start` | IEEE scraper baslat |
-| POST | `/api/v1/scrapers/ieee/stop` | IEEE scraper durdur |
-| POST | `/api/v1/scrapers/sciencedirect/start` | ScienceDirect baslat |
-| POST | `/api/v1/scrapers/acm/start` | ACM baslat |
-| POST | `/api/v1/scrapers/start-all` | Tumunu baslat |
-| POST | `/api/v1/scrapers/stop-all` | Tumunu durdur |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/scrapers/status` | Status of all scrapers |
+| POST | `/api/v1/scrapers/ieee/start` | Start the IEEE scraper |
+| POST | `/api/v1/scrapers/ieee/stop` | Stop the IEEE scraper |
+| POST | `/api/v1/scrapers/sciencedirect/start` | Start ScienceDirect |
+| POST | `/api/v1/scrapers/acm/start` | Start ACM |
+| POST | `/api/v1/scrapers/start-all` | Start all |
+| POST | `/api/v1/scrapers/stop-all` | Stop all |
 
 ### Authors & Citations
-| Method | Endpoint | Aciklama |
-|--------|----------|----------|
-| GET | `/api/v1/authors` | Yazar listesi |
-| GET | `/api/v1/authors/{name}` | Yazar profili |
-| GET | `/api/v1/citation-graph?article_id=...` | Atif grafigi verileri |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/v1/authors` | Author list |
+| GET | `/api/v1/authors/{name}` | Author profile |
+| GET | `/api/v1/citation-graph?article_id=...` | Citation graph data |
 
 ### WebSocket
-| Endpoint | Aciklama |
-|----------|----------|
-| `ws://localhost:8000/ws/scrapers/events` | Canli scraper event stream |
-
----
+| Endpoint | Description |
+|----------|-------------|
+| `ws://localhost:8000/ws/scrapers/events` | Live scraper event stream |
